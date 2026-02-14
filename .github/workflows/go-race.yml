@@ -1,0 +1,29 @@
+name: go-race
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  race:
+    name: race-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run race tests
+        run: go test -race ./...
