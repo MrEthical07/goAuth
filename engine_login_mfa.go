@@ -3,7 +3,6 @@ package goAuth
 import (
 	"context"
 	"errors"
-	"log"
 	"strings"
 	"time"
 
@@ -333,10 +332,10 @@ func (e *Engine) loginWithResultInternal(ctx context.Context, username, password
 			if upgradedHash, err := e.passwordHash.Hash(password); err == nil {
 				// Rehash update is best-effort and must not block successful login.
 				if err := e.userProvider.UpdatePasswordHash(user.UserID, upgradedHash); err != nil {
-					log.Print("goAuth: password hash upgrade update failed")
+					e.warn("goAuth: password hash upgrade update failed")
 				}
 			} else {
-				log.Print("goAuth: password hash upgrade generation failed")
+				e.warn("goAuth: password hash upgrade generation failed")
 			}
 		}
 	}

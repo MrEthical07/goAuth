@@ -7,6 +7,26 @@ on:
   pull_request:
 
 jobs:
+  check:
+    name: fmt-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check gofmt
+        run: |
+          files=$(find . -name '*.go' -not -path './vendor/*')
+          test -z "$(gofmt -l $files)"
+
+      - name: Run unit tests
+        run: go test ./...
+
   race:
     name: race-${{ matrix.os }}
     runs-on: ${{ matrix.os }}

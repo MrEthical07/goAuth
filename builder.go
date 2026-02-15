@@ -227,6 +227,7 @@ func (b *Builder) Build() (*Engine, error) {
 	engine.audit = newAuditDispatcher(cfg.Audit, b.auditSink)
 	engine.metrics = NewMetrics(cfg.Metrics)
 	engine.totp = newTOTPManager(cfg.TOTP)
+	engine.logger = cfg.Logger
 
 	ph, err := password.NewArgon2(password.Config{
 		Memory:      cfg.Password.Memory,
@@ -245,6 +246,10 @@ func (b *Builder) Build() (*Engine, error) {
 		SigningMethod: jwt.SigningMethod(cfg.JWT.SigningMethod),
 		PrivateKey:    cloneBytes(cfg.JWT.PrivateKey),
 		PublicKey:     cloneBytes(cfg.JWT.PublicKey),
+		Issuer:        cfg.JWT.Issuer,
+		Audience:      cfg.JWT.Audience,
+		Leeway:        cfg.JWT.Leeway,
+		KeyID:         cfg.JWT.KeyID,
 	})
 	if err != nil {
 		return nil, err

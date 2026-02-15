@@ -1,6 +1,8 @@
 module github.com/MrEthical07/goAuth
 
-go 1.25.1
+go 1.25
+
+toolchain go1.25.1
 
 require (
 	github.com/alicebob/miniredis/v2 v2.36.1
