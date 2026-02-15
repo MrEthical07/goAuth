@@ -1,5 +1,8 @@
 package session
 
+// Session defines a public type used by goAuth APIs.
+//
+// Session instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Session struct {
 	SessionID string
 	UserID    string

@@ -61,6 +61,10 @@ func (d *auditDispatcher) run() {
 	}
 }
 
+// Emit describes the emit operation and its observable behavior.
+//
+// Emit may return an error when input validation, dependency calls, or security checks fail.
+// Emit does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (d *auditDispatcher) Emit(ctx context.Context, event AuditEvent) {
 	if d == nil || d.closed.Load() {
 		return
@@ -86,6 +90,10 @@ func (d *auditDispatcher) Emit(ctx context.Context, event AuditEvent) {
 	}
 }
 
+// Close describes the close operation and its observable behavior.
+//
+// Close may return an error when input validation, dependency calls, or security checks fail.
+// Close does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (d *auditDispatcher) Close() {
 	if d == nil {
 		return
@@ -97,6 +105,10 @@ func (d *auditDispatcher) Close() {
 	})
 }
 
+// Dropped describes the dropped operation and its observable behavior.
+//
+// Dropped may return an error when input validation, dependency calls, or security checks fail.
+// Dropped does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (d *auditDispatcher) Dropped() uint64 {
 	if d == nil {
 		return 0

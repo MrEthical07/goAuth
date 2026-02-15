@@ -11,6 +11,10 @@ import (
 
 const backupCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
+// GenerateBackupCodes describes the generatebackupcodes operation and its observable behavior.
+//
+// GenerateBackupCodes may return an error when input validation, dependency calls, or security checks fail.
+// GenerateBackupCodes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GenerateBackupCodes(ctx context.Context, userID string) ([]string, error) {
 	if !e.config.TOTP.Enabled {
 		return nil, ErrTOTPFeatureDisabled
@@ -40,6 +44,10 @@ func (e *Engine) GenerateBackupCodes(ctx context.Context, userID string) ([]stri
 	return e.generateAndReplaceBackupCodes(ctx, user.UserID, user.TenantID)
 }
 
+// RegenerateBackupCodes describes the regeneratebackupcodes operation and its observable behavior.
+//
+// RegenerateBackupCodes may return an error when input validation, dependency calls, or security checks fail.
+// RegenerateBackupCodes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RegenerateBackupCodes(ctx context.Context, userID, totpCode string) ([]string, error) {
 	if !e.config.TOTP.Enabled {
 		return nil, ErrTOTPFeatureDisabled
@@ -93,10 +101,18 @@ func (e *Engine) generateAndReplaceBackupCodes(ctx context.Context, userID, tena
 	return codes, nil
 }
 
+// VerifyBackupCode describes the verifybackupcode operation and its observable behavior.
+//
+// VerifyBackupCode may return an error when input validation, dependency calls, or security checks fail.
+// VerifyBackupCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) VerifyBackupCode(ctx context.Context, userID, code string) error {
 	return e.VerifyBackupCodeInTenant(ctx, tenantIDFromContext(ctx), userID, code)
 }
 
+// VerifyBackupCodeInTenant describes the verifybackupcodeintenant operation and its observable behavior.
+//
+// VerifyBackupCodeInTenant may return an error when input validation, dependency calls, or security checks fail.
+// VerifyBackupCodeInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code string) error {
 	if e == nil || e.userProvider == nil || e.backupLimiter == nil {
 		return ErrEngineNotReady

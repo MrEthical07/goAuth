@@ -13,11 +13,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// ErrRefreshHashMismatch is an exported constant or variable used by the authentication engine.
 var ErrRefreshHashMismatch = errors.New("refresh hash mismatch")
+
+// ErrRedisUnavailable is an exported constant or variable used by the authentication engine.
 var ErrRedisUnavailable = errors.New("redis unavailable")
 
 const minSlidingTTL = time.Second
 
+// Store defines a public type used by goAuth APIs.
+//
+// Store instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Store struct {
 	redis         *redis.Client
 	prefix        string
@@ -26,6 +32,10 @@ type Store struct {
 	jitterRange   time.Duration
 }
 
+// NewStore describes the newstore operation and its observable behavior.
+//
+// NewStore may return an error when input validation, dependency calls, or security checks fail.
+// NewStore does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func NewStore(
 	redis *redis.Client,
 	prefix string,
@@ -69,6 +79,10 @@ func normalizeTenantID(tenantID string) string {
 	return tenantID
 }
 
+// Save describes the save operation and its observable behavior.
+//
+// Save may return an error when input validation, dependency calls, or security checks fail.
+// Save does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *Store) Save(ctx context.Context, sess *Session, ttl time.Duration) error {
 	data, err := Encode(sess)
 	if err != nil {
@@ -92,6 +106,10 @@ func (s *Store) Save(ctx context.Context, sess *Session, ttl time.Duration) erro
 	return nil
 }
 
+// Get describes the get operation and its observable behavior.
+//
+// Get may return an error when input validation, dependency calls, or security checks fail.
+// Get does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Duration) (*Session, error) {
 	key := s.key(tenantID, sessionID)
 
@@ -132,6 +150,10 @@ func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Du
 	return sess, nil
 }
 
+// Delete describes the delete operation and its observable behavior.
+//
+// Delete may return an error when input validation, dependency calls, or security checks fail.
+// Delete does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *Store) Delete(ctx context.Context, tenantID, sessionID string) error {
 	key := s.key(tenantID, sessionID)
 
@@ -151,6 +173,10 @@ func (s *Store) Delete(ctx context.Context, tenantID, sessionID string) error {
 	return s.deleteSessionAndIndex(ctx, sess.TenantID, sess.UserID, sessionID)
 }
 
+// DeleteAllForUser describes the deleteallforuser operation and its observable behavior.
+//
+// DeleteAllForUser may return an error when input validation, dependency calls, or security checks fail.
+// DeleteAllForUser does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *Store) DeleteAllForUser(ctx context.Context, tenantID, userID string) error {
 	userKey := s.userKey(tenantID, userID)
 	countKey := s.tenantCountKey(tenantID)
@@ -476,6 +502,10 @@ func randomJitter(jitterRange time.Duration) (time.Duration, error) {
 	return time.Duration(n.Int64() - max), nil
 }
 
+// RotateRefreshHash describes the rotaterefreshhash operation and its observable behavior.
+//
+// RotateRefreshHash may return an error when input validation, dependency calls, or security checks fail.
+// RotateRefreshHash does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *Store) RotateRefreshHash(
 	ctx context.Context,
 	tenantID, sessionID string,

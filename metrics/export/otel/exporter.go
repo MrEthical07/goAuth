@@ -11,7 +11,9 @@ import (
 )
 
 var (
-	ErrNilMeter  = errors.New("nil meter")
+	// ErrNilMeter is an exported constant or variable used by the authentication engine.
+	ErrNilMeter = errors.New("nil meter")
+	// ErrNilSource is an exported constant or variable used by the authentication engine.
 	ErrNilSource = errors.New("nil metrics source")
 )
 
@@ -31,6 +33,9 @@ type observedHistogram struct {
 	count   metric.Int64ObservableGauge
 }
 
+// OTelExporter defines a public type used by goAuth APIs.
+//
+// OTelExporter instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type OTelExporter struct {
 	source       metricsSource
 	registration metric.Registration
@@ -39,10 +44,18 @@ type OTelExporter struct {
 	auditDropped metric.Int64ObservableCounter
 }
 
+// NewOTelExporter describes the newotelexporter operation and its observable behavior.
+//
+// NewOTelExporter may return an error when input validation, dependency calls, or security checks fail.
+// NewOTelExporter does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func NewOTelExporter(meter metric.Meter, engine *goAuth.Engine) (*OTelExporter, error) {
 	return NewOTelExporterFromSource(meter, engine)
 }
 
+// NewOTelExporterFromSource describes the newotelexporterfromsource operation and its observable behavior.
+//
+// NewOTelExporterFromSource may return an error when input validation, dependency calls, or security checks fail.
+// NewOTelExporterFromSource does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func NewOTelExporterFromSource(meter metric.Meter, source metricsSource) (*OTelExporter, error) {
 	if meter == nil {
 		return nil, ErrNilMeter
@@ -123,6 +136,10 @@ func NewOTelExporterFromSource(meter metric.Meter, source metricsSource) (*OTelE
 	return exporter, nil
 }
 
+// Close describes the close operation and its observable behavior.
+//
+// Close may return an error when input validation, dependency calls, or security checks fail.
+// Close does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *OTelExporter) Close() error {
 	if e == nil || e.registration == nil {
 		return nil

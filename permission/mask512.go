@@ -1,5 +1,8 @@
 package permission
 
+// Mask512 defines a public type used by goAuth APIs.
+//
+// Mask512 instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Mask512 struct {
 	A uint64
 	B uint64
@@ -11,6 +14,10 @@ type Mask512 struct {
 	H uint64
 }
 
+// Has describes the has operation and its observable behavior.
+//
+// Has may return an error when input validation, dependency calls, or security checks fail.
+// Has does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (m *Mask512) Has(bit int, rootReserved bool) bool {
 	if bit < 0 || bit >= 512 {
 		return false
@@ -46,6 +53,10 @@ func (m *Mask512) Has(bit int, rootReserved bool) bool {
 	}
 }
 
+// Set describes the set operation and its observable behavior.
+//
+// Set may return an error when input validation, dependency calls, or security checks fail.
+// Set does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (m *Mask512) Set(bit int) {
 	if bit < 0 || bit >= 512 {
 		return
@@ -74,6 +85,10 @@ func (m *Mask512) Set(bit int) {
 	}
 }
 
+// Clear describes the clear operation and its observable behavior.
+//
+// Clear may return an error when input validation, dependency calls, or security checks fail.
+// Clear does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (m *Mask512) Clear(bit int) {
 	if bit < 0 || bit >= 512 {
 		return

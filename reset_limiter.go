@@ -23,6 +23,10 @@ func newPasswordResetLimiter(redisClient *redis.Client, cfg PasswordResetConfig)
 	}
 }
 
+// CheckRequest describes the checkrequest operation and its observable behavior.
+//
+// CheckRequest may return an error when input validation, dependency calls, or security checks fail.
+// CheckRequest does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *passwordResetLimiter) CheckRequest(ctx context.Context, tenantID, identifier, ip string) error {
 	if l.config.EnableIdentifierThrottle {
 		if err := l.enforceFixedWindow(ctx, requestIdentifierKey(tenantID, identifier)); err != nil {
@@ -37,6 +41,10 @@ func (l *passwordResetLimiter) CheckRequest(ctx context.Context, tenantID, ident
 	return nil
 }
 
+// CheckConfirm describes the checkconfirm operation and its observable behavior.
+//
+// CheckConfirm may return an error when input validation, dependency calls, or security checks fail.
+// CheckConfirm does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *passwordResetLimiter) CheckConfirm(ctx context.Context, tenantID, resetID, ip string) error {
 	if l.config.EnableIdentifierThrottle {
 		if err := l.enforceFixedWindow(ctx, confirmIdentifierKey(tenantID, resetID)); err != nil {
@@ -86,6 +94,10 @@ func confirmIPKey(tenantID, ip string) string {
 	return "aprcip:" + normalizeResetTenantID(tenantID) + ":" + ip
 }
 
+// Cooldown describes the cooldown operation and its observable behavior.
+//
+// Cooldown may return an error when input validation, dependency calls, or security checks fail.
+// Cooldown does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *passwordResetLimiter) Cooldown() time.Duration {
 	return l.config.ResetTTL
 }

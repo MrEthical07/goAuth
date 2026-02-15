@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+// GenerateTOTPSetup describes the generatetotpsetup operation and its observable behavior.
+//
+// GenerateTOTPSetup may return an error when input validation, dependency calls, or security checks fail.
+// GenerateTOTPSetup does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSetup, error) {
 	if !e.config.TOTP.Enabled {
 		return nil, ErrTOTPFeatureDisabled
@@ -46,6 +50,10 @@ func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSet
 	return out, nil
 }
 
+// ProvisionTOTP describes the provisiontotp operation and its observable behavior.
+//
+// ProvisionTOTP may return an error when input validation, dependency calls, or security checks fail.
+// ProvisionTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvision, error) {
 	setup, err := e.GenerateTOTPSetup(ctx, userID)
 	if err != nil {
@@ -57,6 +65,10 @@ func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvisi
 	}, nil
 }
 
+// ConfirmTOTPSetup describes the confirmtotpsetup operation and its observable behavior.
+//
+// ConfirmTOTPSetup may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmTOTPSetup does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmTOTPSetup(ctx context.Context, userID, code string) error {
 	if !e.config.TOTP.Enabled {
 		return ErrTOTPFeatureDisabled
@@ -137,6 +149,10 @@ func (e *Engine) ConfirmTOTPSetup(ctx context.Context, userID, code string) erro
 	return nil
 }
 
+// VerifyTOTP describes the verifytotp operation and its observable behavior.
+//
+// VerifyTOTP may return an error when input validation, dependency calls, or security checks fail.
+// VerifyTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) VerifyTOTP(ctx context.Context, userID, code string) error {
 	if !e.config.TOTP.Enabled {
 		return ErrTOTPFeatureDisabled
@@ -184,6 +200,10 @@ func (e *Engine) VerifyTOTP(ctx context.Context, userID, code string) error {
 	return nil
 }
 
+// DisableTOTP describes the disabletotp operation and its observable behavior.
+//
+// DisableTOTP may return an error when input validation, dependency calls, or security checks fail.
+// DisableTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) DisableTOTP(ctx context.Context, userID string) error {
 	if !e.config.TOTP.Enabled {
 		return ErrTOTPFeatureDisabled

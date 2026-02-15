@@ -17,6 +17,10 @@ const (
 	sessionFormatVersionV1      = 1
 )
 
+// Encode describes the encode operation and its observable behavior.
+//
+// Encode may return an error when input validation, dependency calls, or security checks fail.
+// Encode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func Encode(s *Session) ([]byte, error) {
 	var buf bytes.Buffer
 
@@ -78,6 +82,10 @@ func Encode(s *Session) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// Decode describes the decode operation and its observable behavior.
+//
+// Decode may return an error when input validation, dependency calls, or security checks fail.
+// Decode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func Decode(data []byte) (*Session, error) {
 	reader := bytes.NewReader(data)
 

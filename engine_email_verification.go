@@ -12,6 +12,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// RequestEmailVerification describes the requestemailverification operation and its observable behavior.
+//
+// RequestEmailVerification may return an error when input validation, dependency calls, or security checks fail.
+// RequestEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string) (string, error) {
 	if !e.config.EmailVerification.Enabled {
 		e.emitAudit(ctx, auditEventEmailVerificationRequest, false, "", tenantIDFromContext(ctx), "", ErrEmailVerificationDisabled, nil)
@@ -154,6 +158,10 @@ func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string
 	return challenge, nil
 }
 
+// ConfirmEmailVerification describes the confirmemailverification operation and its observable behavior.
+//
+// ConfirmEmailVerification may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string) error {
 	if !e.config.EmailVerification.Enabled {
 		e.metricInc(MetricEmailVerificationFailure)

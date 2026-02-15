@@ -49,6 +49,10 @@ func (s *emailVerificationStore) key(tenantID, verificationID string) string {
 	return s.prefix + ":" + normalizeResetTenantID(tenantID) + ":" + verificationID
 }
 
+// Save describes the save operation and its observable behavior.
+//
+// Save may return an error when input validation, dependency calls, or security checks fail.
+// Save does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *emailVerificationStore) Save(
 	ctx context.Context,
 	tenantID, verificationID string,
@@ -67,6 +71,10 @@ func (s *emailVerificationStore) Save(
 	return nil
 }
 
+// Consume describes the consume operation and its observable behavior.
+//
+// Consume may return an error when input validation, dependency calls, or security checks fail.
+// Consume does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *emailVerificationStore) Consume(
 	ctx context.Context,
 	tenantID, verificationID string,

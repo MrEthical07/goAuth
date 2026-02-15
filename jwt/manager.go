@@ -7,13 +7,21 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// SigningMethod defines a public type used by goAuth APIs.
+//
+// SigningMethod instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type SigningMethod string
 
 const (
+	// MethodEd25519 is an exported constant or variable used by the authentication engine.
 	MethodEd25519 SigningMethod = "ed25519"
-	MethodHS256   SigningMethod = "hs256"
+	// MethodHS256 is an exported constant or variable used by the authentication engine.
+	MethodHS256 SigningMethod = "hs256"
 )
 
+// Config defines a public type used by goAuth APIs.
+//
+// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Config struct {
 	AccessTTL     time.Duration
 	SigningMethod SigningMethod
@@ -21,10 +29,16 @@ type Config struct {
 	PublicKey     []byte
 }
 
+// Manager defines a public type used by goAuth APIs.
+//
+// Manager instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Manager struct {
 	config Config
 }
 
+// AccessClaims defines a public type used by goAuth APIs.
+//
+// AccessClaims instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type AccessClaims struct {
 	UID            string `json:"uid"`
 	TID            uint32 `json:"tid,omitempty"`
@@ -36,6 +50,10 @@ type AccessClaims struct {
 	jwt.RegisteredClaims
 }
 
+// NewManager describes the newmanager operation and its observable behavior.
+//
+// NewManager may return an error when input validation, dependency calls, or security checks fail.
+// NewManager does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func NewManager(cfg Config) (*Manager, error) {
 	if cfg.AccessTTL <= 0 {
 		return nil, errors.New("invalid TTL configuration")
@@ -43,6 +61,10 @@ func NewManager(cfg Config) (*Manager, error) {
 	return &Manager{config: cfg}, nil
 }
 
+// CreateAccess describes the createaccess operation and its observable behavior.
+//
+// CreateAccess may return an error when input validation, dependency calls, or security checks fail.
+// CreateAccess does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (j *Manager) CreateAccess(
 	uid string,
 	tid uint32,
@@ -96,6 +118,10 @@ func (j *Manager) CreateAccess(
 	return token.SignedString(j.getSignKey())
 }
 
+// ParseAccess describes the parseaccess operation and its observable behavior.
+//
+// ParseAccess may return an error when input validation, dependency calls, or security checks fail.
+// ParseAccess does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (j *Manager) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
 		return j.getVerifyKey(), nil

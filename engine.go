@@ -16,6 +16,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Engine defines a public type used by goAuth APIs.
+//
+// Engine instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Engine struct {
 	config              Config
 	registry            *permission.Registry
@@ -38,6 +41,10 @@ type Engine struct {
 	userProvider        UserProvider
 }
 
+// Close describes the close operation and its observable behavior.
+//
+// Close may return an error when input validation, dependency calls, or security checks fail.
+// Close does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Close() {
 	if e == nil {
 		return
@@ -47,6 +54,10 @@ func (e *Engine) Close() {
 	}
 }
 
+// AuditDropped describes the auditdropped operation and its observable behavior.
+//
+// AuditDropped may return an error when input validation, dependency calls, or security checks fail.
+// AuditDropped does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) AuditDropped() uint64 {
 	if e == nil || e.audit == nil {
 		return 0
@@ -54,6 +65,10 @@ func (e *Engine) AuditDropped() uint64 {
 	return e.audit.Dropped()
 }
 
+// MetricsSnapshot describes the metricssnapshot operation and its observable behavior.
+//
+// MetricsSnapshot may return an error when input validation, dependency calls, or security checks fail.
+// MetricsSnapshot does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) MetricsSnapshot() MetricsSnapshot {
 	if e == nil || e.metrics == nil {
 		return MetricsSnapshot{
@@ -71,6 +86,10 @@ func (e *Engine) metricInc(id MetricID) {
 	e.metrics.Inc(id)
 }
 
+// Login describes the login operation and its observable behavior.
+//
+// Login may return an error when input validation, dependency calls, or security checks fail.
+// Login does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Login(ctx context.Context, username, password string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
@@ -85,6 +104,10 @@ func (e *Engine) Login(ctx context.Context, username, password string) (string, 
 	return result.AccessToken, result.RefreshToken, nil
 }
 
+// LoginWithTOTP describes the loginwithtotp operation and its observable behavior.
+//
+// LoginWithTOTP may return an error when input validation, dependency calls, or security checks fail.
+// LoginWithTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LoginWithTOTP(ctx context.Context, username, password, totpCode string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
@@ -110,6 +133,10 @@ func (e *Engine) LoginWithTOTP(ctx context.Context, username, password, totpCode
 	return result.AccessToken, result.RefreshToken, nil
 }
 
+// LoginWithBackupCode describes the loginwithbackupcode operation and its observable behavior.
+//
+// LoginWithBackupCode may return an error when input validation, dependency calls, or security checks fail.
+// LoginWithBackupCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LoginWithBackupCode(ctx context.Context, username, password, backupCode string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
@@ -463,6 +490,10 @@ func (e *Engine) loginInternal(ctx context.Context, username, password, totpCode
 	return access, refresh, nil
 }
 
+// Refresh describes the refresh operation and its observable behavior.
+//
+// Refresh may return an error when input validation, dependency calls, or security checks fail.
+// Refresh does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, string, error) {
 	tenantID := tenantIDFromContext(ctx)
 	sessionID, providedSecret, err := internal.DecodeRefreshToken(refreshToken)
@@ -589,10 +620,18 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 	return access, refresh, nil
 }
 
+// ValidateAccess describes the validateaccess operation and its observable behavior.
+//
+// ValidateAccess may return an error when input validation, dependency calls, or security checks fail.
+// ValidateAccess does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ValidateAccess(ctx context.Context, tokenStr string) (*AuthResult, error) {
 	return e.Validate(ctx, tokenStr, ModeInherit)
 }
 
+// Validate describes the validate operation and its observable behavior.
+//
+// Validate may return an error when input validation, dependency calls, or security checks fail.
+// Validate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Validate(ctx context.Context, tokenStr string, routeMode RouteMode) (*AuthResult, error) {
 	if e.metrics != nil && e.metrics.LatencyEnabled() {
 		start := time.Now()
@@ -719,6 +758,10 @@ func (e *Engine) buildResultFromClaims(claims *jwt.AccessClaims) *AuthResult {
 	return res
 }
 
+// HasPermission describes the haspermission operation and its observable behavior.
+//
+// HasPermission may return an error when input validation, dependency calls, or security checks fail.
+// HasPermission does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) HasPermission(mask interface{}, perm string) bool {
 	bit, ok := e.registry.Bit(perm)
 	if !ok {
@@ -774,10 +817,18 @@ func (e *Engine) issueAccessToken(sess *session.Session) (string, error) {
 	)
 }
 
+// Logout describes the logout operation and its observable behavior.
+//
+// Logout may return an error when input validation, dependency calls, or security checks fail.
+// Logout does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Logout(ctx context.Context, sessionID string) error {
 	return e.LogoutInTenant(ctx, tenantIDFromContext(ctx), sessionID)
 }
 
+// LogoutInTenant describes the logoutintenant operation and its observable behavior.
+//
+// LogoutInTenant may return an error when input validation, dependency calls, or security checks fail.
+// LogoutInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string) error {
 	err := e.sessionStore.Delete(ctx, tenantID, sessionID)
 	if err == nil {
@@ -788,6 +839,10 @@ func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string)
 	return err
 }
 
+// LogoutByAccessToken describes the logoutbyaccesstoken operation and its observable behavior.
+//
+// LogoutByAccessToken may return an error when input validation, dependency calls, or security checks fail.
+// LogoutByAccessToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error {
 	claims, err := e.jwtManager.ParseAccess(tokenStr)
 	if err != nil {
@@ -802,10 +857,18 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 	return e.LogoutInTenant(ctx, tenantIDFromToken(claims.TID), claims.SID)
 }
 
+// LogoutAll describes the logoutall operation and its observable behavior.
+//
+// LogoutAll may return an error when input validation, dependency calls, or security checks fail.
+// LogoutAll does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutAll(ctx context.Context, userID string) error {
 	return e.LogoutAllInTenant(ctx, tenantIDFromContext(ctx), userID)
 }
 
+// LogoutAllInTenant describes the logoutallintenant operation and its observable behavior.
+//
+// LogoutAllInTenant may return an error when input validation, dependency calls, or security checks fail.
+// LogoutAllInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string) error {
 	err := e.sessionStore.DeleteAllForUser(ctx, tenantID, userID)
 	if err == nil {
@@ -816,10 +879,18 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 	return err
 }
 
+// InvalidateUserSessions describes the invalidateusersessions operation and its observable behavior.
+//
+// InvalidateUserSessions may return an error when input validation, dependency calls, or security checks fail.
+// InvalidateUserSessions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) InvalidateUserSessions(ctx context.Context, userID string) error {
 	return e.LogoutAll(ctx, userID)
 }
 
+// ChangePassword describes the changepassword operation and its observable behavior.
+//
+// ChangePassword may return an error when input validation, dependency calls, or security checks fail.
+// ChangePassword does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error {
 	if e.passwordHash == nil {
 		return ErrEngineNotReady

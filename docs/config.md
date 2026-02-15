@@ -1,0 +1,48 @@
+# `config.go`
+
+## 1) File Responsibility
+This file belongs to package `goAuth` and implements part of the goAuth authentication stack. It exists to encapsulate the concerns represented by `config.go` and keep hot-path auth logic modular.
+
+## 2) Exported API in This File
+- `Config`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `JWTConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `SessionConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `PasswordConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `ResetStrategyType`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `PasswordResetConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `VerificationStrategyType`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `EmailVerificationConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `AccountConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `AuditConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `MetricsConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `SecurityConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `SessionHardeningConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `DeviceBindingConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `TOTPConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `MultiTenantConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `DatabaseConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `PermissionConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `CacheConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `ResultConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `ValidationMode`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `RouteMode`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+
+## 3) Internal Interactions
+- Depends on imports such as: errors, math, net/http, strings, time.
+- Is consumed by higher-level Engine flows through package-level integration.
+- Typical flow: caller entrypoint → validation/normalization → security checks → storage/crypto operation → result mapping.
+
+## 4) Concurrency Behavior
+- Read-only helpers are goroutine-safe.
+- Mutating operations are expected to run against receiver-managed synchronization or external datastore atomicity.
+- Initialization-time configuration should be treated as immutable after Engine/Builder construction.
+
+## 5) Performance Characteristics
+- Designed to avoid database round-trips in request hot paths where possible.
+- Uses fixed-width masks and bounded token/session structures to control allocations.
+- Any Redis/network access is explicit in method behavior and should be budgeted by callers.
+
+## 6) Security Implications
+- Enforces fail-closed behavior for validation failures and malformed inputs.
+- Security-sensitive comparisons and token handling rely on cryptographic primitives defined in source.
+- Does not protect callers that bypass required verification sequencing.

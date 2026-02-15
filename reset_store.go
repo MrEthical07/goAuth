@@ -49,6 +49,10 @@ func (s *passwordResetStore) key(tenantID, resetID string) string {
 	return s.prefix + ":" + normalizeResetTenantID(tenantID) + ":" + resetID
 }
 
+// Save describes the save operation and its observable behavior.
+//
+// Save may return an error when input validation, dependency calls, or security checks fail.
+// Save does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *passwordResetStore) Save(
 	ctx context.Context,
 	tenantID, resetID string,
@@ -67,6 +71,10 @@ func (s *passwordResetStore) Save(
 	return nil
 }
 
+// Consume describes the consume operation and its observable behavior.
+//
+// Consume may return an error when input validation, dependency calls, or security checks fail.
+// Consume does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *passwordResetStore) Consume(
 	ctx context.Context,
 	tenantID, resetID string,
@@ -184,6 +192,10 @@ func (s *passwordResetStore) Consume(
 	return nil, errResetNotFound
 }
 
+// Get describes the get operation and its observable behavior.
+//
+// Get may return an error when input validation, dependency calls, or security checks fail.
+// Get does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *passwordResetStore) Get(ctx context.Context, tenantID, resetID string) (*passwordResetRecord, error) {
 	data, err := s.redis.Get(ctx, s.key(tenantID, resetID)).Bytes()
 	if err != nil {

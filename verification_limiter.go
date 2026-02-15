@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	errVerificationRateLimited      = errors.New("verification rate limited")
+	errVerificationRateLimited        = errors.New("verification rate limited")
 	errVerificationLimiterUnavailable = errors.New("verification limiter unavailable")
 )
 
@@ -25,6 +25,10 @@ func newEmailVerificationLimiter(redisClient *redis.Client, cfg EmailVerificatio
 	}
 }
 
+// CheckRequest describes the checkrequest operation and its observable behavior.
+//
+// CheckRequest may return an error when input validation, dependency calls, or security checks fail.
+// CheckRequest does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *emailVerificationLimiter) CheckRequest(ctx context.Context, tenantID, identifier, ip string) error {
 	if l.config.EnableIdentifierThrottle {
 		if err := l.enforceFixedWindow(ctx, verificationRequestIdentifierKey(tenantID, identifier)); err != nil {
@@ -39,6 +43,10 @@ func (l *emailVerificationLimiter) CheckRequest(ctx context.Context, tenantID, i
 	return nil
 }
 
+// CheckConfirm describes the checkconfirm operation and its observable behavior.
+//
+// CheckConfirm may return an error when input validation, dependency calls, or security checks fail.
+// CheckConfirm does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *emailVerificationLimiter) CheckConfirm(ctx context.Context, tenantID, verificationID, ip string) error {
 	if l.config.EnableIdentifierThrottle {
 		if err := l.enforceFixedWindow(ctx, verificationConfirmIdentifierKey(tenantID, verificationID)); err != nil {

@@ -11,14 +11,26 @@ import (
 	"github.com/MrEthical07/goAuth/session"
 )
 
+// LoginWithResult describes the loginwithresult operation and its observable behavior.
+//
+// LoginWithResult may return an error when input validation, dependency calls, or security checks fail.
+// LoginWithResult does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LoginWithResult(ctx context.Context, username, password string) (*LoginResult, error) {
 	return e.loginWithResultInternal(ctx, username, password)
 }
 
+// ConfirmLoginMFA describes the confirmloginmfa operation and its observable behavior.
+//
+// ConfirmLoginMFA may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmLoginMFA does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmLoginMFA(ctx context.Context, challengeID, code string) (*LoginResult, error) {
 	return e.ConfirmLoginMFAWithType(ctx, challengeID, code, "totp")
 }
 
+// ConfirmLoginMFAWithType describes the confirmloginmfawithtype operation and its observable behavior.
+//
+// ConfirmLoginMFAWithType may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmLoginMFAWithType does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType string) (*LoginResult, error) {
 	if !e.config.TOTP.Enabled || !e.config.TOTP.RequireForLogin {
 		return nil, ErrTOTPFeatureDisabled

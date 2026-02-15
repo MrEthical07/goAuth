@@ -6,6 +6,10 @@ import (
 	"errors"
 )
 
+// EncodeMask describes the encodemask operation and its observable behavior.
+//
+// EncodeMask may return an error when input validation, dependency calls, or security checks fail.
+// EncodeMask does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func EncodeMask(mask interface{}) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
@@ -36,6 +40,10 @@ func EncodeMask(mask interface{}) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// DecodeMask describes the decodemask operation and its observable behavior.
+//
+// DecodeMask may return an error when input validation, dependency calls, or security checks fail.
+// DecodeMask does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func DecodeMask(data []byte) (interface{}, error) {
 	switch len(data) {
 	case 8:
