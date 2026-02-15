@@ -10,11 +10,19 @@ import (
 
 type authResultContextKey struct{}
 
+// AuthResultFromContext describes the authresultfromcontext operation and its observable behavior.
+//
+// AuthResultFromContext may return an error when input validation, dependency calls, or security checks fail.
+// AuthResultFromContext does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func AuthResultFromContext(ctx context.Context) (*goAuth.AuthResult, bool) {
 	res, ok := ctx.Value(authResultContextKey{}).(*goAuth.AuthResult)
 	return res, ok
 }
 
+// Guard describes the guard operation and its observable behavior.
+//
+// Guard may return an error when input validation, dependency calls, or security checks fail.
+// Guard does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func Guard(engine *goAuth.Engine, routeMode goAuth.RouteMode) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

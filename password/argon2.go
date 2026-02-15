@@ -23,6 +23,9 @@ const (
 	algorithmID           = "argon2id"
 )
 
+// Config defines a public type used by goAuth APIs.
+//
+// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Config struct {
 	Memory      uint32
 	Time        uint32
@@ -31,6 +34,9 @@ type Config struct {
 	KeyLength   uint32
 }
 
+// Argon2 defines a public type used by goAuth APIs.
+//
+// Argon2 instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Argon2 struct {
 	config Config
 }
@@ -44,6 +50,10 @@ type parsedPHC struct {
 	keyLength   uint32
 }
 
+// NewArgon2 describes the newargon2 operation and its observable behavior.
+//
+// NewArgon2 may return an error when input validation, dependency calls, or security checks fail.
+// NewArgon2 does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func NewArgon2(cfg Config) (*Argon2, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
@@ -52,6 +62,10 @@ func NewArgon2(cfg Config) (*Argon2, error) {
 	return &Argon2{config: cfg}, nil
 }
 
+// Hash describes the hash operation and its observable behavior.
+//
+// Hash may return an error when input validation, dependency calls, or security checks fail.
+// Hash does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (a *Argon2) Hash(password string) (string, error) {
 	// Password processing uses raw string bytes exactly as provided (no Unicode normalization).
 	if len(password) < minPassBytes {
@@ -87,6 +101,10 @@ func (a *Argon2) Hash(password string) (string, error) {
 	), nil
 }
 
+// Verify describes the verify operation and its observable behavior.
+//
+// Verify may return an error when input validation, dependency calls, or security checks fail.
+// Verify does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (a *Argon2) Verify(password string, encodedHash string) (bool, error) {
 	parsed, err := parsePHC(encodedHash)
 	if err != nil {
@@ -105,6 +123,10 @@ func (a *Argon2) Verify(password string, encodedHash string) (bool, error) {
 	return subtle.ConstantTimeCompare(computed, parsed.hash) == 1, nil
 }
 
+// NeedsUpgrade describes the needsupgrade operation and its observable behavior.
+//
+// NeedsUpgrade may return an error when input validation, dependency calls, or security checks fail.
+// NeedsUpgrade does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (a *Argon2) NeedsUpgrade(encodedHash string) (bool, error) {
 	parsed, err := parsePHC(encodedHash)
 	if err != nil {

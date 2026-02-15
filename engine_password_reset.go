@@ -14,6 +14,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// RequestPasswordReset describes the requestpasswordreset operation and its observable behavior.
+//
+// RequestPasswordReset may return an error when input validation, dependency calls, or security checks fail.
+// RequestPasswordReset does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {
 	if !e.config.PasswordReset.Enabled {
 		e.emitAudit(ctx, auditEventPasswordResetRequest, false, "", tenantIDFromContext(ctx), "", ErrPasswordResetDisabled, nil)
@@ -125,18 +129,34 @@ func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (s
 	return challenge, nil
 }
 
+// ConfirmPasswordReset describes the confirmpasswordreset operation and its observable behavior.
+//
+// ConfirmPasswordReset may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmPasswordReset does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmPasswordReset(ctx context.Context, challenge, newPassword string) error {
 	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", "")
 }
 
+// ConfirmPasswordResetWithTOTP describes the confirmpasswordresetwithtotp operation and its observable behavior.
+//
+// ConfirmPasswordResetWithTOTP may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmPasswordResetWithTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmPasswordResetWithTOTP(ctx context.Context, challenge, newPassword, totpCode string) error {
 	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", totpCode)
 }
 
+// ConfirmPasswordResetWithBackupCode describes the confirmpasswordresetwithbackupcode operation and its observable behavior.
+//
+// ConfirmPasswordResetWithBackupCode may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmPasswordResetWithBackupCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmPasswordResetWithBackupCode(ctx context.Context, challenge, newPassword, backupCode string) error {
 	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "backup", backupCode)
 }
 
+// ConfirmPasswordResetWithMFA describes the confirmpasswordresetwithmfa operation and its observable behavior.
+//
+// ConfirmPasswordResetWithMFA may return an error when input validation, dependency calls, or security checks fail.
+// ConfirmPasswordResetWithMFA does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword, mfaType, mfaCode string) error {
 	if !e.config.PasswordReset.Enabled {
 		e.metricInc(MetricPasswordResetConfirmFailure)

@@ -27,6 +27,10 @@ type HealthStatus struct {
 	RedisLatency   time.Duration
 }
 
+// GetActiveSessionCount describes the getactivesessioncount operation and its observable behavior.
+//
+// GetActiveSessionCount may return an error when input validation, dependency calls, or security checks fail.
+// GetActiveSessionCount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int, error) {
 	if e == nil || e.sessionStore == nil {
 		return 0, ErrEngineNotReady
@@ -43,6 +47,10 @@ func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int,
 	return e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
 }
 
+// ListActiveSessions describes the listactivesessions operation and its observable behavior.
+//
+// ListActiveSessions may return an error when input validation, dependency calls, or security checks fail.
+// ListActiveSessions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]SessionInfo, error) {
 	if e == nil || e.sessionStore == nil {
 		return nil, ErrEngineNotReady
@@ -74,6 +82,10 @@ func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]Sessi
 	return out, nil
 }
 
+// GetSessionInfo describes the getsessioninfo operation and its observable behavior.
+//
+// GetSessionInfo may return an error when input validation, dependency calls, or security checks fail.
+// GetSessionInfo does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string) (*SessionInfo, error) {
 	if e == nil || e.sessionStore == nil {
 		return nil, ErrEngineNotReady
@@ -99,6 +111,10 @@ func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string)
 	return &info, nil
 }
 
+// ActiveSessionEstimate describes the activesessionestimate operation and its observable behavior.
+//
+// ActiveSessionEstimate may return an error when input validation, dependency calls, or security checks fail.
+// ActiveSessionEstimate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
 	if e == nil || e.sessionStore == nil {
 		return 0, ErrEngineNotReady
@@ -112,6 +128,10 @@ func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
 	return e.sessionStore.EstimateActiveSessions(ctx, tenantID)
 }
 
+// Health describes the health operation and its observable behavior.
+//
+// Health may return an error when input validation, dependency calls, or security checks fail.
+// Health does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Health(ctx context.Context) HealthStatus {
 	if e == nil || e.sessionStore == nil {
 		return HealthStatus{}
@@ -124,6 +144,10 @@ func (e *Engine) Health(ctx context.Context) HealthStatus {
 	}
 }
 
+// GetLoginAttempts describes the getloginattempts operation and its observable behavior.
+//
+// GetLoginAttempts may return an error when input validation, dependency calls, or security checks fail.
+// GetLoginAttempts does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetLoginAttempts(ctx context.Context, identifier string) (int, error) {
 	if e == nil || e.rateLimiter == nil {
 		return 0, ErrEngineNotReady

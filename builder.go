@@ -11,6 +11,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Builder defines a public type used by goAuth APIs.
+//
+// Builder instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Builder struct {
 	config Config
 	redis  *redis.Client
@@ -24,52 +27,92 @@ type Builder struct {
 	built bool
 }
 
+// New describes the new operation and its observable behavior.
+//
+// New may return an error when input validation, dependency calls, or security checks fail.
+// New does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func New() *Builder {
 	return &Builder{
 		config: defaultConfig(),
 	}
 }
 
+// WithConfig describes the withconfig operation and its observable behavior.
+//
+// WithConfig may return an error when input validation, dependency calls, or security checks fail.
+// WithConfig does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithConfig(cfg Config) *Builder {
 	b.config = cloneConfig(cfg)
 	return b
 }
 
+// WithRedis describes the withredis operation and its observable behavior.
+//
+// WithRedis may return an error when input validation, dependency calls, or security checks fail.
+// WithRedis does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithRedis(client *redis.Client) *Builder {
 	b.redis = client
 	return b
 }
 
+// WithPermissions describes the withpermissions operation and its observable behavior.
+//
+// WithPermissions may return an error when input validation, dependency calls, or security checks fail.
+// WithPermissions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithPermissions(perms []string) *Builder {
 	b.permissions = perms
 	return b
 }
 
+// WithRoles describes the withroles operation and its observable behavior.
+//
+// WithRoles may return an error when input validation, dependency calls, or security checks fail.
+// WithRoles does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithRoles(r map[string][]string) *Builder {
 	b.roles = r
 	return b
 }
 
+// WithUserProvider describes the withuserprovider operation and its observable behavior.
+//
+// WithUserProvider may return an error when input validation, dependency calls, or security checks fail.
+// WithUserProvider does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithUserProvider(up UserProvider) *Builder {
 	b.userProvider = up
 	return b
 }
 
+// WithAuditSink describes the withauditsink operation and its observable behavior.
+//
+// WithAuditSink may return an error when input validation, dependency calls, or security checks fail.
+// WithAuditSink does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithAuditSink(sink AuditSink) *Builder {
 	b.auditSink = sink
 	return b
 }
 
+// WithMetricsEnabled describes the withmetricsenabled operation and its observable behavior.
+//
+// WithMetricsEnabled may return an error when input validation, dependency calls, or security checks fail.
+// WithMetricsEnabled does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithMetricsEnabled(enabled bool) *Builder {
 	b.config.Metrics.Enabled = enabled
 	return b
 }
 
+// WithLatencyHistograms describes the withlatencyhistograms operation and its observable behavior.
+//
+// WithLatencyHistograms may return an error when input validation, dependency calls, or security checks fail.
+// WithLatencyHistograms does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) WithLatencyHistograms(enabled bool) *Builder {
 	b.config.Metrics.EnableLatencyHistograms = enabled
 	return b
 }
 
+// Build describes the build operation and its observable behavior.
+//
+// Build may return an error when input validation, dependency calls, or security checks fail.
+// Build does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (b *Builder) Build() (*Engine, error) {
 	if b.built {
 		return nil, errors.New("builder already used")

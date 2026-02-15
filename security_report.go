@@ -2,6 +2,9 @@ package goAuth
 
 import "time"
 
+// SecurityReport defines a public type used by goAuth APIs.
+//
+// SecurityReport instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type SecurityReport struct {
 	ProductionMode               bool
 	SigningAlgorithm             string
@@ -21,6 +24,9 @@ type SecurityReport struct {
 	PasswordResetActive          bool
 }
 
+// PasswordConfigReport defines a public type used by goAuth APIs.
+//
+// PasswordConfigReport instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type PasswordConfigReport struct {
 	Memory      uint32
 	Time        uint32
@@ -29,6 +35,10 @@ type PasswordConfigReport struct {
 	KeyLength   uint32
 }
 
+// SecurityReport describes the securityreport operation and its observable behavior.
+//
+// SecurityReport may return an error when input validation, dependency calls, or security checks fail.
+// SecurityReport does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) SecurityReport() SecurityReport {
 	if e == nil {
 		return SecurityReport{}

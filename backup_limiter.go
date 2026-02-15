@@ -32,6 +32,10 @@ func (l *backupCodeLimiter) key(tenantID, userID string) string {
 	return "abk:" + tenantID + ":" + userID
 }
 
+// Check describes the check operation and its observable behavior.
+//
+// Check may return an error when input validation, dependency calls, or security checks fail.
+// Check does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *backupCodeLimiter) Check(ctx context.Context, tenantID, userID string) error {
 	if l == nil || l.redis == nil {
 		return nil
@@ -49,6 +53,10 @@ func (l *backupCodeLimiter) Check(ctx context.Context, tenantID, userID string) 
 	return nil
 }
 
+// RecordFailure describes the recordfailure operation and its observable behavior.
+//
+// RecordFailure may return an error when input validation, dependency calls, or security checks fail.
+// RecordFailure does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *backupCodeLimiter) RecordFailure(ctx context.Context, tenantID, userID string) error {
 	if l == nil || l.redis == nil {
 		return nil
@@ -68,6 +76,10 @@ func (l *backupCodeLimiter) RecordFailure(ctx context.Context, tenantID, userID 
 	return nil
 }
 
+// Reset describes the reset operation and its observable behavior.
+//
+// Reset may return an error when input validation, dependency calls, or security checks fail.
+// Reset does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *backupCodeLimiter) Reset(ctx context.Context, tenantID, userID string) error {
 	if l == nil || l.redis == nil {
 		return nil

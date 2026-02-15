@@ -9,6 +9,10 @@ import (
 	"github.com/MrEthical07/goAuth/session"
 )
 
+// CreateAccount describes the createaccount operation and its observable behavior.
+//
+// CreateAccount may return an error when input validation, dependency calls, or security checks fail.
+// CreateAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) CreateAccount(ctx context.Context, req CreateAccountRequest) (*CreateAccountResult, error) {
 	if !e.config.Account.Enabled {
 		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantIDFromContext(ctx), "", ErrAccountCreationDisabled, func() map[string]string {

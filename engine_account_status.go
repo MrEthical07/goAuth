@@ -5,6 +5,10 @@ import (
 	"errors"
 )
 
+// DisableAccount describes the disableaccount operation and its observable behavior.
+//
+// DisableAccount may return an error when input validation, dependency calls, or security checks fail.
+// DisableAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) DisableAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountDisabled)
 	if err == nil {
@@ -18,6 +22,10 @@ func (e *Engine) DisableAccount(ctx context.Context, userID string) error {
 	return err
 }
 
+// EnableAccount describes the enableaccount operation and its observable behavior.
+//
+// EnableAccount may return an error when input validation, dependency calls, or security checks fail.
+// EnableAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) EnableAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountActive)
 	e.emitAudit(ctx, auditEventAccountStatusChange, err == nil, userID, tenantIDFromContext(ctx), "", err, func() map[string]string {
@@ -28,6 +36,10 @@ func (e *Engine) EnableAccount(ctx context.Context, userID string) error {
 	return err
 }
 
+// LockAccount describes the lockaccount operation and its observable behavior.
+//
+// LockAccount may return an error when input validation, dependency calls, or security checks fail.
+// LockAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LockAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountLocked)
 	if err == nil {
@@ -41,6 +53,10 @@ func (e *Engine) LockAccount(ctx context.Context, userID string) error {
 	return err
 }
 
+// DeleteAccount describes the deleteaccount operation and its observable behavior.
+//
+// DeleteAccount may return an error when input validation, dependency calls, or security checks fail.
+// DeleteAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) DeleteAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountDeleted)
 	if err == nil {

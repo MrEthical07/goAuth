@@ -25,6 +25,10 @@ func newAccountCreationLimiter(redisClient *redis.Client, cfg AccountConfig) *ac
 	}
 }
 
+// Enforce describes the enforce operation and its observable behavior.
+//
+// Enforce may return an error when input validation, dependency calls, or security checks fail.
+// Enforce does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *accountCreationLimiter) Enforce(ctx context.Context, tenantID, identifier, ip string) error {
 	if l.config.EnableIdentifierThrottle {
 		if err := l.enforceKey(ctx, accountIdentifierKey(tenantID, identifier)); err != nil {

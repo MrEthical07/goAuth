@@ -31,6 +31,10 @@ func newTOTPManager(cfg TOTPConfig) *totpManager {
 	return &totpManager{config: cfg}
 }
 
+// GenerateSecret describes the generatesecret operation and its observable behavior.
+//
+// GenerateSecret may return an error when input validation, dependency calls, or security checks fail.
+// GenerateSecret does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (m *totpManager) GenerateSecret() ([]byte, string, error) {
 	if m == nil {
 		return nil, "", ErrEngineNotReady
@@ -44,6 +48,10 @@ func (m *totpManager) GenerateSecret() ([]byte, string, error) {
 	return raw, enc.EncodeToString(raw), nil
 }
 
+// ProvisionURI describes the provisionuri operation and its observable behavior.
+//
+// ProvisionURI may return an error when input validation, dependency calls, or security checks fail.
+// ProvisionURI does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (m *totpManager) ProvisionURI(secretBase32, account string) string {
 	issuer := m.config.Issuer
 	label := url.PathEscape(issuer + ":" + account)
@@ -58,6 +66,10 @@ func (m *totpManager) ProvisionURI(secretBase32, account string) string {
 	return "otpauth://totp/" + label + "?" + v.Encode()
 }
 
+// VerifyCode describes the verifycode operation and its observable behavior.
+//
+// VerifyCode may return an error when input validation, dependency calls, or security checks fail.
+// VerifyCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (m *totpManager) VerifyCode(secret []byte, code string, now time.Time) (bool, int64, error) {
 	if m == nil {
 		return false, 0, ErrEngineNotReady

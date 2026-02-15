@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// Config defines a public type used by goAuth APIs.
+//
+// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Config struct {
 	JWT               JWTConfig
 	Session           SessionConfig
@@ -35,6 +38,9 @@ JWT CONFIG
 ====================================
 */
 
+// JWTConfig defines a public type used by goAuth APIs.
+//
+// JWTConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type JWTConfig struct {
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration
@@ -49,6 +55,9 @@ SESSION CONFIG
 ====================================
 */
 
+// SessionConfig defines a public type used by goAuth APIs.
+//
+// SessionConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type SessionConfig struct {
 	RedisPrefix             string
 	SlidingExpiration       bool
@@ -65,6 +74,9 @@ PASSWORD CONFIG
 ====================================
 */
 
+// PasswordConfig defines a public type used by goAuth APIs.
+//
+// PasswordConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type PasswordConfig struct {
 	Memory         uint32 // in KB
 	Time           uint32
@@ -74,14 +86,23 @@ type PasswordConfig struct {
 	UpgradeOnLogin bool
 }
 
+// ResetStrategyType defines a public type used by goAuth APIs.
+//
+// ResetStrategyType instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type ResetStrategyType int
 
 const (
+	// ResetToken is an exported constant or variable used by the authentication engine.
 	ResetToken ResetStrategyType = iota
+	// ResetOTP is an exported constant or variable used by the authentication engine.
 	ResetOTP
+	// ResetUUID is an exported constant or variable used by the authentication engine.
 	ResetUUID
 )
 
+// PasswordResetConfig defines a public type used by goAuth APIs.
+//
+// PasswordResetConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type PasswordResetConfig struct {
 	Enabled                  bool
 	Strategy                 ResetStrategyType
@@ -92,14 +113,23 @@ type PasswordResetConfig struct {
 	OTPDigits                int
 }
 
+// VerificationStrategyType defines a public type used by goAuth APIs.
+//
+// VerificationStrategyType instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type VerificationStrategyType int
 
 const (
+	// VerificationToken is an exported constant or variable used by the authentication engine.
 	VerificationToken VerificationStrategyType = iota
+	// VerificationOTP is an exported constant or variable used by the authentication engine.
 	VerificationOTP
+	// VerificationUUID is an exported constant or variable used by the authentication engine.
 	VerificationUUID
 )
 
+// EmailVerificationConfig defines a public type used by goAuth APIs.
+//
+// EmailVerificationConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type EmailVerificationConfig struct {
 	Enabled                  bool
 	Strategy                 VerificationStrategyType
@@ -111,6 +141,9 @@ type EmailVerificationConfig struct {
 	OTPDigits                int
 }
 
+// AccountConfig defines a public type used by goAuth APIs.
+//
+// AccountConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type AccountConfig struct {
 	Enabled                               bool
 	AutoLogin                             bool
@@ -122,12 +155,18 @@ type AccountConfig struct {
 	AllowDuplicateIdentifierAcrossTenants bool
 }
 
+// AuditConfig defines a public type used by goAuth APIs.
+//
+// AuditConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type AuditConfig struct {
 	Enabled    bool
 	BufferSize int
 	DropIfFull bool
 }
 
+// MetricsConfig defines a public type used by goAuth APIs.
+//
+// MetricsConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type MetricsConfig struct {
 	Enabled                 bool
 	EnableLatencyHistograms bool
@@ -139,6 +178,9 @@ SECURITY CONFIG
 ====================================
 */
 
+// SecurityConfig defines a public type used by goAuth APIs.
+//
+// SecurityConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type SecurityConfig struct {
 	ProductionMode               bool
 	EnableIPBinding              bool
@@ -160,6 +202,9 @@ type SecurityConfig struct {
 	EnableAccountVersionCheck    bool
 }
 
+// SessionHardeningConfig defines a public type used by goAuth APIs.
+//
+// SessionHardeningConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type SessionHardeningConfig struct {
 	MaxSessionsPerUser   int
 	MaxSessionsPerTenant int
@@ -169,6 +214,9 @@ type SessionHardeningConfig struct {
 	MaxClockSkew         time.Duration
 }
 
+// DeviceBindingConfig defines a public type used by goAuth APIs.
+//
+// DeviceBindingConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type DeviceBindingConfig struct {
 	Enabled                 bool
 	EnforceIPBinding        bool
@@ -177,6 +225,9 @@ type DeviceBindingConfig struct {
 	DetectUserAgentChange   bool
 }
 
+// TOTPConfig defines a public type used by goAuth APIs.
+//
+// TOTPConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type TOTPConfig struct {
 	Enabled                     bool
 	Issuer                      string
@@ -204,6 +255,9 @@ MULTI TENANT CONFIG
 ====================================
 */
 
+// MultiTenantConfig defines a public type used by goAuth APIs.
+//
+// MultiTenantConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type MultiTenantConfig struct {
 	Enabled          bool
 	TenantHeader     string
@@ -216,6 +270,9 @@ DATABASE CONFIG
 ====================================
 */
 
+// DatabaseConfig defines a public type used by goAuth APIs.
+//
+// DatabaseConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type DatabaseConfig struct {
 	Address                   string
 	Password                  string
@@ -231,6 +288,9 @@ PERMISSION CONFIG
 ====================================
 */
 
+// PermissionConfig defines a public type used by goAuth APIs.
+//
+// PermissionConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type PermissionConfig struct {
 	MaxBits         int  // 64, 128, 256, 512 (hard cap)
 	RootBitReserved bool // if true, highest bit is root/super admin
@@ -242,23 +302,36 @@ CACHE CONFIG
 ====================================
 */
 
+// CacheConfig defines a public type used by goAuth APIs.
+//
+// CacheConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type CacheConfig struct {
 	LRUEnabled bool
 	Size       int
 }
 
+// ResultConfig defines a public type used by goAuth APIs.
+//
+// ResultConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type ResultConfig struct {
 	IncludeRole        bool
 	IncludePermissions bool
 }
 
+// ValidationMode defines a public type used by goAuth APIs.
+//
+// ValidationMode instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type ValidationMode int
 
 const (
+	// ModeInherit is an exported constant or variable used by the authentication engine.
 	ModeInherit ValidationMode = -1
 
+	// ModeJWTOnly is an exported constant or variable used by the authentication engine.
 	ModeJWTOnly ValidationMode = iota
+	// ModeHybrid is an exported constant or variable used by the authentication engine.
 	ModeHybrid
+	// ModeStrict is an exported constant or variable used by the authentication engine.
 	ModeStrict
 )
 
@@ -438,6 +511,10 @@ VALIDATION
 ====================================
 */
 
+// Validate describes the validate operation and its observable behavior.
+//
+// Validate may return an error when input validation, dependency calls, or security checks fail.
+// Validate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (c *Config) Validate() error {
 	// JWT
 	if c.JWT.AccessTTL <= 0 {

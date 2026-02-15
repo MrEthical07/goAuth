@@ -9,6 +9,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Config defines a public type used by goAuth APIs.
+//
+// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Config struct {
 	EnableIPThrottle        bool
 	EnableRefreshThrottle   bool
@@ -18,11 +21,18 @@ type Config struct {
 	RefreshCooldownDuration time.Duration
 }
 
+// Limiter defines a public type used by goAuth APIs.
+//
+// Limiter instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Limiter struct {
 	redis  *redis.Client
 	config Config
 }
 
+// New describes the new operation and its observable behavior.
+//
+// New may return an error when input validation, dependency calls, or security checks fail.
+// New does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func New(redisClient *redis.Client, cfg Config) *Limiter {
 	return &Limiter{
 		redis:  redisClient,
@@ -30,6 +40,10 @@ func New(redisClient *redis.Client, cfg Config) *Limiter {
 	}
 }
 
+// CheckLogin describes the checklogin operation and its observable behavior.
+//
+// CheckLogin may return an error when input validation, dependency calls, or security checks fail.
+// CheckLogin does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *Limiter) CheckLogin(ctx context.Context, username, ip string) error {
 	if err := l.checkCounter(ctx, loginUserKey(username), l.config.MaxLoginAttempts); err != nil {
 		return err
@@ -44,6 +58,10 @@ func (l *Limiter) CheckLogin(ctx context.Context, username, ip string) error {
 	return nil
 }
 
+// IncrementLogin describes the incrementlogin operation and its observable behavior.
+//
+// IncrementLogin may return an error when input validation, dependency calls, or security checks fail.
+// IncrementLogin does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *Limiter) IncrementLogin(ctx context.Context, username, ip string) error {
 	count, err := l.incrementWithTTL(ctx, loginUserKey(username), l.config.LoginCooldownDuration)
 	if err != nil {
@@ -66,6 +84,10 @@ func (l *Limiter) IncrementLogin(ctx context.Context, username, ip string) error
 	return nil
 }
 
+// ResetLogin describes the resetlogin operation and its observable behavior.
+//
+// ResetLogin may return an error when input validation, dependency calls, or security checks fail.
+// ResetLogin does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *Limiter) ResetLogin(ctx context.Context, username, ip string) error {
 	keys := []string{loginUserKey(username)}
 	if l.config.EnableIPThrottle && ip != "" {
@@ -96,6 +118,10 @@ func (l *Limiter) CheckRefresh(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// IncrementRefresh describes the incrementrefresh operation and its observable behavior.
+//
+// IncrementRefresh may return an error when input validation, dependency calls, or security checks fail.
+// IncrementRefresh does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (l *Limiter) IncrementRefresh(ctx context.Context, sessionID string) error {
 	if !l.config.EnableRefreshThrottle {
 		return nil

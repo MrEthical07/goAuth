@@ -47,6 +47,9 @@ const (
 	auditEventBackupCodeFailed           = "backup_code_failed"
 )
 
+// AuditErrorCode defines a public type used by goAuth APIs.
+//
+// AuditErrorCode instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type AuditErrorCode string
 
 const (

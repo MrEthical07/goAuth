@@ -4,18 +4,25 @@ import (
 	goAuth "github.com/MrEthical07/goAuth"
 )
 
+// CounterDef defines a public type used by goAuth APIs.
+//
+// CounterDef instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type CounterDef struct {
 	ID   goAuth.MetricID
 	Name string
 	Help string
 }
 
+// HistogramDef defines a public type used by goAuth APIs.
+//
+// HistogramDef instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type HistogramDef struct {
 	ID   goAuth.MetricID
 	Name string
 	Help string
 }
 
+// CounterDefs is an exported constant or variable used by the authentication engine.
 var CounterDefs = []CounterDef{
 	{ID: goAuth.MetricLoginSuccess, Name: "goauth_login_success_total", Help: "Successful login attempts."},
 	{ID: goAuth.MetricLoginFailure, Name: "goauth_login_failure_total", Help: "Failed login attempts."},
@@ -62,10 +69,12 @@ var CounterDefs = []CounterDef{
 	{ID: goAuth.MetricAccountDeleted, Name: "goauth_account_deleted_total", Help: "Account delete operations."},
 }
 
+// HistogramDefs is an exported constant or variable used by the authentication engine.
 var HistogramDefs = []HistogramDef{
 	{ID: goAuth.MetricValidateLatency, Name: "goauth_validate_latency_seconds", Help: "Validate latency histogram."},
 }
 
+// HistogramBounds is an exported constant or variable used by the authentication engine.
 var HistogramBounds = []string{
 	"0.005",
 	"0.01",
@@ -77,6 +86,7 @@ var HistogramBounds = []string{
 	"+Inf",
 }
 
+// HistogramBoundSuffix is an exported constant or variable used by the authentication engine.
 var HistogramBoundSuffix = []string{
 	"0_005",
 	"0_01",
@@ -88,6 +98,10 @@ var HistogramBoundSuffix = []string{
 	"inf",
 }
 
+// NormalizeBuckets describes the normalizebuckets operation and its observable behavior.
+//
+// NormalizeBuckets may return an error when input validation, dependency calls, or security checks fail.
+// NormalizeBuckets does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func NormalizeBuckets(raw []uint64) [8]uint64 {
 	var out [8]uint64
 	for i := 0; i < len(out) && i < len(raw); i++ {
@@ -96,6 +110,10 @@ func NormalizeBuckets(raw []uint64) [8]uint64 {
 	return out
 }
 
+// CumulativeBuckets describes the cumulativebuckets operation and its observable behavior.
+//
+// CumulativeBuckets may return an error when input validation, dependency calls, or security checks fail.
+// CumulativeBuckets does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func CumulativeBuckets(raw [8]uint64) [8]uint64 {
 	var out [8]uint64
 	var running uint64

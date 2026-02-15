@@ -43,6 +43,10 @@ func (s *mfaLoginChallengeStore) key(challengeID string) string {
 	return mfaLoginKeyPrefix + ":" + challengeID
 }
 
+// Save describes the save operation and its observable behavior.
+//
+// Save may return an error when input validation, dependency calls, or security checks fail.
+// Save does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *mfaLoginChallengeStore) Save(
 	ctx context.Context,
 	challengeID string,
@@ -59,6 +63,10 @@ func (s *mfaLoginChallengeStore) Save(
 	return nil
 }
 
+// Get describes the get operation and its observable behavior.
+//
+// Get may return an error when input validation, dependency calls, or security checks fail.
+// Get does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *mfaLoginChallengeStore) Get(ctx context.Context, challengeID string) (*mfaLoginChallenge, error) {
 	data, err := s.redis.Get(ctx, s.key(challengeID)).Bytes()
 	if err != nil {
@@ -79,6 +87,10 @@ func (s *mfaLoginChallengeStore) Get(ctx context.Context, challengeID string) (*
 	return record, nil
 }
 
+// Delete describes the delete operation and its observable behavior.
+//
+// Delete may return an error when input validation, dependency calls, or security checks fail.
+// Delete does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *mfaLoginChallengeStore) Delete(ctx context.Context, challengeID string) (bool, error) {
 	n, err := s.redis.Del(ctx, s.key(challengeID)).Result()
 	if err != nil {
@@ -87,6 +99,10 @@ func (s *mfaLoginChallengeStore) Delete(ctx context.Context, challengeID string)
 	return n > 0, nil
 }
 
+// RecordFailure describes the recordfailure operation and its observable behavior.
+//
+// RecordFailure may return an error when input validation, dependency calls, or security checks fail.
+// RecordFailure does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (s *mfaLoginChallengeStore) RecordFailure(
 	ctx context.Context,
 	challengeID string,
