@@ -1,7 +1,9 @@
 package jwt
 
 import (
+	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -27,6 +29,11 @@ type Config struct {
 	SigningMethod SigningMethod
 	PrivateKey    []byte
 	PublicKey     []byte
+	Issuer        string
+	Audience      string
+	Leeway        time.Duration
+	KeyID         string
+	VerifyKeys    map[string][]byte
 }
 
 // Manager defines a public type used by goAuth APIs.
@@ -96,7 +103,11 @@ func (j *Manager) CreateAccess(
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    j.config.Issuer,
 		},
+	}
+	if j.config.Audience != "" {
+		claims.Audience = jwt.ClaimStrings{j.config.Audience}
 	}
 
 	if includeMask {
@@ -114,6 +125,9 @@ func (j *Manager) CreateAccess(
 	}
 
 	token := jwt.NewWithClaims(j.getMethod(), claims)
+	if j.config.KeyID != "" {
+		token.Header["kid"] = j.config.KeyID
+	}
 
 	return token.SignedString(j.getSignKey())
 }
@@ -123,7 +137,40 @@ func (j *Manager) CreateAccess(
 // ParseAccess may return an error when input validation, dependency calls, or security checks fail.
 // ParseAccess does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (j *Manager) ParseAccess(tokenStr string) (*AccessClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenStr, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
+	options := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{j.getMethod().Alg()}),
+	}
+	if j.config.Leeway > 0 {
+		options = append(options, jwt.WithLeeway(j.config.Leeway))
+	}
+	if j.config.Issuer != "" {
+		options = append(options, jwt.WithIssuer(j.config.Issuer))
+	}
+	if j.config.Audience != "" {
+		options = append(options, jwt.WithAudience(j.config.Audience))
+	}
+
+	parser := jwt.NewParser(options...)
+	token, err := parser.ParseWithClaims(tokenStr, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
+		if t.Method.Alg() != j.getMethod().Alg() {
+			return nil, fmt.Errorf("unexpected signing algorithm: %s", t.Method.Alg())
+		}
+
+		if len(j.config.VerifyKeys) > 0 {
+			kid, _ := t.Header["kid"].(string)
+			if kid == "" {
+				return nil, errors.New("missing kid")
+			}
+			key, ok := j.config.VerifyKeys[kid]
+			if !ok {
+				return nil, errors.New("unknown kid")
+			}
+			if j.config.SigningMethod == MethodEd25519 {
+				return ed25519.PublicKey(key), nil
+			}
+			return key, nil
+		}
+
 		return j.getVerifyKey(), nil
 	})
 	if err != nil {
@@ -152,7 +199,7 @@ func (j *Manager) getSignKey() interface{} {
 	case MethodHS256:
 		return j.config.PrivateKey
 	default:
-		return j.config.PrivateKey
+		return ed25519.PrivateKey(j.config.PrivateKey)
 	}
 }
 
@@ -161,6 +208,6 @@ func (j *Manager) getVerifyKey() interface{} {
 	case MethodHS256:
 		return j.config.PrivateKey
 	default:
-		return j.config.PublicKey
+		return ed25519.PublicKey(j.config.PublicKey)
 	}
 }

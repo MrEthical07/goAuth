@@ -2,6 +2,8 @@ package goAuth
 
 import (
 	"errors"
+	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -29,6 +31,7 @@ type Config struct {
 	Permission        PermissionConfig
 	Cache             CacheConfig
 	Result            ResultConfig
+	Logger            *slog.Logger
 	ValidationMode    ValidationMode
 }
 
@@ -47,6 +50,10 @@ type JWTConfig struct {
 	SigningMethod string // "ed25519" (default), "hs256" optional
 	PrivateKey    []byte
 	PublicKey     []byte
+	Issuer        string
+	Audience      string
+	Leeway        time.Duration
+	KeyID         string
 }
 
 /*
@@ -351,6 +358,7 @@ func defaultConfig() Config {
 			AccessTTL:     5 * time.Minute,
 			RefreshTTL:    7 * 24 * time.Hour,
 			SigningMethod: "ed25519",
+			Leeway:        30 * time.Second,
 		},
 		Session: SessionConfig{
 			RedisPrefix:             "as",
@@ -485,6 +493,7 @@ func defaultConfig() Config {
 			IncludeRole:        true,
 			IncludePermissions: false,
 		},
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ValidationMode: ModeHybrid,
 	}
 }
@@ -536,6 +545,12 @@ func (c *Config) Validate() error {
 	}
 	if c.JWT.SigningMethod == "hs256" && len(c.JWT.PrivateKey) == 0 {
 		return errors.New("hs256 requires PrivateKey")
+	}
+	if c.JWT.Leeway < 0 {
+		return errors.New("JWT Leeway must be >= 0")
+	}
+	if c.JWT.Leeway > 2*time.Minute {
+		return errors.New("JWT Leeway must be <= 2m")
 	}
 
 	// Session

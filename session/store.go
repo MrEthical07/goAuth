@@ -21,6 +21,57 @@ var ErrRedisUnavailable = errors.New("redis unavailable")
 
 const minSlidingTTL = time.Second
 
+const deleteSessionScript = `
+local existed = redis.call("EXISTS", KEYS[1])
+redis.call("SREM", KEYS[2], ARGV[1])
+if existed == 1 then
+  redis.call("DEL", KEYS[1])
+  local count = tonumber(redis.call("GET", KEYS[3]) or "0")
+  if count > 1 then
+    redis.call("DECR", KEYS[3])
+  elseif count == 1 then
+    redis.call("DEL", KEYS[3])
+  end
+end
+return existed
+`
+
+const rotateRefreshScript = `
+local current = redis.call("GET", KEYS[1])
+if not current then
+  return 0
+end
+
+if current ~= ARGV[2] then
+  redis.call("DEL", KEYS[1])
+  redis.call("SREM", KEYS[2], ARGV[1])
+  local count = tonumber(redis.call("GET", KEYS[3]) or "0")
+  if count > 1 then
+    redis.call("DECR", KEYS[3])
+  elseif count == 1 then
+    redis.call("DEL", KEYS[3])
+  end
+  return -1
+end
+
+local ttl = tonumber(ARGV[4])
+if ttl == nil or ttl <= 0 then
+  redis.call("DEL", KEYS[1])
+  redis.call("SREM", KEYS[2], ARGV[1])
+  local count = tonumber(redis.call("GET", KEYS[3]) or "0")
+  if count > 1 then
+    redis.call("DECR", KEYS[3])
+  elseif count == 1 then
+    redis.call("DEL", KEYS[3])
+  end
+  return 0
+end
+
+redis.call("SET", KEYS[1], ARGV[3], "PX", ttl)
+redis.call("SADD", KEYS[2], ARGV[1])
+return 1
+`
+
 // Store defines a public type used by goAuth APIs.
 //
 // Store instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
@@ -513,89 +564,57 @@ func (s *Store) RotateRefreshHash(
 	nextHash [32]byte,
 ) (*Session, error) {
 	key := s.key(tenantID, sessionID)
-	var updated *Session
-
-	err := s.redis.Watch(ctx, func(tx *redis.Tx) error {
-		data, err := tx.Get(ctx, key).Bytes()
-		if err != nil {
-			return err
-		}
-
-		sess, err := Decode(data)
-		if err != nil {
-			return err
-		}
-		sess.SessionID = sessionID
-
-		userKey := s.userKey(sess.TenantID, sess.UserID)
-
-		if time.Now().Unix() > sess.ExpiresAt {
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Del(ctx, key)
-				pipe.SRem(ctx, userKey, sessionID)
-				pipe.Decr(ctx, s.tenantCountKey(sess.TenantID))
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			return redis.Nil
-		}
-
-		if subtle.ConstantTimeCompare(sess.RefreshHash[:], providedHash[:]) != 1 {
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Del(ctx, key)
-				pipe.SRem(ctx, userKey, sessionID)
-				pipe.Decr(ctx, s.tenantCountKey(sess.TenantID))
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			return ErrRefreshHashMismatch
-		}
-
-		sess.RefreshHash = nextHash
-		ttl := time.Until(time.Unix(sess.ExpiresAt, 0))
-		if ttl <= 0 {
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Del(ctx, key)
-				pipe.SRem(ctx, userKey, sessionID)
-				pipe.Decr(ctx, s.tenantCountKey(sess.TenantID))
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-			return redis.Nil
-		}
-
-		encoded, err := Encode(sess)
-		if err != nil {
-			return err
-		}
-
-		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Set(ctx, key, encoded, ttl)
-			pipe.SAdd(ctx, userKey, sessionID)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-
-		updated = sess
-		return nil
-	}, key)
-
+	data, err := s.redis.Get(ctx, key).Bytes()
 	if err != nil {
-		if errors.Is(err, redis.Nil) || errors.Is(err, ErrRefreshHashMismatch) {
-			return nil, err
+		if errors.Is(err, redis.Nil) {
+			return nil, redis.Nil
 		}
 		return nil, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 
-	return updated, nil
+	sess, err := Decode(data)
+	if err != nil {
+		return nil, err
+	}
+	sess.SessionID = sessionID
+	userKey := s.userKey(sess.TenantID, sess.UserID)
+	countKey := s.tenantCountKey(sess.TenantID)
+
+	if subtle.ConstantTimeCompare(sess.RefreshHash[:], providedHash[:]) != 1 {
+		if err := s.deleteSessionAndIndex(ctx, sess.TenantID, sess.UserID, sessionID); err != nil {
+			return nil, err
+		}
+		return nil, ErrRefreshHashMismatch
+	}
+
+	sess.RefreshHash = nextHash
+	ttl := time.Until(time.Unix(sess.ExpiresAt, 0))
+	encoded, err := Encode(sess)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.redis.Eval(
+		ctx,
+		rotateRefreshScript,
+		[]string{key, userKey, countKey},
+		sessionID,
+		data,
+		encoded,
+		ttl.Milliseconds(),
+	).Int()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+
+	switch result {
+	case 1:
+		return sess, nil
+	case -1:
+		return nil, ErrRefreshHashMismatch
+	default:
+		return nil, redis.Nil
+	}
 }
 
 func (s *Store) deleteSessionAndIndex(ctx context.Context, tenantID, userID, sessionID string) error {
@@ -603,12 +622,7 @@ func (s *Store) deleteSessionAndIndex(ctx context.Context, tenantID, userID, ses
 	userKey := s.userKey(tenantID, userID)
 	countKey := s.tenantCountKey(tenantID)
 
-	_, err := s.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.Del(ctx, key)
-		pipe.SRem(ctx, userKey, sessionID)
-		pipe.Decr(ctx, countKey)
-		return nil
-	})
+	_, err := s.redis.Eval(ctx, deleteSessionScript, []string{key, userKey, countKey}, sessionID).Result()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}

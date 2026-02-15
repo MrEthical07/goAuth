@@ -3,7 +3,7 @@ package goAuth
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -39,6 +39,7 @@ type Engine struct {
 	totp                *totpManager
 	jwtManager          *jwt.Manager
 	userProvider        UserProvider
+	logger              *slog.Logger
 }
 
 // Close describes the close operation and its observable behavior.
@@ -84,6 +85,13 @@ func (e *Engine) metricInc(id MetricID) {
 		return
 	}
 	e.metrics.Inc(id)
+}
+
+func (e *Engine) warn(msg string, args ...any) {
+	if e == nil || e.logger == nil {
+		return
+	}
+	e.logger.Warn(msg, args...)
 }
 
 // Login describes the login operation and its observable behavior.
@@ -302,10 +310,10 @@ func (e *Engine) loginInternal(ctx context.Context, username, password, totpCode
 			if upgradedHash, err := e.passwordHash.Hash(password); err == nil {
 				// Rehash update is best-effort and must not block successful login.
 				if err := e.userProvider.UpdatePasswordHash(user.UserID, upgradedHash); err != nil {
-					log.Print("goAuth: password hash upgrade update failed")
+					e.warn("goAuth: password hash upgrade update failed")
 				}
 			} else {
-				log.Print("goAuth: password hash upgrade generation failed")
+				e.warn("goAuth: password hash upgrade generation failed")
 			}
 		}
 	}
@@ -546,7 +554,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 			e.metricInc(MetricSessionInvalidated)
 			if e.config.SessionHardening.EnableReplayTracking {
 				if trackErr := e.sessionStore.TrackReplayAnomaly(ctx, sessionID, e.sessionLifetime()); trackErr != nil {
-					log.Print("goAuth: replay anomaly tracking failed")
+					e.warn("goAuth: replay anomaly tracking failed")
 				}
 			}
 			e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", tenantID, sessionID, ErrRefreshReuse, nil)
@@ -961,7 +969,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 	}
 
 	if err := e.LogoutAllInTenant(ctx, invalidateTenant, userID); err != nil {
-		log.Print("goAuth: session invalidation failed after password change")
+		e.warn("goAuth: session invalidation failed after password change")
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, invalidateTenant, "", ErrSessionInvalidationFailed, func() map[string]string {
 			return map[string]string{
 				"reason": "session_invalidation_failed",
@@ -977,7 +985,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		}
 		// Limiter reset is best-effort and must not block successful password change.
 		if err := e.rateLimiter.ResetLogin(ctx, identifier, clientIPFromContext(ctx)); err != nil {
-			log.Print("goAuth: login limiter reset failed after password change")
+			e.warn("goAuth: login limiter reset failed after password change")
 		}
 	}
 
@@ -1087,7 +1095,7 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 			if scanErr == nil {
 				tenantSessions = actual
 				if setErr := e.sessionStore.SetTenantSessionCount(ctx, tenantID, actual); setErr != nil {
-					log.Print("goAuth: tenant session counter reconciliation failed")
+					e.warn("goAuth: tenant session counter reconciliation failed")
 				}
 			}
 		}
