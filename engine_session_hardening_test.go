@@ -176,12 +176,13 @@ func TestSessionHardeningClockSkewRejectsFarFutureToken(t *testing.T) {
 	cfg.ValidationMode = ModeJWTOnly
 	cfg.Security.EnableAccountVersionCheck = false
 	cfg.SessionHardening.MaxClockSkew = 30 * time.Second
+	cfg.JWT.Leeway = 2 * time.Minute
 	up := newHardeningUserProvider(t)
 
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
-	token, err := signManualAccessTokenHS256(cfg.JWT.PrivateKey, time.Now().Add(2*time.Minute), time.Now().Add(10*time.Minute))
+	token, err := signManualAccessTokenHS256(cfg.JWT.PrivateKey, time.Now().Add(90*time.Second), time.Now().Add(10*time.Minute))
 	if err != nil {
 		t.Fatalf("sign token failed: %v", err)
 	}
@@ -196,6 +197,7 @@ func TestSessionHardeningClockSkewAcceptsWithinTolerance(t *testing.T) {
 	cfg.ValidationMode = ModeJWTOnly
 	cfg.Security.EnableAccountVersionCheck = false
 	cfg.SessionHardening.MaxClockSkew = 30 * time.Second
+	cfg.JWT.Leeway = 2 * time.Minute
 	up := newHardeningUserProvider(t)
 
 	engine, _, done := newCreateAccountEngine(t, cfg, up)

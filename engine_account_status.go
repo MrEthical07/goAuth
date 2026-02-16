@@ -2,7 +2,8 @@ package goAuth
 
 import (
 	"context"
-	"errors"
+
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 )
 
 // DisableAccount describes the disableaccount operation and its observable behavior.
@@ -71,43 +72,41 @@ func (e *Engine) DeleteAccount(ctx context.Context, userID string) error {
 }
 
 func (e *Engine) updateAccountStatusAndInvalidate(ctx context.Context, userID string, status AccountStatus) error {
-	if e.userProvider == nil {
+	if e == nil || e.userProvider == nil {
 		return ErrEngineNotReady
 	}
-	if userID == "" {
-		return ErrUserNotFound
-	}
 
-	current, err := e.userProvider.GetUserByID(userID)
-	if err != nil {
-		return ErrUserNotFound
-	}
-
-	if current.Status == status {
-		return nil
-	}
-
-	updated, err := e.userProvider.UpdateAccountStatus(ctx, userID, status)
-	if err != nil {
-		return err
-	}
-	if updated.AccountVersion <= current.AccountVersion {
-		return ErrAccountVersionNotAdvanced
-	}
-	if updated.Status != status {
-		return ErrUnauthorized
-	}
-
-	tenantID := tenantIDFromContext(ctx)
-	if updated.TenantID != "" {
-		tenantID = updated.TenantID
-	}
-
-	if err := e.LogoutAllInTenant(ctx, tenantID, userID); err != nil {
-		return errors.Join(ErrSessionInvalidationFailed, err)
-	}
-
-	return nil
+	return internalflows.RunUpdateAccountStatusAndInvalidate(ctx, userID, uint8(status), internalflows.UpdateAccountStatusDeps{
+		GetUserByID: func(userID string) (internalflows.AccountStatusRecord, error) {
+			user, err := e.userProvider.GetUserByID(userID)
+			if err != nil {
+				return internalflows.AccountStatusRecord{}, err
+			}
+			return internalflows.AccountStatusRecord{
+				Status:         uint8(user.Status),
+				AccountVersion: user.AccountVersion,
+				TenantID:       user.TenantID,
+			}, nil
+		},
+		UpdateAccountStatus: func(ctx context.Context, userID string, status uint8) (internalflows.AccountStatusRecord, error) {
+			user, err := e.userProvider.UpdateAccountStatus(ctx, userID, AccountStatus(status))
+			if err != nil {
+				return internalflows.AccountStatusRecord{}, err
+			}
+			return internalflows.AccountStatusRecord{
+				Status:         uint8(user.Status),
+				AccountVersion: user.AccountVersion,
+				TenantID:       user.TenantID,
+			}, nil
+		},
+		LogoutAllInTenant:            e.LogoutAllInTenant,
+		TenantIDFromContext:          tenantIDFromContext,
+		ErrEngineNotReady:            ErrEngineNotReady,
+		ErrUserNotFound:              ErrUserNotFound,
+		ErrAccountVersionNotAdvanced: ErrAccountVersionNotAdvanced,
+		ErrUnauthorized:              ErrUnauthorized,
+		ErrSessionInvalidationFailed: ErrSessionInvalidationFailed,
+	})
 }
 
 func accountStatusToError(status AccountStatus) error {

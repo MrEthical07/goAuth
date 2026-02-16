@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/session"
 )
 
@@ -427,7 +428,7 @@ func (e *Engine) createMFALoginChallenge(ctx context.Context, userID, tenantID s
 	if ttl <= 0 {
 		ttl = 3 * time.Minute
 	}
-	record := &mfaLoginChallenge{
+	record := &stores.MFALoginChallenge{
 		UserID:    userID,
 		TenantID:  tenantID,
 		ExpiresAt: time.Now().Add(ttl).Unix(),
@@ -594,13 +595,13 @@ func (e *Engine) issueLoginSessionTokensForResult(
 
 func mapMFALoginStoreError(err error) error {
 	switch {
-	case errors.Is(err, errMFALoginChallengeNotFound):
+	case errors.Is(err, stores.ErrMFALoginChallengeNotFound):
 		return ErrMFALoginInvalid
-	case errors.Is(err, errMFALoginChallengeExpired):
+	case errors.Is(err, stores.ErrMFALoginChallengeExpired):
 		return ErrMFALoginExpired
-	case errors.Is(err, errMFALoginChallengeExceeded):
+	case errors.Is(err, stores.ErrMFALoginChallengeExceeded):
 		return ErrMFALoginAttemptsExceeded
-	case errors.Is(err, errMFALoginChallengeBackend):
+	case errors.Is(err, stores.ErrMFALoginChallengeBackend):
 		return ErrMFALoginUnavailable
 	default:
 		return ErrMFALoginUnavailable

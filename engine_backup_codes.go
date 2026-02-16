@@ -7,6 +7,8 @@ import (
 	"errors"
 	"math/big"
 	"strings"
+
+	"github.com/MrEthical07/goAuth/internal/limiters"
 )
 
 const backupCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -125,7 +127,7 @@ func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID,
 	}
 
 	if err := e.backupLimiter.Check(ctx, tenantID, userID); err != nil {
-		if errors.Is(err, errBackupCodeRateLimited) {
+		if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
 			return ErrBackupCodeRateLimited
 		}
 		return ErrBackupCodeUnavailable
@@ -135,7 +137,7 @@ func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID,
 	if canonical == "" {
 		e.metricInc(MetricBackupCodeFailed)
 		if err := e.backupLimiter.RecordFailure(ctx, tenantID, userID); err != nil {
-			if errors.Is(err, errBackupCodeRateLimited) {
+			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
 				return ErrBackupCodeRateLimited
 			}
 			return ErrBackupCodeUnavailable
@@ -151,7 +153,7 @@ func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID,
 		e.metricInc(MetricBackupCodeFailed)
 		e.emitAudit(ctx, auditEventBackupCodeFailed, false, userID, tenantID, "", ErrBackupCodeInvalid, nil)
 		if err := e.backupLimiter.RecordFailure(ctx, tenantID, userID); err != nil {
-			if errors.Is(err, errBackupCodeRateLimited) {
+			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
 				return ErrBackupCodeRateLimited
 			}
 			return ErrBackupCodeUnavailable

@@ -3,7 +3,9 @@ package goAuth
 import (
 	"errors"
 
+	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/rate"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/jwt"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/MrEthical07/goAuth/permission"
@@ -16,7 +18,7 @@ import (
 // Builder instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Builder struct {
 	config Config
-	redis  *redis.Client
+	redis  redis.UniversalClient
 
 	permissions []string
 	roles       map[string][]string
@@ -50,7 +52,7 @@ func (b *Builder) WithConfig(cfg Config) *Builder {
 //
 // WithRedis may return an error when input validation, dependency calls, or security checks fail.
 // WithRedis does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (b *Builder) WithRedis(client *redis.Client) *Builder {
+func (b *Builder) WithRedis(client redis.UniversalClient) *Builder {
 	b.redis = client
 	return b
 }
@@ -216,14 +218,32 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxRefreshAttempts:      cfg.Security.MaxRefreshAttempts,
 		RefreshCooldownDuration: cfg.Security.RefreshCooldownDuration,
 	})
-	engine.resetStore = newPasswordResetStore(b.redis)
-	engine.resetLimiter = newPasswordResetLimiter(b.redis, cfg.PasswordReset)
-	engine.verificationStore = newEmailVerificationStore(b.redis)
-	engine.verificationLimiter = newEmailVerificationLimiter(b.redis, cfg.EmailVerification)
-	engine.accountLimiter = newAccountCreationLimiter(b.redis, cfg.Account)
-	engine.totpLimiter = newTOTPLimiter(b.redis)
-	engine.backupLimiter = newBackupCodeLimiter(b.redis, cfg.TOTP)
-	engine.mfaLoginStore = newMFALoginChallengeStore(b.redis)
+	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
+	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{
+		EnableIdentifierThrottle: cfg.PasswordReset.EnableIdentifierThrottle,
+		EnableIPThrottle:         cfg.PasswordReset.EnableIPThrottle,
+		ResetTTL:                 cfg.PasswordReset.ResetTTL,
+		MaxAttempts:              cfg.PasswordReset.MaxAttempts,
+	})
+	engine.verificationStore = stores.NewEmailVerificationStore(b.redis, "apv")
+	engine.verificationLimiter = limiters.NewEmailVerificationLimiter(b.redis, limiters.EmailVerificationConfig{
+		EnableIdentifierThrottle: cfg.EmailVerification.EnableIdentifierThrottle,
+		EnableIPThrottle:         cfg.EmailVerification.EnableIPThrottle,
+		VerificationTTL:          cfg.EmailVerification.VerificationTTL,
+		MaxAttempts:              cfg.EmailVerification.MaxAttempts,
+	})
+	engine.accountLimiter = limiters.NewAccountCreationLimiter(b.redis, limiters.AccountConfig{
+		EnableIdentifierThrottle: cfg.Account.EnableIdentifierThrottle,
+		EnableIPThrottle:         cfg.Account.EnableIPThrottle,
+		MaxAttempts:              cfg.Account.AccountCreationMaxAttempts,
+		Cooldown:                 cfg.Account.AccountCreationCooldown,
+	})
+	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis)
+	engine.backupLimiter = limiters.NewBackupCodeLimiter(b.redis, limiters.BackupCodeConfig{
+		MaxAttempts: cfg.TOTP.BackupCodeMaxAttempts,
+		Cooldown:    cfg.TOTP.BackupCodeCooldown,
+	})
+	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
 	engine.audit = newAuditDispatcher(cfg.Audit, b.auditSink)
 	engine.metrics = NewMetrics(cfg.Metrics)
 	engine.totp = newTOTPManager(cfg.TOTP)
@@ -249,12 +269,15 @@ func (b *Builder) Build() (*Engine, error) {
 		Issuer:        cfg.JWT.Issuer,
 		Audience:      cfg.JWT.Audience,
 		Leeway:        cfg.JWT.Leeway,
+		RequireIAT:    cfg.JWT.RequireIAT,
+		MaxFutureIAT:  cfg.JWT.MaxFutureIAT,
 		KeyID:         cfg.JWT.KeyID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	engine.jwtManager = jm
+	engine.initFlowDeps()
 
 	b.built = true
 

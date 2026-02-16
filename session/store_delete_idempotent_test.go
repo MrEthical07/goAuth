@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -70,5 +71,38 @@ func TestDeleteSessionIdempotentCounterAndIndex(t *testing.T) {
 	}
 	if len(members) != 0 {
 		t.Fatalf("expected no user index members, got %v", members)
+	}
+}
+
+func TestRotateRefreshHashSentinelErrors(t *testing.T) {
+	store, rdb, done := newSessionStoreTest(t)
+	defer done()
+	ctx := context.Background()
+
+	// Not found.
+	_, err := store.RotateRefreshHash(ctx, "t-1", "missing", [32]byte{1}, [32]byte{2})
+	if !errors.Is(err, redis.Nil) || !errors.Is(err, ErrRefreshSessionNotFound) {
+		t.Fatalf("expected not-found sentinel, got %v", err)
+	}
+
+	// Expired.
+	expired := testSession()
+	expired.SessionID = "sid-expired"
+	expired.ExpiresAt = time.Now().Add(-time.Minute).Unix()
+	if err := store.Save(ctx, expired, time.Hour); err != nil {
+		t.Fatalf("save expired session failed: %v", err)
+	}
+	_, err = store.RotateRefreshHash(ctx, expired.TenantID, expired.SessionID, expired.RefreshHash, [32]byte{9})
+	if !errors.Is(err, redis.Nil) || !errors.Is(err, ErrRefreshSessionExpired) {
+		t.Fatalf("expected expired sentinel, got %v", err)
+	}
+
+	// Corrupt blob.
+	if err := rdb.Set(ctx, store.key("t-1", "sid-corrupt"), []byte("bad"), time.Hour).Err(); err != nil {
+		t.Fatalf("seed corrupt blob failed: %v", err)
+	}
+	_, err = store.RotateRefreshHash(ctx, "t-1", "sid-corrupt", [32]byte{1}, [32]byte{2})
+	if !errors.Is(err, ErrRefreshSessionCorrupt) {
+		t.Fatalf("expected corrupt sentinel, got %v", err)
 	}
 }

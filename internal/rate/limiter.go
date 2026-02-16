@@ -25,7 +25,7 @@ type Config struct {
 //
 // Limiter instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Limiter struct {
-	redis  *redis.Client
+	redis  redis.UniversalClient
 	config Config
 }
 
@@ -33,7 +33,7 @@ type Limiter struct {
 //
 // New may return an error when input validation, dependency calls, or security checks fail.
 // New does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func New(redisClient *redis.Client, cfg Config) *Limiter {
+func New(redisClient redis.UniversalClient, cfg Config) *Limiter {
 	return &Limiter{
 		redis:  redisClient,
 		config: cfg,

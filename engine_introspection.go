@@ -2,11 +2,10 @@ package goAuth
 
 import (
 	"context"
-	"errors"
 	"time"
 
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/session"
-	"github.com/redis/go-redis/v9"
 )
 
 // SessionInfo is the safe introspection view for a session.
@@ -32,19 +31,8 @@ type HealthStatus struct {
 // GetActiveSessionCount may return an error when input validation, dependency calls, or security checks fail.
 // GetActiveSessionCount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int, error) {
-	if e == nil || e.sessionStore == nil {
-		return 0, ErrEngineNotReady
-	}
-	if userID == "" {
-		return 0, ErrUserNotFound
-	}
-
-	tenantID, err := e.introspectionTenantFromContext(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	return e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
+	e.ensureFlowDeps()
+	return internalflows.RunGetActiveSessionCount(ctx, userID, e.flowDeps.Introspection)
 }
 
 // ListActiveSessions describes the listactivesessions operation and its observable behavior.
@@ -52,24 +40,8 @@ func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int,
 // ListActiveSessions may return an error when input validation, dependency calls, or security checks fail.
 // ListActiveSessions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]SessionInfo, error) {
-	if e == nil || e.sessionStore == nil {
-		return nil, ErrEngineNotReady
-	}
-	if userID == "" {
-		return nil, ErrUserNotFound
-	}
-
-	tenantID, err := e.introspectionTenantFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	sessionIDs, err := e.sessionStore.ActiveSessionIDs(ctx, tenantID, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	sessions, err := e.sessionStore.GetManyReadOnly(ctx, tenantID, sessionIDs)
+	e.ensureFlowDeps()
+	sessions, err := internalflows.RunListActiveSessions(ctx, userID, e.flowDeps.Introspection)
 	if err != nil {
 		return nil, err
 	}
@@ -87,23 +59,9 @@ func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]Sessi
 // GetSessionInfo may return an error when input validation, dependency calls, or security checks fail.
 // GetSessionInfo does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string) (*SessionInfo, error) {
-	if e == nil || e.sessionStore == nil {
-		return nil, ErrEngineNotReady
-	}
-	if sessionID == "" {
-		return nil, ErrSessionNotFound
-	}
-
-	resolvedTenant, err := e.introspectionTenantFromParam(ctx, tenantID)
+	e.ensureFlowDeps()
+	sess, err := internalflows.RunGetSessionInfo(ctx, tenantID, sessionID, e.flowDeps.Introspection)
 	if err != nil {
-		return nil, err
-	}
-
-	sess, err := e.sessionStore.GetReadOnly(ctx, resolvedTenant, sessionID)
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, ErrSessionNotFound
-		}
 		return nil, err
 	}
 
@@ -116,16 +74,8 @@ func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string)
 // ActiveSessionEstimate may return an error when input validation, dependency calls, or security checks fail.
 // ActiveSessionEstimate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
-	if e == nil || e.sessionStore == nil {
-		return 0, ErrEngineNotReady
-	}
-
-	tenantID, err := e.introspectionTenantFromContext(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	return e.sessionStore.EstimateActiveSessions(ctx, tenantID)
+	e.ensureFlowDeps()
+	return internalflows.RunActiveSessionEstimate(ctx, e.flowDeps.Introspection)
 }
 
 // Health describes the health operation and its observable behavior.
@@ -133,13 +83,10 @@ func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
 // Health may return an error when input validation, dependency calls, or security checks fail.
 // Health does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Health(ctx context.Context) HealthStatus {
-	if e == nil || e.sessionStore == nil {
-		return HealthStatus{}
-	}
-
-	latency, err := e.sessionStore.Ping(ctx)
+	e.ensureFlowDeps()
+	available, latency := internalflows.RunHealth(ctx, e.flowDeps.Introspection)
 	return HealthStatus{
-		RedisAvailable: err == nil,
+		RedisAvailable: available,
 		RedisLatency:   latency,
 	}
 }
@@ -149,14 +96,8 @@ func (e *Engine) Health(ctx context.Context) HealthStatus {
 // GetLoginAttempts may return an error when input validation, dependency calls, or security checks fail.
 // GetLoginAttempts does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetLoginAttempts(ctx context.Context, identifier string) (int, error) {
-	if e == nil || e.rateLimiter == nil {
-		return 0, ErrEngineNotReady
-	}
-	if identifier == "" {
-		return 0, nil
-	}
-
-	return e.rateLimiter.GetLoginAttempts(ctx, identifier)
+	e.ensureFlowDeps()
+	return internalflows.RunGetLoginAttempts(ctx, identifier, e.flowDeps.Introspection)
 }
 
 func toSessionInfo(sess *session.Session) SessionInfo {
@@ -169,30 +110,4 @@ func toSessionInfo(sess *session.Session) SessionInfo {
 		AccountVersion:    sess.AccountVersion,
 		PermissionVersion: sess.PermissionVersion,
 	}
-}
-
-func (e *Engine) introspectionTenantFromContext(ctx context.Context) (string, error) {
-	if e != nil && e.config.MultiTenant.Enabled {
-		tenantID, ok := tenantIDFromContextExplicit(ctx)
-		if !ok {
-			return "", ErrUnauthorized
-		}
-		return tenantID, nil
-	}
-	return tenantIDFromContext(ctx), nil
-}
-
-func (e *Engine) introspectionTenantFromParam(ctx context.Context, tenantID string) (string, error) {
-	if tenantID == "" {
-		if e != nil && e.config.MultiTenant.Enabled {
-			return "", ErrUnauthorized
-		}
-		tenantID = tenantIDFromContext(ctx)
-	}
-
-	if contextTenant, ok := tenantIDFromContextExplicit(ctx); ok && contextTenant != tenantID {
-		return "", ErrUnauthorized
-	}
-
-	return tenantID, nil
 }

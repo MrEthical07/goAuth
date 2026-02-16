@@ -107,6 +107,31 @@ func TestParseAccessIssuerAudienceAndLeeway(t *testing.T) {
 	if _, err := m.ParseAccess(expiredSigned); err == nil {
 		t.Fatal("expected expired token to fail")
 	}
+
+	// aud array containing expected value should pass.
+	multiAudience := AccessClaims{SID: "s1", RegisteredClaims: gjwt.RegisteredClaims{
+		Issuer:    "goauth",
+		Audience:  gjwt.ClaimStrings{"api", "mobile"},
+		ExpiresAt: gjwt.NewNumericDate(time.Now().Add(time.Minute)),
+	}}
+	multiAudienceTok := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, multiAudience)
+	multiAudienceSigned, _ := multiAudienceTok.SignedString(priv)
+	if _, err := m.ParseAccess(multiAudienceSigned); err != nil {
+		t.Fatalf("expected audience list token to pass: %v", err)
+	}
+
+	// aud scalar string should also pass.
+	mapClaimsTok := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, gjwt.MapClaims{
+		"uid": "u",
+		"sid": "s1",
+		"iss": "goauth",
+		"aud": "api",
+		"exp": time.Now().Add(time.Minute).Unix(),
+	})
+	mapClaimsSigned, _ := mapClaimsTok.SignedString(priv)
+	if _, err := m.ParseAccess(mapClaimsSigned); err != nil {
+		t.Fatalf("expected scalar audience token to pass: %v", err)
+	}
 }
 
 func TestParseAccessUnknownKidFails(t *testing.T) {
@@ -147,5 +172,92 @@ func TestParseAccessUnknownKidFails(t *testing.T) {
 	m2, _ := NewManager(Config{AccessTTL: time.Minute, SigningMethod: MethodEd25519, PublicKey: pub2, VerifyKeys: map[string][]byte{"k2": pub2}})
 	if _, err := m2.ParseAccess(good); err == nil {
 		t.Fatal("expected parse failure with mismatched key set")
+	}
+}
+
+func TestParseAccessKeyIDMismatchWithoutVerifyMapFails(t *testing.T) {
+	pub, priv := newEdKeys(t)
+	m, err := NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodEd25519,
+		PrivateKey:    priv,
+		PublicKey:     pub,
+		KeyID:         "k1",
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	claims := AccessClaims{SID: "s1", RegisteredClaims: gjwt.RegisteredClaims{ExpiresAt: gjwt.NewNumericDate(time.Now().Add(time.Minute))}}
+	bad := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, claims)
+	bad.Header["kid"] = "k2"
+	badToken, err := bad.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign bad token: %v", err)
+	}
+	if _, err := m.ParseAccess(badToken); err == nil {
+		t.Fatal("expected mismatched kid to fail")
+	}
+
+	good := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, claims)
+	good.Header["kid"] = "k1"
+	goodToken, err := good.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign good token: %v", err)
+	}
+	if _, err := m.ParseAccess(goodToken); err != nil {
+		t.Fatalf("expected matching kid to pass: %v", err)
+	}
+}
+
+func TestParseAccessIATPolicy(t *testing.T) {
+	pub, priv := newEdKeys(t)
+
+	// Default policy: iat is optional.
+	defaultMgr, err := NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodEd25519,
+		PrivateKey:    priv,
+		PublicKey:     pub,
+	})
+	if err != nil {
+		t.Fatalf("new default manager: %v", err)
+	}
+
+	claimsNoIAT := AccessClaims{
+		SID: "s1",
+		RegisteredClaims: gjwt.RegisteredClaims{
+			ExpiresAt: gjwt.NewNumericDate(time.Now().Add(time.Minute)),
+		},
+	}
+	noIATTok := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, claimsNoIAT)
+	noIATSigned, _ := noIATTok.SignedString(priv)
+	if _, err := defaultMgr.ParseAccess(noIATSigned); err != nil {
+		t.Fatalf("expected missing iat to pass by default: %v", err)
+	}
+
+	// Tolerant "not crazy future" check.
+	futureMgr, err := NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodEd25519,
+		PrivateKey:    priv,
+		PublicKey:     pub,
+		MaxFutureIAT:  10 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("new future manager: %v", err)
+	}
+
+	crazyFuture := AccessClaims{
+		SID: "s1",
+		RegisteredClaims: gjwt.RegisteredClaims{
+			IssuedAt:  gjwt.NewNumericDate(time.Now().Add(20 * time.Minute)),
+			ExpiresAt: gjwt.NewNumericDate(time.Now().Add(30 * time.Minute)),
+		},
+	}
+	crazyTok := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, crazyFuture)
+	crazySigned, _ := crazyTok.SignedString(priv)
+	if _, err := futureMgr.ParseAccess(crazySigned); err == nil {
+		t.Fatal("expected iat too far in the future to fail")
 	}
 }

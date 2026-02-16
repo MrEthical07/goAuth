@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	"github.com/MrEthical07/goAuth/internal/limiters"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -102,12 +104,12 @@ func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (s
 	}
 
 	expiresAt := time.Now().Add(e.config.PasswordReset.ResetTTL).Unix()
-	record := &passwordResetRecord{
+	record := &stores.PasswordResetRecord{
 		UserID:     user.UserID,
 		SecretHash: secretHash,
 		ExpiresAt:  expiresAt,
 		Attempts:   0,
-		Strategy:   e.config.PasswordReset.Strategy,
+		Strategy:   int(e.config.PasswordReset.Strategy),
 	}
 
 	if err := e.resetStore.Save(ctx, effectiveTenant, resetID, record, e.config.PasswordReset.ResetTTL); err != nil {
@@ -259,12 +261,12 @@ func (e *Engine) ConfirmPasswordResetWithMFA(ctx context.Context, challenge, new
 		tenantID,
 		resetID,
 		providedHash,
-		e.config.PasswordReset.Strategy,
+		int(e.config.PasswordReset.Strategy),
 		e.config.PasswordReset.MaxAttempts,
 	)
 	if err != nil {
 		mapped := mapPasswordResetStoreError(err)
-		if errors.Is(err, errResetNotFound) {
+		if errors.Is(err, stores.ErrResetNotFound) {
 			e.metricInc(MetricPasswordResetConfirmFailure)
 			e.emitAudit(ctx, auditEventPasswordResetReplay, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
@@ -446,9 +448,9 @@ func parsePasswordResetChallenge(
 
 func mapPasswordResetLimiterError(err error) error {
 	switch {
-	case errors.Is(err, errResetRateLimited):
+	case errors.Is(err, limiters.ErrResetRateLimited):
 		return ErrPasswordResetRateLimited
-	case errors.Is(err, errResetRedisUnavailable):
+	case errors.Is(err, limiters.ErrResetRedisUnavailable):
 		return ErrPasswordResetUnavailable
 	default:
 		return ErrPasswordResetUnavailable
@@ -457,11 +459,11 @@ func mapPasswordResetLimiterError(err error) error {
 
 func mapPasswordResetStoreError(err error) error {
 	switch {
-	case errors.Is(err, errResetSecretMismatch), errors.Is(err, errResetNotFound), errors.Is(err, redis.Nil):
+	case errors.Is(err, stores.ErrResetSecretMismatch), errors.Is(err, stores.ErrResetNotFound), errors.Is(err, redis.Nil):
 		return ErrPasswordResetInvalid
-	case errors.Is(err, errResetAttemptsExceeded):
+	case errors.Is(err, stores.ErrResetAttemptsExceeded):
 		return ErrPasswordResetAttempts
-	case errors.Is(err, errResetRedisUnavailable):
+	case errors.Is(err, stores.ErrResetRedisUnavailable):
 		return ErrPasswordResetUnavailable
 	default:
 		return ErrPasswordResetUnavailable

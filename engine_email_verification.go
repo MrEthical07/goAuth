@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	"github.com/MrEthical07/goAuth/internal/limiters"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -124,12 +126,12 @@ func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string
 		return "", ErrEmailVerificationUnavailable
 	}
 
-	record := &emailVerificationRecord{
+	record := &stores.EmailVerificationRecord{
 		UserID:     user.UserID,
 		SecretHash: secretHash,
 		ExpiresAt:  time.Now().Add(e.config.EmailVerification.VerificationTTL).Unix(),
 		Attempts:   0,
-		Strategy:   e.config.EmailVerification.Strategy,
+		Strategy:   int(e.config.EmailVerification.Strategy),
 	}
 
 	if err := e.verificationStore.Save(
@@ -226,7 +228,7 @@ func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string)
 		tenantID,
 		verificationID,
 		providedHash,
-		e.config.EmailVerification.Strategy,
+		int(e.config.EmailVerification.Strategy),
 		e.config.EmailVerification.MaxAttempts,
 	)
 	if err != nil {
@@ -380,9 +382,9 @@ func parseEmailVerificationChallenge(
 
 func mapEmailVerificationLimiterError(err error) error {
 	switch {
-	case errors.Is(err, errVerificationRateLimited):
+	case errors.Is(err, limiters.ErrVerificationRateLimited):
 		return ErrEmailVerificationRateLimited
-	case errors.Is(err, errVerificationLimiterUnavailable):
+	case errors.Is(err, limiters.ErrVerificationLimiterUnavailable):
 		return ErrEmailVerificationUnavailable
 	default:
 		return ErrEmailVerificationUnavailable
@@ -391,13 +393,13 @@ func mapEmailVerificationLimiterError(err error) error {
 
 func mapEmailVerificationStoreError(err error) error {
 	switch {
-	case errors.Is(err, errVerificationSecretMismatch),
-		errors.Is(err, errVerificationNotFound),
+	case errors.Is(err, stores.ErrVerificationSecretMismatch),
+		errors.Is(err, stores.ErrVerificationNotFound),
 		errors.Is(err, redis.Nil):
 		return ErrEmailVerificationInvalid
-	case errors.Is(err, errVerificationAttemptsExceeded):
+	case errors.Is(err, stores.ErrVerificationAttemptsExceeded):
 		return ErrEmailVerificationAttempts
-	case errors.Is(err, errVerificationRedisUnavailable):
+	case errors.Is(err, stores.ErrVerificationRedisUnavailable):
 		return ErrEmailVerificationUnavailable
 	default:
 		return ErrEmailVerificationUnavailable

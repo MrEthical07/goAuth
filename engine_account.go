@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/session"
 )
 
@@ -264,9 +265,9 @@ func (e *Engine) issueSessionTokens(ctx context.Context, user UserRecord) (strin
 
 func mapAccountLimiterError(err error) error {
 	switch {
-	case errors.Is(err, errAccountRateLimited):
+	case errors.Is(err, limiters.ErrAccountRateLimited):
 		return ErrAccountCreationRateLimited
-	case errors.Is(err, errAccountRedisUnavailable):
+	case errors.Is(err, limiters.ErrAccountRedisUnavailable):
 		return ErrAccountCreationUnavailable
 	default:
 		return ErrAccountCreationUnavailable

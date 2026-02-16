@@ -1,4 +1,4 @@
-package goAuth
+package stores
 
 import (
 	"bytes"
@@ -14,79 +14,73 @@ import (
 )
 
 const (
-	verificationKeyPrefix       = "apv"
-	verificationRecordVersionV1 = 1
+	resetRecordVersionV1 = 1
 )
 
 var (
-	errVerificationNotFound         = errors.New("verification record not found")
-	errVerificationSecretMismatch   = errors.New("verification secret mismatch")
-	errVerificationAttemptsExceeded = errors.New("verification attempts exceeded")
-	errVerificationRedisUnavailable = errors.New("verification redis unavailable")
+	ErrResetNotFound         = errors.New("reset record not found")
+	ErrResetSecretMismatch   = errors.New("reset secret mismatch")
+	ErrResetAttemptsExceeded = errors.New("reset attempts exceeded")
+	ErrResetRedisUnavailable = errors.New("reset redis unavailable")
 )
 
-type emailVerificationRecord struct {
+type PasswordResetRecord struct {
 	UserID     string
 	SecretHash [32]byte
 	ExpiresAt  int64
 	Attempts   uint16
-	Strategy   VerificationStrategyType
+	Strategy   int
 }
 
-type emailVerificationStore struct {
-	redis  *redis.Client
+type PasswordResetStore struct {
+	redis  redis.UniversalClient
 	prefix string
 }
 
-func newEmailVerificationStore(redisClient *redis.Client) *emailVerificationStore {
-	return &emailVerificationStore{
+func NewPasswordResetStore(redisClient redis.UniversalClient, prefix string) *PasswordResetStore {
+	if prefix == "" {
+		prefix = "apr"
+	}
+	return &PasswordResetStore{
 		redis:  redisClient,
-		prefix: verificationKeyPrefix,
+		prefix: prefix,
 	}
 }
 
-func (s *emailVerificationStore) key(tenantID, verificationID string) string {
-	return s.prefix + ":" + normalizeResetTenantID(tenantID) + ":" + verificationID
+func (s *PasswordResetStore) key(tenantID, resetID string) string {
+	return s.prefix + ":" + normalizeTenantID(tenantID) + ":" + resetID
 }
 
-// Save describes the save operation and its observable behavior.
-//
-// Save may return an error when input validation, dependency calls, or security checks fail.
-// Save does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (s *emailVerificationStore) Save(
+func (s *PasswordResetStore) Save(
 	ctx context.Context,
-	tenantID, verificationID string,
-	record *emailVerificationRecord,
+	tenantID, resetID string,
+	record *PasswordResetRecord,
 	ttl time.Duration,
 ) error {
-	encoded, err := encodeEmailVerificationRecord(record)
+	encoded, err := encodePasswordResetRecord(record)
 	if err != nil {
 		return err
 	}
 
-	if err := s.redis.Set(ctx, s.key(tenantID, verificationID), encoded, ttl).Err(); err != nil {
-		return fmt.Errorf("%w: %v", errVerificationRedisUnavailable, err)
+	if err := s.redis.Set(ctx, s.key(tenantID, resetID), encoded, ttl).Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
 	}
 
 	return nil
 }
 
-// Consume describes the consume operation and its observable behavior.
-//
-// Consume may return an error when input validation, dependency calls, or security checks fail.
-// Consume does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (s *emailVerificationStore) Consume(
+func (s *PasswordResetStore) Consume(
 	ctx context.Context,
-	tenantID, verificationID string,
+	tenantID, resetID string,
 	providedHash [32]byte,
-	expectedStrategy VerificationStrategyType,
+	expectedStrategy int,
 	maxAttempts int,
-) (*emailVerificationRecord, error) {
+) (*PasswordResetRecord, error) {
 	const maxRetries = 4
-	key := s.key(tenantID, verificationID)
+	key := s.key(tenantID, resetID)
 
 	for i := 0; i < maxRetries; i++ {
-		var matched *emailVerificationRecord
+		var matched *PasswordResetRecord
 
 		err := s.redis.Watch(ctx, func(tx *redis.Tx) error {
 			data, err := tx.Get(ctx, key).Bytes()
@@ -94,7 +88,7 @@ func (s *emailVerificationStore) Consume(
 				return err
 			}
 
-			record, err := decodeEmailVerificationRecord(data)
+			record, err := decodePasswordResetRecord(data)
 			if err != nil {
 				return err
 			}
@@ -108,7 +102,7 @@ func (s *emailVerificationStore) Consume(
 				if err != nil {
 					return err
 				}
-				return errVerificationNotFound
+				return ErrResetNotFound
 			}
 
 			if record.Strategy != expectedStrategy {
@@ -119,7 +113,7 @@ func (s *emailVerificationStore) Consume(
 				if err != nil {
 					return err
 				}
-				return errVerificationSecretMismatch
+				return ErrResetSecretMismatch
 			}
 
 			if subtle.ConstantTimeCompare(record.SecretHash[:], providedHash[:]) != 1 {
@@ -132,7 +126,7 @@ func (s *emailVerificationStore) Consume(
 					if err != nil {
 						return err
 					}
-					return errVerificationAttemptsExceeded
+					return ErrResetAttemptsExceeded
 				}
 
 				ttl := time.Until(time.Unix(record.ExpiresAt, 0))
@@ -144,10 +138,10 @@ func (s *emailVerificationStore) Consume(
 					if err != nil {
 						return err
 					}
-					return errVerificationNotFound
+					return ErrResetNotFound
 				}
 
-				updated, err := encodeEmailVerificationRecord(record)
+				updated, err := encodePasswordResetRecord(record)
 				if err != nil {
 					return err
 				}
@@ -159,7 +153,7 @@ func (s *emailVerificationStore) Consume(
 				if err != nil {
 					return err
 				}
-				return errVerificationSecretMismatch
+				return ErrResetSecretMismatch
 			}
 
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -179,23 +173,43 @@ func (s *emailVerificationStore) Consume(
 		}
 		if err != nil {
 			switch {
-			case errors.Is(err, redis.Nil), errors.Is(err, errVerificationNotFound), errors.Is(err, errVerificationSecretMismatch), errors.Is(err, errVerificationAttemptsExceeded):
+			case errors.Is(err, redis.Nil), errors.Is(err, ErrResetNotFound), errors.Is(err, ErrResetSecretMismatch), errors.Is(err, ErrResetAttemptsExceeded):
 				return nil, err
 			default:
-				return nil, fmt.Errorf("%w: %v", errVerificationRedisUnavailable, err)
+				return nil, fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
 			}
 		}
 
 		return matched, nil
 	}
 
-	return nil, errVerificationNotFound
+	return nil, ErrResetNotFound
 }
 
-func encodeEmailVerificationRecord(record *emailVerificationRecord) ([]byte, error) {
+func (s *PasswordResetStore) Get(ctx context.Context, tenantID, resetID string) (*PasswordResetRecord, error) {
+	data, err := s.redis.Get(ctx, s.key(tenantID, resetID)).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrResetNotFound
+		}
+		return nil, fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
+	}
+
+	record, err := decodePasswordResetRecord(data)
+	if err != nil {
+		return nil, err
+	}
+	if time.Now().Unix() > record.ExpiresAt {
+		return nil, ErrResetNotFound
+	}
+
+	return record, nil
+}
+
+func encodePasswordResetRecord(record *PasswordResetRecord) ([]byte, error) {
 	var buf bytes.Buffer
 
-	buf.WriteByte(verificationRecordVersionV1)
+	buf.WriteByte(resetRecordVersionV1)
 	buf.WriteByte(byte(record.Strategy))
 
 	if err := binary.Write(&buf, binary.BigEndian, record.Attempts); err != nil {
@@ -206,7 +220,7 @@ func encodeEmailVerificationRecord(record *emailVerificationRecord) ([]byte, err
 	}
 
 	if len(record.UserID) > 65535 {
-		return nil, errors.New("verification record user id too long")
+		return nil, errors.New("reset record user id too long")
 	}
 	if err := binary.Write(&buf, binary.BigEndian, uint16(len(record.UserID))); err != nil {
 		return nil, err
@@ -217,15 +231,15 @@ func encodeEmailVerificationRecord(record *emailVerificationRecord) ([]byte, err
 	return buf.Bytes(), nil
 }
 
-func decodeEmailVerificationRecord(data []byte) (*emailVerificationRecord, error) {
+func decodePasswordResetRecord(data []byte) (*PasswordResetRecord, error) {
 	reader := bytes.NewReader(data)
 
 	version, err := reader.ReadByte()
 	if err != nil {
 		return nil, err
 	}
-	if version != verificationRecordVersionV1 {
-		return nil, errors.New("invalid verification record version")
+	if version != resetRecordVersionV1 {
+		return nil, errors.New("invalid reset record version")
 	}
 
 	strategy, err := reader.ReadByte()
@@ -233,8 +247,8 @@ func decodeEmailVerificationRecord(data []byte) (*emailVerificationRecord, error
 		return nil, err
 	}
 
-	record := &emailVerificationRecord{
-		Strategy: VerificationStrategyType(strategy),
+	record := &PasswordResetRecord{
+		Strategy: int(strategy),
 	}
 
 	if err := binary.Read(reader, binary.BigEndian, &record.Attempts); err != nil {

@@ -7,8 +7,13 @@ import (
 	"strconv"
 	"time"
 
+	internalaudit "github.com/MrEthical07/goAuth/internal/audit"
 	"github.com/MrEthical07/goAuth/internal"
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
+	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/rate"
+	internalsecurity "github.com/MrEthical07/goAuth/internal/security"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/jwt"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/MrEthical07/goAuth/permission"
@@ -25,14 +30,14 @@ type Engine struct {
 	roleManager         *permission.RoleManager
 	sessionStore        *session.Store
 	rateLimiter         *rate.Limiter
-	resetStore          *passwordResetStore
-	resetLimiter        *passwordResetLimiter
-	verificationStore   *emailVerificationStore
-	verificationLimiter *emailVerificationLimiter
-	accountLimiter      *accountCreationLimiter
-	totpLimiter         *totpLimiter
-	backupLimiter       *backupCodeLimiter
-	mfaLoginStore       *mfaLoginChallengeStore
+	resetStore          *stores.PasswordResetStore
+	resetLimiter        *limiters.PasswordResetLimiter
+	verificationStore   *stores.EmailVerificationStore
+	verificationLimiter *limiters.EmailVerificationLimiter
+	accountLimiter      *limiters.AccountCreationLimiter
+	totpLimiter         *limiters.TOTPLimiter
+	backupLimiter       *limiters.BackupCodeLimiter
+	mfaLoginStore       *stores.MFALoginChallengeStore
 	audit               *auditDispatcher
 	metrics             *Metrics
 	passwordHash        *password.Argon2
@@ -40,6 +45,32 @@ type Engine struct {
 	jwtManager          *jwt.Manager
 	userProvider        UserProvider
 	logger              *slog.Logger
+	flowDeps            internalflows.Deps
+}
+
+type auditDispatcher = internalaudit.Dispatcher
+type totpManager = internalsecurity.TOTPManager
+
+func newAuditDispatcher(cfg AuditConfig, sink AuditSink) *auditDispatcher {
+	return internalaudit.NewDispatcher(internalaudit.Config{
+		Enabled:    cfg.Enabled,
+		BufferSize: cfg.BufferSize,
+		DropIfFull: cfg.DropIfFull,
+	}, sink)
+}
+
+func newTOTPManager(cfg TOTPConfig) *totpManager {
+	return internalsecurity.NewTOTPManager(internalsecurity.TOTPConfig{
+		Issuer:    cfg.Issuer,
+		Period:    cfg.Period,
+		Digits:    cfg.Digits,
+		Algorithm: cfg.Algorithm,
+		Skew:      cfg.Skew,
+	})
+}
+
+func hotpCode(secret []byte, counter int64, digits int, algorithm string) (string, error) {
+	return internalsecurity.HOTPCode(secret, counter, digits, algorithm)
 }
 
 // Close describes the close operation and its observable behavior.
@@ -78,6 +109,59 @@ func (e *Engine) MetricsSnapshot() MetricsSnapshot {
 		}
 	}
 	return e.metrics.Snapshot()
+}
+
+// SecurityReport describes the securityreport operation and its observable behavior.
+//
+// SecurityReport may return an error when input validation, dependency calls, or security checks fail.
+// SecurityReport does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+func (e *Engine) SecurityReport() SecurityReport {
+	if e == nil {
+		return SecurityReport{}
+	}
+
+	report := internalsecurity.BuildReport(internalsecurity.ReportInput{
+		ProductionMode:               e.config.Security.ProductionMode,
+		SigningAlgorithm:             e.config.JWT.SigningMethod,
+		ValidationMode:               int(e.config.ValidationMode),
+		StrictMode:                   e.config.ValidationMode == ModeStrict || e.config.Security.StrictMode,
+		AccessTTL:                    e.config.JWT.AccessTTL,
+		RefreshTTL:                   e.config.JWT.RefreshTTL,
+		Password:                     internalsecurity.PasswordReport{Memory: e.config.Password.Memory, Time: e.config.Password.Time, Parallelism: e.config.Password.Parallelism, SaltLength: e.config.Password.SaltLength, KeyLength: e.config.Password.KeyLength},
+		TOTPEnabled:                  e.config.TOTP.Enabled,
+		BackupCodeCount:              e.config.TOTP.BackupCodeCount,
+		DeviceBindingEnabled:         e.config.DeviceBinding.Enabled,
+		RefreshRotationEnabled:       e.config.Security.EnforceRefreshRotation,
+		RefreshReuseDetectionEnabled: e.config.Security.EnforceRefreshReuseDetection,
+		EnableRefreshThrottle:        e.config.Security.EnableRefreshThrottle,
+		EmailVerificationEnabled:     e.config.EmailVerification.Enabled,
+		PasswordResetEnabled:         e.config.PasswordReset.Enabled,
+		MaxSessionsPerUser:           e.config.SessionHardening.MaxSessionsPerUser,
+		MaxSessionsPerTenant:         e.config.SessionHardening.MaxSessionsPerTenant,
+		EnforceSingleSession:         e.config.SessionHardening.EnforceSingleSession,
+		ConcurrentLoginLimit:         e.config.SessionHardening.ConcurrentLoginLimit,
+		MaxLoginAttempts:             e.config.Security.MaxLoginAttempts,
+		LoginCooldownDuration:        e.config.Security.LoginCooldownDuration,
+	})
+
+	return SecurityReport{
+		ProductionMode:               report.ProductionMode,
+		SigningAlgorithm:             report.SigningAlgorithm,
+		ValidationMode:               ValidationMode(report.ValidationMode),
+		StrictMode:                   report.StrictMode,
+		AccessTTL:                    report.AccessTTL,
+		RefreshTTL:                   report.RefreshTTL,
+		Argon2:                       PasswordConfigReport{Memory: report.Argon2.Memory, Time: report.Argon2.Time, Parallelism: report.Argon2.Parallelism, SaltLength: report.Argon2.SaltLength, KeyLength: report.Argon2.KeyLength},
+		TOTPEnabled:                  report.TOTPEnabled,
+		BackupEnabled:                report.BackupEnabled,
+		DeviceBindingEnabled:         report.DeviceBindingEnabled,
+		RefreshRotationEnabled:       report.RefreshRotationEnabled,
+		RefreshReuseDetectionEnabled: report.RefreshReuseDetectionEnabled,
+		SessionCapsActive:            report.SessionCapsActive,
+		RateLimitingActive:           report.RateLimitingActive,
+		EmailVerificationActive:      report.EmailVerificationActive,
+		PasswordResetActive:          report.PasswordResetActive,
+	}
 }
 
 func (e *Engine) metricInc(id MetricID) {
@@ -503,129 +587,97 @@ func (e *Engine) loginInternal(ctx context.Context, username, password, totpCode
 // Refresh may return an error when input validation, dependency calls, or security checks fail.
 // Refresh does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, string, error) {
-	tenantID := tenantIDFromContext(ctx)
-	sessionID, providedSecret, err := internal.DecodeRefreshToken(refreshToken)
-	if err != nil {
+	e.ensureFlowDeps()
+	result := internalflows.RunRefresh(ctx, refreshToken, e.flowDeps.Refresh)
+
+	switch result.Failure {
+	case internalflows.RefreshFailureDecode:
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", tenantID, "", ErrRefreshInvalid, func() map[string]string {
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, "", ErrRefreshInvalid, func() map[string]string {
 			return map[string]string{
 				"reason": "decode_failed",
 			}
 		})
 		return "", "", ErrRefreshInvalid
-	}
-
-	if e.rateLimiter != nil {
-		if err := e.rateLimiter.CheckRefresh(ctx, sessionID); err != nil {
-			e.metricInc(MetricRefreshRateLimited)
-			e.emitAudit(ctx, auditEventRefreshRateLimited, false, "", tenantID, sessionID, ErrRefreshRateLimited, nil)
-			e.emitRateLimit(ctx, "refresh", tenantID, func() map[string]string {
-				return map[string]string{
-					"session_id": sessionID,
-				}
-			})
-			return "", "", ErrRefreshRateLimited
-		}
-	}
-
-	nextSecret, err := internal.NewRefreshSecret()
-	if err != nil {
+	case internalflows.RefreshFailureRateLimited:
+		e.metricInc(MetricRefreshRateLimited)
+		e.emitAudit(ctx, auditEventRefreshRateLimited, false, "", result.TenantID, result.SessionID, ErrRefreshRateLimited, nil)
+		e.emitRateLimit(ctx, "refresh", result.TenantID, func() map[string]string {
+			return map[string]string{
+				"session_id": result.SessionID,
+			}
+		})
+		return "", "", ErrRefreshRateLimited
+	case internalflows.RefreshFailureNextSecret:
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", tenantID, sessionID, err, func() map[string]string {
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, result.Err, func() map[string]string {
 			return map[string]string{
 				"reason": "next_secret_generation",
 			}
 		})
-		return "", "", err
-	}
-
-	sess, err := e.sessionStore.RotateRefreshHash(
-		ctx,
-		tenantID,
-		sessionID,
-		internal.HashRefreshSecret(providedSecret),
-		internal.HashRefreshSecret(nextSecret),
-	)
-	if err != nil {
-		switch {
-		case errors.Is(err, session.ErrRefreshHashMismatch):
-			e.metricInc(MetricRefreshReuseDetected)
-			e.metricInc(MetricReplayDetected)
-			e.metricInc(MetricSessionInvalidated)
-			if e.config.SessionHardening.EnableReplayTracking {
-				if trackErr := e.sessionStore.TrackReplayAnomaly(ctx, sessionID, e.sessionLifetime()); trackErr != nil {
-					e.warn("goAuth: replay anomaly tracking failed")
-				}
+		return "", "", result.Err
+	case internalflows.RefreshFailureReuse:
+		e.metricInc(MetricRefreshReuseDetected)
+		e.metricInc(MetricReplayDetected)
+		e.metricInc(MetricSessionInvalidated)
+		e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", result.TenantID, result.SessionID, ErrRefreshReuse, nil)
+		return "", "", ErrRefreshReuse
+	case internalflows.RefreshFailureSessionNotFound:
+		e.metricInc(MetricRefreshFailure)
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, func() map[string]string {
+			return map[string]string{
+				"reason": "session_not_found",
 			}
-			e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", tenantID, sessionID, ErrRefreshReuse, nil)
-			return "", "", ErrRefreshReuse
-		case errors.Is(err, redis.Nil):
-			e.metricInc(MetricRefreshFailure)
-			e.emitAudit(ctx, auditEventRefreshInvalid, false, "", tenantID, sessionID, ErrSessionNotFound, func() map[string]string {
-				return map[string]string{
-					"reason": "session_not_found",
-				}
-			})
-			return "", "", ErrSessionNotFound
-		default:
-			e.metricInc(MetricRefreshFailure)
-			e.emitAudit(ctx, auditEventRefreshInvalid, false, "", tenantID, sessionID, err, func() map[string]string {
-				return map[string]string{
-					"reason": "rotate_failed",
-				}
-			})
-			return "", "", err
-		}
-	}
-	if statusErr := accountStatusToError(AccountStatus(sess.Status)); statusErr != nil {
-		_ = e.sessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		})
+		return "", "", ErrSessionNotFound
+	case internalflows.RefreshFailureRotate:
+		e.metricInc(MetricRefreshFailure)
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, result.Err, func() map[string]string {
+			return map[string]string{
+				"reason": "rotate_failed",
+			}
+		})
+		return "", "", result.Err
+	case internalflows.RefreshFailureAccountStatus:
 		e.metricInc(MetricSessionInvalidated)
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, sess.UserID, sess.TenantID, sess.SessionID, statusErr, func() map[string]string {
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
 			return map[string]string{
 				"reason": "account_status",
 			}
 		})
-		return "", "", statusErr
-	}
-	if e.shouldRequireVerified() && AccountStatus(sess.Status) == AccountPendingVerification {
-		_ = e.sessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return "", "", result.Err
+	case internalflows.RefreshFailureUnverified:
 		e.metricInc(MetricSessionInvalidated)
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, sess.UserID, sess.TenantID, sess.SessionID, ErrAccountUnverified, func() map[string]string {
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrAccountUnverified, func() map[string]string {
 			return map[string]string{
 				"reason": "pending_verification",
 			}
 		})
 		return "", "", ErrAccountUnverified
-	}
-
-	access, err := e.issueAccessToken(sess)
-	if err != nil {
+	case internalflows.RefreshFailureIssueAccess:
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, sess.UserID, sess.TenantID, sess.SessionID, err, func() map[string]string {
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
 			return map[string]string{
 				"reason": "issue_access_failed",
 			}
 		})
-		return "", "", err
-	}
-
-	refresh, err := internal.EncodeRefreshToken(sess.SessionID, nextSecret)
-	if err != nil {
+		return "", "", result.Err
+	case internalflows.RefreshFailureEncode:
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, sess.UserID, sess.TenantID, sess.SessionID, err, func() map[string]string {
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
 			return map[string]string{
 				"reason": "encode_refresh_failed",
 			}
 		})
-		return "", "", err
+		return "", "", result.Err
 	}
 
 	e.metricInc(MetricRefreshSuccess)
-	e.emitAudit(ctx, auditEventRefreshSuccess, true, sess.UserID, sess.TenantID, sess.SessionID, nil, nil)
+	e.emitAudit(ctx, auditEventRefreshSuccess, true, result.UserID, result.TenantID, result.SessionID, nil, nil)
 
-	return access, refresh, nil
+	return result.AccessToken, result.RefreshToken, nil
 }
 
 // ValidateAccess describes the validateaccess operation and its observable behavior.
@@ -641,73 +693,34 @@ func (e *Engine) ValidateAccess(ctx context.Context, tokenStr string) (*AuthResu
 // Validate may return an error when input validation, dependency calls, or security checks fail.
 // Validate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Validate(ctx context.Context, tokenStr string, routeMode RouteMode) (*AuthResult, error) {
+	e.ensureFlowDeps()
 	if e.metrics != nil && e.metrics.LatencyEnabled() {
 		start := time.Now()
 		defer e.metrics.Observe(MetricValidateLatency, time.Since(start))
 	}
 
-	claims, err := e.jwtManager.ParseAccess(tokenStr)
-	if err != nil {
+	result := internalflows.RunValidate(ctx, tokenStr, int(routeMode), e.flowDeps.Validate)
+	switch result.Failure {
+	case internalflows.ValidateFailureUnauthorized:
 		return nil, ErrUnauthorized
-	}
-	if e.config.SessionHardening.MaxClockSkew >= 0 && claims.IssuedAt != nil {
-		if claims.IssuedAt.Time.After(time.Now().Add(e.config.SessionHardening.MaxClockSkew)) {
-			return nil, ErrTokenClockSkew
-		}
-	}
-
-	effectiveMode, err := e.resolveRouteMode(routeMode)
-	if err != nil {
-		return nil, err
-	}
-
-	// JWT-only and hybrid-default validation paths: no Redis.
-	if effectiveMode == ModeJWTOnly || effectiveMode == ModeHybrid {
-		return e.buildResultFromClaims(claims), nil
-	}
-
-	// Strict validation path: Redis is mandatory and fail-closed.
-	sess, err := e.sessionStore.Get(ctx, tenantIDFromToken(claims.TID), claims.SID, e.sessionLifetime())
-	if err != nil {
-		if errors.Is(err, session.ErrRedisUnavailable) {
-			return nil, ErrUnauthorized
-		}
-		if errors.Is(err, redis.Nil) {
-			return nil, ErrSessionNotFound
-		}
+	case internalflows.ValidateFailureTokenClockSkew:
+		return nil, ErrTokenClockSkew
+	case internalflows.ValidateFailureInvalidRouteMode:
+		return nil, ErrInvalidRouteMode
+	case internalflows.ValidateFailureSessionNotFound:
 		return nil, ErrSessionNotFound
-	}
-
-	if e.config.Security.EnablePermissionVersionCheck {
-		if claims.PermVersion != sess.PermissionVersion {
-			return nil, ErrSessionNotFound
-		}
-	}
-	if e.config.Security.EnableRoleVersionCheck {
-		if claims.RoleVersion != sess.RoleVersion {
-			_ = e.sessionStore.Delete(ctx, tenantIDFromToken(claims.TID), claims.SID)
-			return nil, ErrSessionNotFound
-		}
-	}
-	if e.config.Security.EnableAccountVersionCheck {
-		if claims.AccountVersion != 0 && sess.AccountVersion != 0 && claims.AccountVersion != sess.AccountVersion {
-			_ = e.sessionStore.Delete(ctx, tenantIDFromToken(claims.TID), claims.SID)
-			return nil, ErrSessionNotFound
-		}
-	}
-	if statusErr := accountStatusToError(AccountStatus(sess.Status)); statusErr != nil {
-		_ = e.sessionStore.Delete(ctx, tenantIDFromToken(claims.TID), claims.SID)
-		return nil, statusErr
-	}
-	if e.shouldRequireVerified() && AccountStatus(sess.Status) == AccountPendingVerification {
-		_ = e.sessionStore.Delete(ctx, tenantIDFromToken(claims.TID), claims.SID)
+	case internalflows.ValidateFailureStatus:
+		return nil, result.Err
+	case internalflows.ValidateFailureUnverified:
 		return nil, ErrAccountUnverified
-	}
-	if err := e.validateDeviceBinding(ctx, sess); err != nil {
-		return nil, err
+	case internalflows.ValidateFailureDeviceBinding:
+		return nil, result.Err
 	}
 
-	return e.buildResult(sess), nil
+	if result.Session != nil {
+		return e.buildResult(result.Session), nil
+	}
+	return e.buildResultFromClaims(result.Claims), nil
 }
 
 func (e *Engine) buildResult(s *session.Session) *AuthResult {
@@ -830,7 +843,8 @@ func (e *Engine) issueAccessToken(sess *session.Session) (string, error) {
 // Logout may return an error when input validation, dependency calls, or security checks fail.
 // Logout does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Logout(ctx context.Context, sessionID string) error {
-	return e.LogoutInTenant(ctx, tenantIDFromContext(ctx), sessionID)
+	e.ensureFlowDeps()
+	return e.LogoutInTenant(ctx, e.flowDeps.Logout.TenantIDFromContext(ctx), sessionID)
 }
 
 // LogoutInTenant describes the logoutintenant operation and its observable behavior.
@@ -838,7 +852,8 @@ func (e *Engine) Logout(ctx context.Context, sessionID string) error {
 // LogoutInTenant may return an error when input validation, dependency calls, or security checks fail.
 // LogoutInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string) error {
-	err := e.sessionStore.Delete(ctx, tenantID, sessionID)
+	e.ensureFlowDeps()
+	err := internalflows.RunLogoutInTenant(ctx, tenantID, sessionID, e.flowDeps.Logout)
 	if err == nil {
 		e.metricInc(MetricLogout)
 		e.metricInc(MetricSessionInvalidated)
@@ -852,8 +867,9 @@ func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string)
 // LogoutByAccessToken may return an error when input validation, dependency calls, or security checks fail.
 // LogoutByAccessToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error {
-	claims, err := e.jwtManager.ParseAccess(tokenStr)
-	if err != nil {
+	e.ensureFlowDeps()
+	result := internalflows.RunLogoutByAccessToken(ctx, tokenStr, e.flowDeps.Logout)
+	if result.Err != nil && result.SessionID == "" {
 		e.emitAudit(ctx, auditEventLogoutSession, false, "", tenantIDFromContext(ctx), "", ErrTokenInvalid, func() map[string]string {
 			return map[string]string{
 				"reason": "invalid_access_token",
@@ -861,8 +877,14 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 		})
 		return ErrTokenInvalid
 	}
-
-	return e.LogoutInTenant(ctx, tenantIDFromToken(claims.TID), claims.SID)
+	if result.Err != nil {
+		e.emitAudit(ctx, auditEventLogoutSession, false, "", result.TenantID, result.SessionID, result.Err, nil)
+		return result.Err
+	}
+	e.metricInc(MetricLogout)
+	e.metricInc(MetricSessionInvalidated)
+	e.emitAudit(ctx, auditEventLogoutSession, true, "", result.TenantID, result.SessionID, nil, nil)
+	return nil
 }
 
 // LogoutAll describes the logoutall operation and its observable behavior.
@@ -870,7 +892,8 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 // LogoutAll may return an error when input validation, dependency calls, or security checks fail.
 // LogoutAll does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutAll(ctx context.Context, userID string) error {
-	return e.LogoutAllInTenant(ctx, tenantIDFromContext(ctx), userID)
+	e.ensureFlowDeps()
+	return e.LogoutAllInTenant(ctx, e.flowDeps.Logout.TenantIDFromContext(ctx), userID)
 }
 
 // LogoutAllInTenant describes the logoutallintenant operation and its observable behavior.
@@ -878,7 +901,8 @@ func (e *Engine) LogoutAll(ctx context.Context, userID string) error {
 // LogoutAllInTenant may return an error when input validation, dependency calls, or security checks fail.
 // LogoutAllInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string) error {
-	err := e.sessionStore.DeleteAllForUser(ctx, tenantID, userID)
+	e.ensureFlowDeps()
+	err := internalflows.RunLogoutAllInTenant(ctx, tenantID, userID, e.flowDeps.Logout)
 	if err == nil {
 		e.metricInc(MetricLogoutAll)
 		e.metricInc(MetricSessionInvalidated)
@@ -1023,26 +1047,91 @@ func (e *Engine) sessionLifetime() time.Duration {
 	return lifetime
 }
 
+func (e *Engine) initFlowDeps() {
+	e.flowDeps = internalflows.Deps{
+		Refresh: internalflows.RefreshDeps{
+			TenantIDFromContext:       tenantIDFromContext,
+			DecodeRefreshToken:        internal.DecodeRefreshToken,
+			NewRefreshSecret:          internal.NewRefreshSecret,
+			HashRefreshSecret:         internal.HashRefreshSecret,
+			EncodeRefreshToken:        internal.EncodeRefreshToken,
+			IssueAccessToken:          e.issueAccessToken,
+			AccountStatusError:        func(status uint8) error { return accountStatusToError(AccountStatus(status)) },
+			ShouldRequireVerified:     e.shouldRequireVerified,
+			PendingVerificationStatus: uint8(AccountPendingVerification),
+			SessionLifetime:           e.sessionLifetime,
+			EnableReplayTracking:      e.config.SessionHardening.EnableReplayTracking,
+			Warn:                      e.warn,
+			RateLimiter:               e.rateLimiter,
+			SessionStore:              e.sessionStore,
+			RefreshHashMismatch:       session.ErrRefreshHashMismatch,
+			RedisNil:                  redis.Nil,
+		},
+		Validate: internalflows.ValidateDeps{
+			ParseAccess: e.jwtManager.ParseAccess,
+			ResolveRouteMode: func(routeMode int) (int, error) {
+				mode, err := e.resolveRouteMode(RouteMode(routeMode))
+				return int(mode), err
+			},
+			Now:                       time.Now,
+			MaxClockSkew:              e.config.SessionHardening.MaxClockSkew,
+			ModeJWTOnly:               int(ModeJWTOnly),
+			ModeHybrid:                int(ModeHybrid),
+			EnablePermissionCheck:     e.config.Security.EnablePermissionVersionCheck,
+			EnableRoleCheck:           e.config.Security.EnableRoleVersionCheck,
+			EnableAccountCheck:        e.config.Security.EnableAccountVersionCheck,
+			ShouldRequireVerified:     e.shouldRequireVerified,
+			PendingVerificationStatus: uint8(AccountPendingVerification),
+			AccountStatusError:        func(status uint8) error { return accountStatusToError(AccountStatus(status)) },
+			ValidateDeviceBinding:     e.validateDeviceBinding,
+			TenantIDFromToken:         tenantIDFromToken,
+			SessionLifetime:           e.sessionLifetime,
+			SessionStore:              e.sessionStore,
+			RedisUnavailable:          session.ErrRedisUnavailable,
+			RedisNil:                  redis.Nil,
+		},
+		Logout: internalflows.LogoutDeps{
+			ParseAccess:         e.jwtManager.ParseAccess,
+			TenantIDFromContext: tenantIDFromContext,
+			TenantIDFromToken:   tenantIDFromToken,
+			SessionStore:        e.sessionStore,
+		},
+		Introspection: internalflows.IntrospectionDeps{
+			SessionStore:                e.sessionStore,
+			RateLimiter:                 e.rateLimiter,
+			MultiTenantEnabled:          e.config.MultiTenant.Enabled,
+			TenantIDFromContext:         tenantIDFromContext,
+			TenantIDFromContextExplicit: tenantIDFromContextExplicit,
+			UnauthorizedErr:             ErrUnauthorized,
+			EngineNotReadyErr:           ErrEngineNotReady,
+			UserNotFoundErr:             ErrUserNotFound,
+			SessionNotFoundErr:          ErrSessionNotFound,
+			RedisNil:                    redis.Nil,
+		},
+	}
+}
+
+func (e *Engine) ensureFlowDeps() {
+	if e == nil {
+		return
+	}
+	if e.flowDeps.Refresh.TenantIDFromContext != nil {
+		return
+	}
+	e.initFlowDeps()
+}
+
 func (e *Engine) resolveRouteMode(routeMode RouteMode) (ValidationMode, error) {
-	switch routeMode {
-	case ModeInherit:
-		switch e.config.ValidationMode {
-		case ModeJWTOnly:
-			return ModeJWTOnly, nil
-		case ModeHybrid:
-			return ModeHybrid, nil
-		case ModeStrict:
-			return ModeStrict, nil
-		default:
-			return 0, ErrInvalidRouteMode
-		}
-	case ModeJWTOnly:
-		return ModeJWTOnly, nil
-	case ModeStrict:
-		return ModeStrict, nil
-	default:
+	mode, ok := internalflows.ResolveRouteMode(int(routeMode), int(e.config.ValidationMode), internalflows.ModeResolverConfig{
+		ModeInherit: int(ModeInherit),
+		ModeJWTOnly: int(ModeJWTOnly),
+		ModeHybrid:  int(ModeHybrid),
+		ModeStrict:  int(ModeStrict),
+	})
+	if !ok {
 		return 0, ErrInvalidRouteMode
 	}
+	return ValidationMode(mode), nil
 }
 
 func parseTenantIDToUint32(tenantID string) uint32 {
@@ -1125,7 +1214,7 @@ func (e *Engine) enforceTOTPForLogin(ctx context.Context, user UserRecord, totpC
 
 	if err := e.totpLimiter.Check(ctx, user.UserID); err != nil {
 		e.metricInc(MetricTOTPFailure)
-		if errors.Is(err, errTOTPRateLimited) {
+		if errors.Is(err, limiters.ErrTOTPRateLimited) {
 			e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPRateLimited, nil)
 			return ErrTOTPRateLimited
 		}
@@ -1149,7 +1238,7 @@ func (e *Engine) enforceTOTPForLogin(ctx context.Context, user UserRecord, totpC
 		recErr := e.totpLimiter.RecordFailure(ctx, user.UserID)
 		e.metricInc(MetricTOTPFailure)
 		if recErr != nil {
-			if errors.Is(recErr, errTOTPRateLimited) {
+			if errors.Is(recErr, limiters.ErrTOTPRateLimited) {
 				e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPRateLimited, nil)
 				return ErrTOTPRateLimited
 			}

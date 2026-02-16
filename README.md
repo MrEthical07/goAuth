@@ -9,6 +9,12 @@ goAuth is a high-performance Go authentication guard for latency-sensitive APIs.
 - Security-focused flow controls including rate limiting, MFA, password reset, and email verification.
 - Middleware integrations for JWT-only, hybrid, and strict validation modes.
 
+## Go Toolchain Policy
+
+- Minimum supported language level: `go 1.24`.
+- CI/developer preferred toolchain: `go1.26.0` (via `toolchain` directive in `go.mod`).
+- Newer toolchains are supported, but compatibility guarantees are defined by the `go` directive.
+
 ## Functionality Supported
 
 Each item links to a dedicated implementation/flow document.
@@ -110,6 +116,35 @@ func main() {
 }
 
 type myUserProvider struct{}
+```
+
+## Redis Deployment Modes (Plug-and-Play)
+
+`Builder.WithRedis(...)` accepts a `redis.UniversalClient`, so the same engine wiring works for standalone, cluster, or sentinel/failover.
+
+```go
+// Standalone
+standalone := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+engine, _ := goAuth.New().WithRedis(standalone) /* ... */.Build()
+
+// Cluster
+cluster := redis.NewClusterClient(&redis.ClusterOptions{
+	Addrs: []string{"10.0.0.10:6379", "10.0.0.11:6379"},
+})
+engine, _ = goAuth.New().WithRedis(cluster) /* ... */.Build()
+
+// Sentinel / failover
+failover := redis.NewFailoverClient(&redis.FailoverOptions{
+	MasterName:    "mymaster",
+	SentinelAddrs: []string{"10.0.0.20:26379", "10.0.0.21:26379"},
+})
+engine, _ = goAuth.New().WithRedis(failover) /* ... */.Build()
+
+// Universal client (auto mode)
+universal := redis.NewUniversalClient(&redis.UniversalOptions{
+	Addrs: []string{"127.0.0.1:6379"},
+})
+engine, _ = goAuth.New().WithRedis(universal) /* ... */.Build()
 ```
 
 ## Documentation Map

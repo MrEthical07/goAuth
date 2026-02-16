@@ -53,6 +53,8 @@ type JWTConfig struct {
 	Issuer        string
 	Audience      string
 	Leeway        time.Duration
+	RequireIAT    bool
+	MaxFutureIAT  time.Duration
 	KeyID         string
 }
 
@@ -334,11 +336,11 @@ const (
 	// ModeInherit is an exported constant or variable used by the authentication engine.
 	ModeInherit ValidationMode = -1
 
-	// ModeJWTOnly is an exported constant or variable used by the authentication engine.
+	// ModeJWTOnly validates access tokens using JWT claims only (no Redis access in validation path).
 	ModeJWTOnly ValidationMode = iota
-	// ModeHybrid is an exported constant or variable used by the authentication engine.
+	// ModeHybrid validates by JWT by default; strict routes can still force Redis-backed checks.
 	ModeHybrid
-	// ModeStrict is an exported constant or variable used by the authentication engine.
+	// ModeStrict validates every request against Redis and fails closed on Redis/session errors.
 	ModeStrict
 )
 
@@ -359,6 +361,8 @@ func defaultConfig() Config {
 			RefreshTTL:    7 * 24 * time.Hour,
 			SigningMethod: "ed25519",
 			Leeway:        30 * time.Second,
+			RequireIAT:    false,
+			MaxFutureIAT:  10 * time.Minute,
 		},
 		Session: SessionConfig{
 			RedisPrefix:             "as",
@@ -551,6 +555,15 @@ func (c *Config) Validate() error {
 	}
 	if c.JWT.Leeway > 2*time.Minute {
 		return errors.New("JWT Leeway must be <= 2m")
+	}
+	if c.JWT.MaxFutureIAT < 0 {
+		return errors.New("JWT MaxFutureIAT must be >= 0")
+	}
+	if c.JWT.MaxFutureIAT > 24*time.Hour {
+		return errors.New("JWT MaxFutureIAT must be <= 24h")
+	}
+	if c.JWT.Audience != "" && strings.TrimSpace(c.JWT.Audience) == "" {
+		return errors.New("JWT Audience must not be empty when configured")
 	}
 
 	// Session

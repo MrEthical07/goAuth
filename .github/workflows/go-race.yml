@@ -19,13 +19,39 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
       - name: Check gofmt
         run: |
           files=$(find . -name '*.go' -not -path './vendor/*')
           test -z "$(gofmt -l $files)"
 
+      - name: Check goimports
+        run: |
+          files=$(find . -name '*.go' -not -path './vendor/*')
+          test -z "$($(go env GOPATH)/bin/goimports -l $files)"
+
       - name: Run unit tests
         run: go test ./...
+
+      - name: Run integration tests
+        run: go test -tags=integration ./test/...
+
+      - name: Install static analysis tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run staticcheck
+        run: $(go env GOPATH)/bin/staticcheck "-checks=all,-ST1000,-ST1003,-ST1005,-U1000" ./...
+
+      - name: Run govulncheck
+        run: $(go env GOPATH)/bin/govulncheck ./...
+
+      - name: Run gosec
+        run: $(go env GOPATH)/bin/gosec ./...
 
   race:
     name: race-${{ matrix.os }}

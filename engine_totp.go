@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/MrEthical07/goAuth/internal/limiters"
 )
 
 // GenerateTOTPSetup describes the generatetotpsetup operation and its observable behavior.
@@ -260,7 +262,7 @@ func (e *Engine) verifyTOTPForUser(ctx context.Context, user UserRecord, code st
 
 	if err := e.totpLimiter.Check(ctx, user.UserID); err != nil {
 		e.metricInc(MetricTOTPFailure)
-		if errors.Is(err, errTOTPRateLimited) {
+		if errors.Is(err, limiters.ErrTOTPRateLimited) {
 			e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPRateLimited, nil)
 			return ErrTOTPRateLimited
 		}
@@ -277,7 +279,7 @@ func (e *Engine) verifyTOTPForUser(ctx context.Context, user UserRecord, code st
 	if err != nil || !ok {
 		e.metricInc(MetricTOTPFailure)
 		recErr := e.totpLimiter.RecordFailure(ctx, user.UserID)
-		if recErr != nil && errors.Is(recErr, errTOTPRateLimited) {
+		if recErr != nil && errors.Is(recErr, limiters.ErrTOTPRateLimited) {
 			e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPRateLimited, nil)
 			return ErrTOTPRateLimited
 		}

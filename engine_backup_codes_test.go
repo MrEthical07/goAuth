@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/MrEthical07/goAuth/internal/limiters"
 )
 
 func TestBackupCodeHashIncludesUserIDSalt(t *testing.T) {
@@ -19,12 +21,27 @@ func TestBackupCodeHashIncludesUserIDSalt(t *testing.T) {
 }
 
 func TestBackupLimiterKeyTenantScoped(t *testing.T) {
-	limiter := newBackupCodeLimiter(nil, TOTPConfig{})
-	if got := limiter.key("t1", "u1"); got != "abk:t1:u1" {
-		t.Fatalf("expected tenant-scoped key abk:t1:u1, got %s", got)
+	mr, rdb := newTestRedis(t)
+	defer mr.Close()
+
+	limiter := limiters.NewBackupCodeLimiter(rdb, limiters.BackupCodeConfig{
+		MaxAttempts: 3,
+		Cooldown:    time.Minute,
+	})
+	ctx := context.Background()
+
+	if err := limiter.RecordFailure(ctx, "t1", "u1"); err != nil {
+		t.Fatalf("record failure (tenant t1) failed: %v", err)
 	}
-	if got := limiter.key("", "u1"); got != "abk:0:u1" {
-		t.Fatalf("expected default tenant key abk:0:u1, got %s", got)
+	if !mr.Exists("abk:t1:u1") {
+		t.Fatal("expected tenant-scoped key abk:t1:u1 to be written")
+	}
+
+	if err := limiter.RecordFailure(ctx, "", "u2"); err != nil {
+		t.Fatalf("record failure (default tenant) failed: %v", err)
+	}
+	if !mr.Exists("abk:0:u2") {
+		t.Fatal("expected default-tenant key abk:0:u2 to be written")
 	}
 }
 

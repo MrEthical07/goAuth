@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"math"
@@ -19,7 +18,24 @@ var ErrRefreshHashMismatch = errors.New("refresh hash mismatch")
 // ErrRedisUnavailable is an exported constant or variable used by the authentication engine.
 var ErrRedisUnavailable = errors.New("redis unavailable")
 
+// ErrRefreshSessionNotFound is returned when the refresh target session does not exist.
+var ErrRefreshSessionNotFound = errors.New("refresh session not found")
+
+// ErrRefreshSessionExpired is returned when the refresh target session is expired.
+var ErrRefreshSessionExpired = errors.New("refresh session expired")
+
+// ErrRefreshSessionCorrupt is returned when the refresh target session blob is invalid.
+var ErrRefreshSessionCorrupt = errors.New("refresh session corrupt")
+
 const minSlidingTTL = time.Second
+
+const (
+	rotateStatusNotFound    int64 = 0
+	rotateStatusExpired     int64 = 1
+	rotateStatusMismatch    int64 = 2
+	rotateStatusRotated     int64 = 3
+	rotateStatusInvalidBlob int64 = 4
+)
 
 const deleteSessionScript = `
 local existed = redis.call("EXISTS", KEYS[1])
@@ -36,47 +52,192 @@ end
 return existed
 `
 
+var deleteSessionLua = redis.NewScript(deleteSessionScript)
+
 const rotateRefreshScript = `
-local current = redis.call("GET", KEYS[1])
-if not current then
-  return 0
-end
-
-if current ~= ARGV[2] then
-  redis.call("DEL", KEYS[1])
-  redis.call("SREM", KEYS[2], ARGV[1])
-  local count = tonumber(redis.call("GET", KEYS[3]) or "0")
-  if count > 1 then
-    redis.call("DECR", KEYS[3])
-  elseif count == 1 then
-    redis.call("DEL", KEYS[3])
+local function read_be64(s, i)
+  local b1 = string.byte(s, i)
+  local b2 = string.byte(s, i + 1)
+  local b3 = string.byte(s, i + 2)
+  local b4 = string.byte(s, i + 3)
+  local b5 = string.byte(s, i + 4)
+  local b6 = string.byte(s, i + 5)
+  local b7 = string.byte(s, i + 6)
+  local b8 = string.byte(s, i + 7)
+  if not b8 then
+    return nil
   end
-  return -1
+  return ((((((((b1 * 256) + b2) * 256 + b3) * 256 + b4) * 256 + b5) * 256 + b6) * 256 + b7) * 256 + b8)
 end
 
-local ttl = tonumber(ARGV[4])
-if ttl == nil or ttl <= 0 then
-  redis.call("DEL", KEYS[1])
-  redis.call("SREM", KEYS[2], ARGV[1])
-  local count = tonumber(redis.call("GET", KEYS[3]) or "0")
-  if count > 1 then
-    redis.call("DECR", KEYS[3])
-  elseif count == 1 then
-    redis.call("DEL", KEYS[3])
+local function parse_session(data)
+  local version = string.byte(data, 1)
+  if not version or version < 1 or version > 5 then
+    return nil
   end
-  return 0
+
+  local idx = 2
+  local user_len = string.byte(data, idx)
+  if not user_len then
+    return nil
+  end
+  idx = idx + 1
+  if #data < idx + user_len - 1 then
+    return nil
+  end
+  local user_id = string.sub(data, idx, idx + user_len - 1)
+  idx = idx + user_len
+
+  local tenant_len = string.byte(data, idx)
+  if not tenant_len then
+    return nil
+  end
+  idx = idx + 1 + tenant_len
+
+  local role_len = string.byte(data, idx)
+  if not role_len then
+    return nil
+  end
+  idx = idx + 1 + role_len
+
+  if #data < idx + 3 then
+    return nil
+  end
+  idx = idx + 4
+
+  if version >= 3 then
+    if #data < idx + 3 then
+      return nil
+    end
+    idx = idx + 4
+  end
+
+  if version >= 4 then
+    if #data < idx + 4 then
+      return nil
+    end
+    idx = idx + 5
+  end
+
+  local mask_len = string.byte(data, idx)
+  if not mask_len then
+    return nil
+  end
+  idx = idx + 1 + mask_len
+
+  local refresh_offset = nil
+  local refresh_hash = nil
+  if version >= 2 then
+    if #data < idx + 31 then
+      return nil
+    end
+    refresh_offset = idx
+    refresh_hash = string.sub(data, idx, idx + 31)
+    idx = idx + 32
+  end
+
+  if version >= 5 then
+    if #data < idx + 63 then
+      return nil
+    end
+    idx = idx + 64
+  end
+
+  if #data < idx + 15 then
+    return nil
+  end
+  idx = idx + 8
+  local expires_at = read_be64(data, idx)
+  if not expires_at then
+    return nil
+  end
+
+  return {
+    user_id = user_id,
+    refresh_hash = refresh_hash,
+    refresh_offset = refresh_offset,
+    expires_at = expires_at
+  }
 end
 
-redis.call("SET", KEYS[1], ARGV[3], "PX", ttl)
-redis.call("SADD", KEYS[2], ARGV[1])
-return 1
+local function decrement_count(count_key)
+  local count = tonumber(redis.call("GET", count_key) or "0")
+  if count > 1 then
+    redis.call("DECR", count_key)
+  elseif count == 1 then
+    redis.call("DEL", count_key)
+  end
+end
+
+local session_key = KEYS[1]
+local count_key = KEYS[2]
+local session_id = ARGV[1]
+local user_prefix = ARGV[2]
+local provided_hash = ARGV[3]
+local next_hash = ARGV[4]
+local now_unix = tonumber(ARGV[5])
+
+local data = redis.call("GET", session_key)
+if not data then
+  return {0}
+end
+
+local parsed = parse_session(data)
+if not parsed or not parsed.user_id then
+  return {4}
+end
+
+local user_key = user_prefix .. parsed.user_id
+
+if parsed.expires_at <= now_unix then
+  local deleted = redis.call("DEL", session_key)
+  redis.call("SREM", user_key, session_id)
+  if deleted == 1 then
+    decrement_count(count_key)
+  end
+  return {1}
+end
+
+if not parsed.refresh_hash or parsed.refresh_hash ~= provided_hash then
+  local deleted = redis.call("DEL", session_key)
+  redis.call("SREM", user_key, session_id)
+  if deleted == 1 then
+    decrement_count(count_key)
+  end
+  return {2}
+end
+
+local ttl = redis.call("PTTL", session_key)
+if ttl <= 0 then
+  local deleted = redis.call("DEL", session_key)
+  redis.call("SREM", user_key, session_id)
+  if deleted == 1 then
+    decrement_count(count_key)
+  end
+  return {1}
+end
+
+if not parsed.refresh_offset then
+  return {4}
+end
+
+local prefix = string.sub(data, 1, parsed.refresh_offset - 1)
+local suffix = string.sub(data, parsed.refresh_offset + 32)
+local updated = prefix .. next_hash .. suffix
+
+redis.call("SET", session_key, updated, "PX", ttl)
+redis.call("SADD", user_key, session_id)
+
+return {3, updated}
 `
+
+var rotateRefreshLua = redis.NewScript(rotateRefreshScript)
 
 // Store defines a public type used by goAuth APIs.
 //
 // Store instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Store struct {
-	redis         *redis.Client
+	redis         redis.UniversalClient
 	prefix        string
 	sliding       bool
 	jitterEnabled bool
@@ -88,7 +249,7 @@ type Store struct {
 // NewStore may return an error when input validation, dependency calls, or security checks fail.
 // NewStore does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func NewStore(
-	redis *redis.Client,
+	redis redis.UniversalClient,
 	prefix string,
 	sliding bool,
 	jitterEnabled bool,
@@ -437,18 +598,8 @@ func (s *Store) EstimateActiveSessions(ctx context.Context, tenantID string) (in
 
 // Ping returns a point-in-time Redis availability check and latency.
 func (s *Store) Ping(ctx context.Context) (time.Duration, error) {
-	opts := *s.redis.Options()
-	opts.MaxRetries = 0
-	opts.MinRetryBackoff = -1
-	opts.MaxRetryBackoff = -1
-	opts.PoolSize = 1
-	opts.MinIdleConns = 0
-
-	probe := redis.NewClient(&opts)
-	defer probe.Close()
-
 	start := time.Now()
-	if err := probe.Ping(ctx).Err(); err != nil {
+	if err := s.redis.Ping(ctx).Err(); err != nil {
 		return time.Since(start), fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	return time.Since(start), nil
@@ -564,56 +715,62 @@ func (s *Store) RotateRefreshHash(
 	nextHash [32]byte,
 ) (*Session, error) {
 	key := s.key(tenantID, sessionID)
-	data, err := s.redis.Get(ctx, key).Bytes()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, redis.Nil
-		}
-		return nil, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-	}
-
-	sess, err := Decode(data)
-	if err != nil {
-		return nil, err
-	}
-	sess.SessionID = sessionID
-	userKey := s.userKey(sess.TenantID, sess.UserID)
-	countKey := s.tenantCountKey(sess.TenantID)
-
-	if subtle.ConstantTimeCompare(sess.RefreshHash[:], providedHash[:]) != 1 {
-		if err := s.deleteSessionAndIndex(ctx, sess.TenantID, sess.UserID, sessionID); err != nil {
-			return nil, err
-		}
-		return nil, ErrRefreshHashMismatch
-	}
-
-	sess.RefreshHash = nextHash
-	ttl := time.Until(time.Unix(sess.ExpiresAt, 0))
-	encoded, err := Encode(sess)
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := s.redis.Eval(
+	result, err := rotateRefreshLua.Run(
 		ctx,
-		rotateRefreshScript,
-		[]string{key, userKey, countKey},
+		s.redis,
+		[]string{key, s.tenantCountKey(tenantID)},
 		sessionID,
-		data,
-		encoded,
-		ttl.Milliseconds(),
-	).Int()
+		s.userKey(tenantID, ""),
+		providedHash[:],
+		nextHash[:],
+		time.Now().Unix(),
+	).Result()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 
-	switch result {
-	case 1:
-		return sess, nil
-	case -1:
+	parts, ok := result.([]interface{})
+	if !ok || len(parts) == 0 {
+		return nil, fmt.Errorf("%w: invalid refresh script response", ErrRedisUnavailable)
+	}
+
+	code, ok := parts[0].(int64)
+	if !ok {
+		return nil, fmt.Errorf("%w: invalid refresh script status", ErrRedisUnavailable)
+	}
+
+	switch code {
+	case rotateStatusNotFound:
+		return nil, errors.Join(redis.Nil, ErrRefreshSessionNotFound)
+	case rotateStatusExpired:
+		return nil, errors.Join(redis.Nil, ErrRefreshSessionExpired)
+	case rotateStatusMismatch:
 		return nil, ErrRefreshHashMismatch
+	case rotateStatusRotated:
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("%w: missing updated session payload", ErrRedisUnavailable)
+		}
+
+		var blob []byte
+		switch v := parts[1].(type) {
+		case string:
+			blob = []byte(v)
+		case []byte:
+			blob = v
+		default:
+			return nil, fmt.Errorf("%w: invalid updated session payload", ErrRedisUnavailable)
+		}
+
+		sess, decErr := Decode(blob)
+		if decErr != nil {
+			return nil, decErr
+		}
+		sess.SessionID = sessionID
+		return sess, nil
+	case rotateStatusInvalidBlob:
+		return nil, errors.Join(ErrRedisUnavailable, ErrRefreshSessionCorrupt)
 	default:
-		return nil, redis.Nil
+		return nil, fmt.Errorf("%w: unknown refresh script status", ErrRedisUnavailable)
 	}
 }
 
@@ -622,7 +779,7 @@ func (s *Store) deleteSessionAndIndex(ctx context.Context, tenantID, userID, ses
 	userKey := s.userKey(tenantID, userID)
 	countKey := s.tenantCountKey(tenantID)
 
-	_, err := s.redis.Eval(ctx, deleteSessionScript, []string{key, userKey, countKey}, sessionID).Result()
+	_, err := deleteSessionLua.Run(ctx, s.redis, []string{key, userKey, countKey}, sessionID).Result()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/limiters"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/MrEthical07/goAuth/session"
 	"github.com/google/uuid"
@@ -30,8 +32,13 @@ func newTestResetEngine(
 		userProvider: up,
 		passwordHash: hasher,
 		sessionStore: session.NewStore(rdb, "as", false, false, 0),
-		resetStore:   newPasswordResetStore(rdb),
-		resetLimiter: newPasswordResetLimiter(rdb, cfg),
+		resetStore:   stores.NewPasswordResetStore(rdb, "apr"),
+		resetLimiter: limiters.NewPasswordResetLimiter(rdb, limiters.PasswordResetConfig{
+			EnableIdentifierThrottle: cfg.EnableIdentifierThrottle,
+			EnableIPThrottle:         cfg.EnableIPThrottle,
+			ResetTTL:                 cfg.ResetTTL,
+			MaxAttempts:              cfg.MaxAttempts,
+		}),
 	}
 }
 

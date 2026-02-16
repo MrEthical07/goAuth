@@ -1,4 +1,4 @@
-package goAuth
+package security
 
 import (
 	"crypto/hmac"
@@ -20,24 +20,28 @@ import (
 
 const totpSecretBytes = 20
 
-type totpManager struct {
+type TOTPConfig struct {
+	Issuer    string
+	Period    int
+	Digits    int
+	Algorithm string
+	Skew      int
+}
+
+type TOTPManager struct {
 	config TOTPConfig
 }
 
-func newTOTPManager(cfg TOTPConfig) *totpManager {
+func NewTOTPManager(cfg TOTPConfig) *TOTPManager {
 	if cfg.Algorithm == "" {
 		cfg.Algorithm = "SHA1"
 	}
-	return &totpManager{config: cfg}
+	return &TOTPManager{config: cfg}
 }
 
-// GenerateSecret describes the generatesecret operation and its observable behavior.
-//
-// GenerateSecret may return an error when input validation, dependency calls, or security checks fail.
-// GenerateSecret does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (m *totpManager) GenerateSecret() ([]byte, string, error) {
+func (m *TOTPManager) GenerateSecret() ([]byte, string, error) {
 	if m == nil {
-		return nil, "", ErrEngineNotReady
+		return nil, "", errors.New("totp manager not initialized")
 	}
 	raw := make([]byte, totpSecretBytes)
 	if _, err := rand.Read(raw); err != nil {
@@ -48,11 +52,7 @@ func (m *totpManager) GenerateSecret() ([]byte, string, error) {
 	return raw, enc.EncodeToString(raw), nil
 }
 
-// ProvisionURI describes the provisionuri operation and its observable behavior.
-//
-// ProvisionURI may return an error when input validation, dependency calls, or security checks fail.
-// ProvisionURI does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (m *totpManager) ProvisionURI(secretBase32, account string) string {
+func (m *TOTPManager) ProvisionURI(secretBase32, account string) string {
 	issuer := m.config.Issuer
 	label := url.PathEscape(issuer + ":" + account)
 
@@ -66,13 +66,9 @@ func (m *totpManager) ProvisionURI(secretBase32, account string) string {
 	return "otpauth://totp/" + label + "?" + v.Encode()
 }
 
-// VerifyCode describes the verifycode operation and its observable behavior.
-//
-// VerifyCode may return an error when input validation, dependency calls, or security checks fail.
-// VerifyCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (m *totpManager) VerifyCode(secret []byte, code string, now time.Time) (bool, int64, error) {
+func (m *TOTPManager) VerifyCode(secret []byte, code string, now time.Time) (bool, int64, error) {
 	if m == nil {
-		return false, 0, ErrEngineNotReady
+		return false, 0, errors.New("totp manager not initialized")
 	}
 
 	trimmed := strings.TrimSpace(code)
@@ -100,6 +96,10 @@ func (m *totpManager) VerifyCode(secret []byte, code string, now time.Time) (boo
 	}
 
 	return false, 0, nil
+}
+
+func HOTPCode(secret []byte, counter int64, digits int, algorithm string) (string, error) {
+	return hotpCode(secret, counter, digits, algorithm)
 }
 
 func hotpCode(secret []byte, counter int64, digits int, algorithm string) (string, error) {
@@ -140,4 +140,13 @@ func hmacFunc(algorithm string) (func() hash.Hash, error) {
 	default:
 		return nil, errors.New("unsupported totp algorithm")
 	}
+}
+
+func isNumericString(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if v[i] < '0' || v[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

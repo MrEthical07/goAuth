@@ -1,4 +1,4 @@
-package goAuth
+package stores
 
 import (
 	"bytes"
@@ -13,44 +13,46 @@ import (
 )
 
 const (
-	mfaLoginKeyPrefix      = "amc"
 	mfaLoginRecordVersion1 = 1
 )
 
 var (
-	errMFALoginChallengeNotFound = errors.New("mfa challenge not found")
-	errMFALoginChallengeExpired  = errors.New("mfa challenge expired")
-	errMFALoginChallengeExceeded = errors.New("mfa challenge attempts exceeded")
-	errMFALoginChallengeBackend  = errors.New("mfa challenge backend unavailable")
+	ErrMFALoginChallengeNotFound = errors.New("mfa challenge not found")
+	ErrMFALoginChallengeExpired  = errors.New("mfa challenge expired")
+	ErrMFALoginChallengeExceeded = errors.New("mfa challenge attempts exceeded")
+	ErrMFALoginChallengeBackend  = errors.New("mfa challenge backend unavailable")
 )
 
-type mfaLoginChallenge struct {
+type MFALoginChallenge struct {
 	UserID    string
 	TenantID  string
 	ExpiresAt int64
 	Attempts  uint16
 }
 
-type mfaLoginChallengeStore struct {
-	redis *redis.Client
+type MFALoginChallengeStore struct {
+	redis  redis.UniversalClient
+	prefix string
 }
 
-func newMFALoginChallengeStore(redisClient *redis.Client) *mfaLoginChallengeStore {
-	return &mfaLoginChallengeStore{redis: redisClient}
+func NewMFALoginChallengeStore(redisClient redis.UniversalClient, prefix string) *MFALoginChallengeStore {
+	if prefix == "" {
+		prefix = "amc"
+	}
+	return &MFALoginChallengeStore{
+		redis:  redisClient,
+		prefix: prefix,
+	}
 }
 
-func (s *mfaLoginChallengeStore) key(challengeID string) string {
-	return mfaLoginKeyPrefix + ":" + challengeID
+func (s *MFALoginChallengeStore) key(challengeID string) string {
+	return s.prefix + ":" + challengeID
 }
 
-// Save describes the save operation and its observable behavior.
-//
-// Save may return an error when input validation, dependency calls, or security checks fail.
-// Save does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (s *mfaLoginChallengeStore) Save(
+func (s *MFALoginChallengeStore) Save(
 	ctx context.Context,
 	challengeID string,
-	record *mfaLoginChallenge,
+	record *MFALoginChallenge,
 	ttl time.Duration,
 ) error {
 	encoded, err := encodeMFALoginChallenge(record)
@@ -58,22 +60,18 @@ func (s *mfaLoginChallengeStore) Save(
 		return err
 	}
 	if err := s.redis.Set(ctx, s.key(challengeID), encoded, ttl).Err(); err != nil {
-		return fmt.Errorf("%w: %v", errMFALoginChallengeBackend, err)
+		return fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}
 	return nil
 }
 
-// Get describes the get operation and its observable behavior.
-//
-// Get may return an error when input validation, dependency calls, or security checks fail.
-// Get does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (s *mfaLoginChallengeStore) Get(ctx context.Context, challengeID string) (*mfaLoginChallenge, error) {
+func (s *MFALoginChallengeStore) Get(ctx context.Context, challengeID string) (*MFALoginChallenge, error) {
 	data, err := s.redis.Get(ctx, s.key(challengeID)).Bytes()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil, errMFALoginChallengeNotFound
+			return nil, ErrMFALoginChallengeNotFound
 		}
-		return nil, fmt.Errorf("%w: %v", errMFALoginChallengeBackend, err)
+		return nil, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}
 
 	record, err := decodeMFALoginChallenge(data)
@@ -82,28 +80,20 @@ func (s *mfaLoginChallengeStore) Get(ctx context.Context, challengeID string) (*
 	}
 	if time.Now().Unix() > record.ExpiresAt {
 		_, _ = s.redis.Del(ctx, s.key(challengeID)).Result()
-		return nil, errMFALoginChallengeExpired
+		return nil, ErrMFALoginChallengeExpired
 	}
 	return record, nil
 }
 
-// Delete describes the delete operation and its observable behavior.
-//
-// Delete may return an error when input validation, dependency calls, or security checks fail.
-// Delete does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (s *mfaLoginChallengeStore) Delete(ctx context.Context, challengeID string) (bool, error) {
+func (s *MFALoginChallengeStore) Delete(ctx context.Context, challengeID string) (bool, error) {
 	n, err := s.redis.Del(ctx, s.key(challengeID)).Result()
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", errMFALoginChallengeBackend, err)
+		return false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}
 	return n > 0, nil
 }
 
-// RecordFailure describes the recordfailure operation and its observable behavior.
-//
-// RecordFailure may return an error when input validation, dependency calls, or security checks fail.
-// RecordFailure does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (s *mfaLoginChallengeStore) RecordFailure(
+func (s *MFALoginChallengeStore) RecordFailure(
 	ctx context.Context,
 	challengeID string,
 	maxAttempts int,
@@ -131,7 +121,7 @@ func (s *mfaLoginChallengeStore) RecordFailure(
 				if err != nil {
 					return err
 				}
-				return errMFALoginChallengeExpired
+				return ErrMFALoginChallengeExpired
 			}
 
 			record.Attempts++
@@ -156,7 +146,7 @@ func (s *mfaLoginChallengeStore) RecordFailure(
 				if err != nil {
 					return err
 				}
-				return errMFALoginChallengeExpired
+				return ErrMFALoginChallengeExpired
 			}
 
 			updated, err := encodeMFALoginChallenge(record)
@@ -175,20 +165,20 @@ func (s *mfaLoginChallengeStore) RecordFailure(
 		}
 		if err != nil {
 			if errors.Is(err, redis.Nil) {
-				return false, errMFALoginChallengeNotFound
+				return false, ErrMFALoginChallengeNotFound
 			}
-			if errors.Is(err, errMFALoginChallengeExpired) {
+			if errors.Is(err, ErrMFALoginChallengeExpired) {
 				return false, err
 			}
-			return false, fmt.Errorf("%w: %v", errMFALoginChallengeBackend, err)
+			return false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 		}
 		return exceeded, nil
 	}
 
-	return false, errMFALoginChallengeNotFound
+	return false, ErrMFALoginChallengeNotFound
 }
 
-func encodeMFALoginChallenge(record *mfaLoginChallenge) ([]byte, error) {
+func encodeMFALoginChallenge(record *MFALoginChallenge) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte(mfaLoginRecordVersion1)
 
@@ -214,7 +204,7 @@ func encodeMFALoginChallenge(record *mfaLoginChallenge) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func decodeMFALoginChallenge(data []byte) (*mfaLoginChallenge, error) {
+func decodeMFALoginChallenge(data []byte) (*MFALoginChallenge, error) {
 	reader := bytes.NewReader(data)
 
 	version, err := reader.ReadByte()
@@ -225,7 +215,7 @@ func decodeMFALoginChallenge(data []byte) (*mfaLoginChallenge, error) {
 		return nil, errors.New("invalid mfa challenge version")
 	}
 
-	record := &mfaLoginChallenge{}
+	record := &MFALoginChallenge{}
 	if err := binary.Read(reader, binary.BigEndian, &record.Attempts); err != nil {
 		return nil, err
 	}

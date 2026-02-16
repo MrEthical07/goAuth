@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/limiters"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/MrEthical07/goAuth/session"
 	"github.com/google/uuid"
@@ -47,8 +49,13 @@ func newTestEmailVerificationEngine(
 		},
 		userProvider:        up,
 		sessionStore:        session.NewStore(rdb, "as", false, false, 0),
-		verificationStore:   newEmailVerificationStore(rdb),
-		verificationLimiter: newEmailVerificationLimiter(rdb, cfg),
+		verificationStore:   stores.NewEmailVerificationStore(rdb, "apv"),
+		verificationLimiter: limiters.NewEmailVerificationLimiter(rdb, limiters.EmailVerificationConfig{
+			EnableIdentifierThrottle: cfg.EnableIdentifierThrottle,
+			EnableIPThrottle:         cfg.EnableIPThrottle,
+			VerificationTTL:          cfg.VerificationTTL,
+			MaxAttempts:              cfg.MaxAttempts,
+		}),
 	}
 }
 
