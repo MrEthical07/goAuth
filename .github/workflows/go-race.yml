@@ -10,6 +10,8 @@ jobs:
   check:
     name: fmt-and-test
     runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,6 +20,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
 
       - name: Enforce root source whitelist
         run: |
@@ -70,15 +73,14 @@ jobs:
       - name: Run staticcheck
         run: $(go env GOPATH)/bin/staticcheck "-checks=all,-ST1000,-ST1003,-ST1005,-U1000" ./...
 
-      - name: Run govulncheck
-        run: $(go env GOPATH)/bin/govulncheck ./...
-
-      - name: Run gosec
-        run: $(go env GOPATH)/bin/gosec ./...
+      - name: Run security scanners with baseline
+        run: bash security/run_scanners.sh
 
   race:
     name: race-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      GOTOOLCHAIN: local
     strategy:
       fail-fast: false
       matrix:
@@ -93,6 +95,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
 
       - name: Run race tests
         run: go test -race ./...

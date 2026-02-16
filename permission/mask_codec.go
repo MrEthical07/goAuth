@@ -12,27 +12,58 @@ import (
 // EncodeMask does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func EncodeMask(mask interface{}) ([]byte, error) {
 	buf := new(bytes.Buffer)
+	write := func(v uint64) error {
+		return binary.Write(buf, binary.BigEndian, v)
+	}
 
 	switch m := mask.(type) {
 	case *Mask64:
 		return uint64ToBytes(uint64(*m)), nil
 	case *Mask128:
-		binary.Write(buf, binary.BigEndian, m.A)
-		binary.Write(buf, binary.BigEndian, m.B)
+		if err := write(m.A); err != nil {
+			return nil, err
+		}
+		if err := write(m.B); err != nil {
+			return nil, err
+		}
 	case *Mask256:
-		binary.Write(buf, binary.BigEndian, m.A)
-		binary.Write(buf, binary.BigEndian, m.B)
-		binary.Write(buf, binary.BigEndian, m.C)
-		binary.Write(buf, binary.BigEndian, m.D)
+		if err := write(m.A); err != nil {
+			return nil, err
+		}
+		if err := write(m.B); err != nil {
+			return nil, err
+		}
+		if err := write(m.C); err != nil {
+			return nil, err
+		}
+		if err := write(m.D); err != nil {
+			return nil, err
+		}
 	case *Mask512:
-		binary.Write(buf, binary.BigEndian, m.A)
-		binary.Write(buf, binary.BigEndian, m.B)
-		binary.Write(buf, binary.BigEndian, m.C)
-		binary.Write(buf, binary.BigEndian, m.D)
-		binary.Write(buf, binary.BigEndian, m.E)
-		binary.Write(buf, binary.BigEndian, m.F)
-		binary.Write(buf, binary.BigEndian, m.G)
-		binary.Write(buf, binary.BigEndian, m.H)
+		if err := write(m.A); err != nil {
+			return nil, err
+		}
+		if err := write(m.B); err != nil {
+			return nil, err
+		}
+		if err := write(m.C); err != nil {
+			return nil, err
+		}
+		if err := write(m.D); err != nil {
+			return nil, err
+		}
+		if err := write(m.E); err != nil {
+			return nil, err
+		}
+		if err := write(m.F); err != nil {
+			return nil, err
+		}
+		if err := write(m.G); err != nil {
+			return nil, err
+		}
+		if err := write(m.H); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errors.New("invalid mask type")
 	}

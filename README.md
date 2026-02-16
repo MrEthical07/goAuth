@@ -156,6 +156,8 @@ engine, _ = goAuth.New().WithRedis(universal) /* ... */.Build()
 - [API reference](docs/api-reference.md)
 - [Concurrency model](docs/concurrency-model.md)
 - [Security model](docs/security-model.md)
+- [Security scanner workflow](security/README.md)
+- [Security findings register](SECURITY_FINDINGS.md)
 - [Benchmarks summary](docs/benchmarks.md)
 
 ### Package/file-level technical docs
