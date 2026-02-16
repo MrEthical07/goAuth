@@ -19,6 +19,29 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Enforce root source whitelist
+        run: |
+          set -euo pipefail
+
+          expected="$(printf '%s\n' builder.go config.go context.go doc.go engine.go errors.go goAuth.go types.go | sort)"
+          actual="$(ls -1 *.go | grep -v '_test.go$' | sort)"
+
+          if [ "$actual" != "$expected" ]; then
+            echo "Root source file whitelist mismatch"
+            echo "Expected:"
+            echo "$expected"
+            echo "Actual:"
+            echo "$actual"
+            exit 1
+          fi
+
+          disallowed="$(ls -1 *.go | grep -v '_test.go$' | grep -E '(limiter|store|audit|metrics|engine_)' || true)"
+          if [ -n "$disallowed" ]; then
+            echo "Disallowed root source file names detected:"
+            echo "$disallowed"
+            exit 1
+          fi
+
       - name: Install goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
 
