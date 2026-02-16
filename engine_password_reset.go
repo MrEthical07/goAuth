@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/google/uuid"
@@ -21,114 +22,7 @@ import (
 // RequestPasswordReset may return an error when input validation, dependency calls, or security checks fail.
 // RequestPasswordReset does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {
-	if !e.config.PasswordReset.Enabled {
-		e.emitAudit(ctx, auditEventPasswordResetRequest, false, "", tenantIDFromContext(ctx), "", ErrPasswordResetDisabled, nil)
-		return "", ErrPasswordResetDisabled
-	}
-	if e.passwordHash == nil || e.resetStore == nil || e.resetLimiter == nil {
-		return "", ErrEngineNotReady
-	}
-	if identifier == "" {
-		e.emitAudit(ctx, auditEventPasswordResetRequest, false, "", tenantIDFromContext(ctx), "", ErrPasswordResetInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "empty_identifier",
-			}
-		})
-		return "", ErrPasswordResetInvalid
-	}
-
-	tenantID := tenantIDFromContext(ctx)
-	ip := clientIPFromContext(ctx)
-	if err := e.resetLimiter.CheckRequest(ctx, tenantID, identifier, ip); err != nil {
-		mapped := mapPasswordResetLimiterError(err)
-		if errors.Is(mapped, ErrPasswordResetRateLimited) {
-			e.emitAudit(ctx, auditEventPasswordResetRequest, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-				}
-			})
-			e.emitRateLimit(ctx, "password_reset_request", tenantID, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-				}
-			})
-		} else {
-			e.emitAudit(ctx, auditEventPasswordResetRequest, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-				}
-			})
-		}
-		return "", mapped
-	}
-
-	user, err := e.userProvider.GetUserByIdentifier(identifier)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", err
-		}
-		if sleepErr := sleepPasswordResetEnumerationDelay(ctx); sleepErr != nil {
-			return "", sleepErr
-		}
-		_, challenge, _, genErr := e.generatePasswordResetChallenge(e.config.PasswordReset.Strategy, e.config.PasswordReset.OTPDigits)
-		if genErr != nil {
-			e.emitAudit(ctx, auditEventPasswordResetRequest, false, "", tenantID, "", ErrPasswordResetUnavailable, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-					"reason":     "fake_generation_failed",
-				}
-			})
-			return "", ErrPasswordResetUnavailable
-		}
-		e.emitAudit(ctx, auditEventPasswordResetRequest, true, "", tenantID, "", nil, func() map[string]string {
-			return map[string]string{
-				"identifier":       identifier,
-				"enumeration_safe": "true",
-			}
-		})
-		e.metricInc(MetricPasswordResetRequest)
-		return challenge, nil
-	}
-
-	effectiveTenant := tenantID
-	if user.TenantID != "" {
-		effectiveTenant = user.TenantID
-	}
-
-	resetID, challenge, secretHash, err := e.generatePasswordResetChallenge(
-		e.config.PasswordReset.Strategy,
-		e.config.PasswordReset.OTPDigits,
-	)
-	if err != nil {
-		return "", ErrPasswordResetUnavailable
-	}
-
-	expiresAt := time.Now().Add(e.config.PasswordReset.ResetTTL).Unix()
-	record := &stores.PasswordResetRecord{
-		UserID:     user.UserID,
-		SecretHash: secretHash,
-		ExpiresAt:  expiresAt,
-		Attempts:   0,
-		Strategy:   int(e.config.PasswordReset.Strategy),
-	}
-
-	if err := e.resetStore.Save(ctx, effectiveTenant, resetID, record, e.config.PasswordReset.ResetTTL); err != nil {
-		mapped := mapPasswordResetStoreError(err)
-		e.emitAudit(ctx, auditEventPasswordResetRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
-			return map[string]string{
-				"identifier": identifier,
-			}
-		})
-		return "", mapped
-	}
-
-	e.emitAudit(ctx, auditEventPasswordResetRequest, true, user.UserID, effectiveTenant, "", nil, func() map[string]string {
-		return map[string]string{
-			"identifier": identifier,
-		}
-	})
-	e.metricInc(MetricPasswordResetRequest)
-	return challenge, nil
+	return internalflows.RunRequestPasswordReset(ctx, identifier, e.passwordResetFlowDeps())
 }
 
 // ConfirmPasswordReset describes the confirmpasswordreset operation and its observable behavior.
@@ -160,192 +54,152 @@ func (e *Engine) ConfirmPasswordResetWithBackupCode(ctx context.Context, challen
 // ConfirmPasswordResetWithMFA may return an error when input validation, dependency calls, or security checks fail.
 // ConfirmPasswordResetWithMFA does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword, mfaType, mfaCode string) error {
-	if !e.config.PasswordReset.Enabled {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantIDFromContext(ctx), "", ErrPasswordResetDisabled, nil)
-		return ErrPasswordResetDisabled
+	return internalflows.RunConfirmPasswordResetWithMFA(ctx, challenge, newPassword, mfaType, mfaCode, e.passwordResetFlowDeps())
+}
+
+func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
+	var cfg Config
+	if e != nil {
+		cfg = e.config
 	}
-	if e.passwordHash == nil || e.resetStore == nil || e.resetLimiter == nil {
-		return ErrEngineNotReady
+
+	deps := internalflows.PasswordResetDeps{
+		Enabled:               cfg.PasswordReset.Enabled,
+		Strategy:              int(cfg.PasswordReset.Strategy),
+		OTPDigits:             cfg.PasswordReset.OTPDigits,
+		ResetTTL:              cfg.PasswordReset.ResetTTL,
+		MaxAttempts:           cfg.PasswordReset.MaxAttempts,
+		RequireMFA:            cfg.TOTP.Enabled && (cfg.TOTP.RequireTOTPForPasswordReset || cfg.TOTP.RequireForPasswordReset),
+		TenantIDFromContext:   tenantIDFromContext,
+		ClientIPFromContext:   clientIPFromContext,
+		Now:                   time.Now,
+		AccountStatusError: func(status uint8) error {
+			return accountStatusToError(AccountStatus(status))
+		},
+		MapLimiterError:   mapPasswordResetLimiterError,
+		MapStoreError:     mapPasswordResetStoreError,
+		IsStoreNotFound: func(err error) bool {
+			return errors.Is(err, stores.ErrResetNotFound)
+		},
+		GenerateChallenge: func(strategy int, otpDigits int) (string, string, [32]byte, error) {
+			return e.generatePasswordResetChallenge(ResetStrategyType(strategy), otpDigits)
+		},
+		ParseChallenge: func(strategy int, challenge string, otpDigits int) (string, [32]byte, error) {
+			return parsePasswordResetChallenge(ResetStrategyType(strategy), challenge, otpDigits)
+		},
+		SleepEnumerationDelay: sleepPasswordResetEnumerationDelay,
+		MetricInc: func(id int) {
+			e.metricInc(MetricID(id))
+		},
+		EmitAudit:     e.emitAudit,
+		EmitRateLimit: e.emitRateLimit,
+		Metrics: internalflows.PasswordResetMetrics{
+			PasswordResetRequest:          int(MetricPasswordResetRequest),
+			PasswordResetConfirmSuccess:   int(MetricPasswordResetConfirmSuccess),
+			PasswordResetConfirmFailure:   int(MetricPasswordResetConfirmFailure),
+			PasswordResetAttemptsExceeded: int(MetricPasswordResetAttemptsExceeded),
+		},
+		Events: internalflows.PasswordResetEvents{
+			PasswordResetRequest: auditEventPasswordResetRequest,
+			PasswordResetConfirm: auditEventPasswordResetConfirm,
+			PasswordResetReplay:  auditEventPasswordResetReplay,
+		},
+		Errors: internalflows.PasswordResetErrors{
+			EngineNotReady:            ErrEngineNotReady,
+			PasswordResetDisabled:     ErrPasswordResetDisabled,
+			PasswordResetInvalid:      ErrPasswordResetInvalid,
+			PasswordResetRateLimited:  ErrPasswordResetRateLimited,
+			PasswordResetUnavailable:  ErrPasswordResetUnavailable,
+			PasswordResetAttempts:     ErrPasswordResetAttempts,
+			PasswordPolicy:            ErrPasswordPolicy,
+			UserNotFound:              ErrUserNotFound,
+			SessionInvalidationFailed: ErrSessionInvalidationFailed,
+			TOTPInvalid:               ErrTOTPInvalid,
+		},
 	}
-	if challenge == "" || newPassword == "" {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantIDFromContext(ctx), "", ErrPasswordPolicy, func() map[string]string {
-			return map[string]string{
-				"reason": "invalid_input",
+
+	if e != nil && e.resetLimiter != nil {
+		deps.CheckRequestLimiter = e.resetLimiter.CheckRequest
+		deps.CheckConfirmLimiter = e.resetLimiter.CheckConfirm
+	}
+	if e != nil && e.userProvider != nil {
+		deps.GetUserByIdentifier = func(identifier string) (internalflows.PasswordResetUser, error) {
+			user, err := e.userProvider.GetUserByIdentifier(identifier)
+			if err != nil {
+				return internalflows.PasswordResetUser{}, err
 			}
-		})
-		return ErrPasswordPolicy
-	}
-
-	resetID, providedHash, err := parsePasswordResetChallenge(
-		e.config.PasswordReset.Strategy,
-		challenge,
-		e.config.PasswordReset.OTPDigits,
-	)
-	if err != nil {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantIDFromContext(ctx), "", ErrPasswordResetInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "parse_failed",
+			return internalflows.PasswordResetUser{
+				UserID:   user.UserID,
+				TenantID: user.TenantID,
+				Status:   uint8(user.Status),
+			}, nil
+		}
+		deps.GetUserByID = func(userID string) (internalflows.PasswordResetUser, error) {
+			user, err := e.userProvider.GetUserByID(userID)
+			if err != nil {
+				return internalflows.PasswordResetUser{}, err
 			}
-		})
-		return ErrPasswordResetInvalid
+			return internalflows.PasswordResetUser{
+				UserID:   user.UserID,
+				TenantID: user.TenantID,
+				Status:   uint8(user.Status),
+			}, nil
+		}
+		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
 	}
-
-	tenantID := tenantIDFromContext(ctx)
-	if err := e.resetLimiter.CheckConfirm(ctx, tenantID, resetID, clientIPFromContext(ctx)); err != nil {
-		mapped := mapPasswordResetLimiterError(err)
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		if errors.Is(mapped, ErrPasswordResetRateLimited) {
-			e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
-			})
-			e.emitRateLimit(ctx, "password_reset_confirm", tenantID, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
-			})
-		} else {
-			e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
-			})
-		}
-		return mapped
+	if e != nil && e.passwordHash != nil {
+		deps.HashPassword = e.passwordHash.Hash
 	}
-
-	if e.config.TOTP.Enabled && (e.config.TOTP.RequireTOTPForPasswordReset || e.config.TOTP.RequireForPasswordReset) {
-		peek, err := e.resetStore.Get(ctx, tenantID, resetID)
-		if err != nil {
-			mapped := mapPasswordResetStoreError(err)
-			e.metricInc(MetricPasswordResetConfirmFailure)
-			e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
-			})
-			return mapped
+	if e != nil && e.resetStore != nil {
+		deps.SaveResetRecord = func(ctx context.Context, tenantID, resetID string, record internalflows.PasswordResetStoreRecord, ttl time.Duration) error {
+			return e.resetStore.Save(ctx, tenantID, resetID, &stores.PasswordResetRecord{
+				UserID:     record.UserID,
+				SecretHash: record.SecretHash,
+				ExpiresAt:  record.ExpiresAt,
+				Attempts:   record.Attempts,
+				Strategy:   record.Strategy,
+			}, ttl)
 		}
-		user, err := e.userProvider.GetUserByID(peek.UserID)
-		if err != nil {
-			e.metricInc(MetricPasswordResetConfirmFailure)
-			e.emitAudit(ctx, auditEventPasswordResetConfirm, false, peek.UserID, tenantID, "", ErrUserNotFound, nil)
-			return ErrUserNotFound
-		}
-		var mfaErr error
-		switch strings.ToLower(strings.TrimSpace(mfaType)) {
-		case "", "totp":
-			mfaErr = e.verifyTOTPForUser(ctx, user, mfaCode)
-		case "backup":
-			mfaErr = e.VerifyBackupCodeInTenant(ctx, user.TenantID, user.UserID, mfaCode)
-		default:
-			mfaErr = ErrTOTPInvalid
-		}
-		if mfaErr != nil {
-			e.metricInc(MetricPasswordResetConfirmFailure)
-			e.emitAudit(ctx, auditEventPasswordResetConfirm, false, peek.UserID, user.TenantID, "", mfaErr, func() map[string]string {
-				return map[string]string{
-					"reason": "totp_required_for_reset",
-				}
-			})
-			return mfaErr
-		}
-	}
-
-	record, err := e.resetStore.Consume(
-		ctx,
-		tenantID,
-		resetID,
-		providedHash,
-		int(e.config.PasswordReset.Strategy),
-		e.config.PasswordReset.MaxAttempts,
-	)
-	if err != nil {
-		mapped := mapPasswordResetStoreError(err)
-		if errors.Is(err, stores.ErrResetNotFound) {
-			e.metricInc(MetricPasswordResetConfirmFailure)
-			e.emitAudit(ctx, auditEventPasswordResetReplay, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
-			})
-		} else if errors.Is(mapped, ErrPasswordResetAttempts) {
-			e.metricInc(MetricPasswordResetAttemptsExceeded)
-			e.metricInc(MetricPasswordResetConfirmFailure)
-			e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-					"reason":   "attempts_exceeded",
-				}
-			})
-		} else {
-			e.metricInc(MetricPasswordResetConfirmFailure)
-			e.emitAudit(ctx, auditEventPasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
-			})
-		}
-		return mapped
-	}
-	user, err := e.userProvider.GetUserByID(record.UserID)
-	if err != nil {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, record.UserID, tenantID, "", ErrUserNotFound, nil)
-		return ErrUserNotFound
-	}
-	if statusErr := accountStatusToError(user.Status); statusErr != nil {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, record.UserID, user.TenantID, "", statusErr, func() map[string]string {
-			return map[string]string{
-				"reason": "account_status",
+		deps.GetResetRecord = func(ctx context.Context, tenantID, resetID string) (internalflows.PasswordResetStoreRecord, error) {
+			record, err := e.resetStore.Get(ctx, tenantID, resetID)
+			if err != nil {
+				return internalflows.PasswordResetStoreRecord{}, err
 			}
-		})
-		return statusErr
-	}
-
-	newHash, err := e.passwordHash.Hash(newPassword)
-	if err != nil {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, record.UserID, user.TenantID, "", ErrPasswordPolicy, func() map[string]string {
-			return map[string]string{
-				"reason": "hash_policy",
+			return internalflows.PasswordResetStoreRecord{
+				UserID:     record.UserID,
+				SecretHash: record.SecretHash,
+				ExpiresAt:  record.ExpiresAt,
+				Attempts:   record.Attempts,
+				Strategy:   record.Strategy,
+			}, nil
+		}
+		deps.ConsumeResetRecord = func(ctx context.Context, tenantID, resetID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.PasswordResetStoreRecord, error) {
+			record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
+			if err != nil {
+				return internalflows.PasswordResetStoreRecord{}, err
 			}
-		})
-		return ErrPasswordPolicy
+			return internalflows.PasswordResetStoreRecord{
+				UserID:     record.UserID,
+				SecretHash: record.SecretHash,
+				ExpiresAt:  record.ExpiresAt,
+				Attempts:   record.Attempts,
+				Strategy:   record.Strategy,
+			}, nil
+		}
+	}
+	if e != nil {
+		deps.LogoutAllInTenant = e.LogoutAllInTenant
+		deps.VerifyTOTPForUser = func(ctx context.Context, user internalflows.PasswordResetUser, code string) error {
+			return e.verifyTOTPForUser(ctx, UserRecord{
+				UserID:   user.UserID,
+				TenantID: user.TenantID,
+				Status:   AccountStatus(user.Status),
+			}, code)
+		}
+		deps.VerifyBackupCodeInTenant = e.VerifyBackupCodeInTenant
 	}
 
-	if err := e.userProvider.UpdatePasswordHash(record.UserID, newHash); err != nil {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, record.UserID, user.TenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"reason": "update_hash_failed",
-			}
-		})
-		return err
-	}
-
-	invalidateTenant := tenantID
-	if user.TenantID != "" {
-		invalidateTenant = user.TenantID
-	}
-	if err := e.LogoutAllInTenant(ctx, invalidateTenant, record.UserID); err != nil {
-		e.metricInc(MetricPasswordResetConfirmFailure)
-		e.emitAudit(ctx, auditEventPasswordResetConfirm, false, record.UserID, invalidateTenant, "", ErrSessionInvalidationFailed, func() map[string]string {
-			return map[string]string{
-				"reason": "session_invalidation_failed",
-			}
-		})
-		return errors.Join(ErrSessionInvalidationFailed, err)
-	}
-
-	e.metricInc(MetricPasswordResetConfirmSuccess)
-	e.emitAudit(ctx, auditEventPasswordResetConfirm, true, record.UserID, invalidateTenant, "", nil, nil)
-	return nil
+	return deps
 }
 
 func (e *Engine) generatePasswordResetChallenge(
