@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
-	"github.com/MrEthical07/goAuth/session"
 )
 
 // CreateAccount describes the createaccount operation and its observable behavior.
@@ -15,252 +15,189 @@ import (
 // CreateAccount may return an error when input validation, dependency calls, or security checks fail.
 // CreateAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) CreateAccount(ctx context.Context, req CreateAccountRequest) (*CreateAccountResult, error) {
-	if !e.config.Account.Enabled {
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantIDFromContext(ctx), "", ErrAccountCreationDisabled, func() map[string]string {
-			return map[string]string{
-				"reason": "feature_disabled",
-			}
-		})
-		return nil, ErrAccountCreationDisabled
-	}
-	if e.passwordHash == nil || e.userProvider == nil || e.accountLimiter == nil {
-		return nil, ErrEngineNotReady
-	}
-	if e.config.Account.AutoLogin && e.config.JWT.RefreshTTL <= 0 {
-		return nil, ErrAccountCreationUnavailable
-	}
-
-	tenantID := tenantIDFromContext(ctx)
-	if e.config.MultiTenant.Enabled {
-		explicitTenantID, ok := tenantIDFromContextExplicit(ctx)
-		if !ok {
-			return nil, ErrAccountCreationInvalid
-		}
-		tenantID = explicitTenantID
-	}
-
-	if req.Identifier == "" {
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantID, "", ErrAccountCreationInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "empty_identifier",
-			}
-		})
-		return nil, ErrAccountCreationInvalid
-	}
-	if req.Password == "" {
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantID, "", ErrPasswordPolicy, func() map[string]string {
-			return map[string]string{
-				"identifier": req.Identifier,
-				"reason":     "empty_password",
-			}
-		})
-		return nil, ErrPasswordPolicy
-	}
-
-	role := req.Role
-	if role == "" {
-		role = e.config.Account.DefaultRole
-	}
-	if role == "" {
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantID, "", ErrAccountRoleInvalid, func() map[string]string {
-			return map[string]string{
-				"identifier": req.Identifier,
-				"reason":     "role_missing",
-			}
-		})
-		return nil, ErrAccountRoleInvalid
-	}
-	if _, ok := e.roleManager.GetMask(role); !ok {
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantID, "", ErrAccountRoleInvalid, func() map[string]string {
-			return map[string]string{
-				"identifier": req.Identifier,
-				"reason":     "role_invalid",
-			}
-		})
-		return nil, ErrAccountRoleInvalid
-	}
-
-	if err := e.accountLimiter.Enforce(ctx, tenantID, req.Identifier, clientIPFromContext(ctx)); err != nil {
-		mapped := mapAccountLimiterError(err)
-		if errors.Is(mapped, ErrAccountCreationRateLimited) {
-			e.metricInc(MetricAccountCreationRateLimited)
-			e.emitAudit(ctx, auditEventAccountCreationRateLimited, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"identifier": req.Identifier,
-				}
-			})
-			e.emitRateLimit(ctx, "account_creation", tenantID, func() map[string]string {
-				return map[string]string{
-					"identifier": req.Identifier,
-				}
-			})
-		}
-		return nil, mapped
-	}
-
-	initialStatus := AccountActive
-	if e.config.EmailVerification.Enabled {
-		initialStatus = AccountPendingVerification
-	}
-
-	passwordHash, err := e.passwordHash.Hash(req.Password)
+	result, err := internalflows.RunCreateAccount(ctx, toFlowAccountCreateRequest(req), e.accountFlowDeps())
+	out := fromFlowAccountCreateResult(result)
 	if err != nil {
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantID, "", ErrPasswordPolicy, func() map[string]string {
-			return map[string]string{
-				"identifier": req.Identifier,
-				"reason":     "hash_policy",
-			}
-		})
-		return nil, ErrPasswordPolicy
+		return out, err
 	}
-
-	created, err := e.userProvider.CreateUser(ctx, CreateUserInput{
-		Identifier:        req.Identifier,
-		PasswordHash:      passwordHash,
-		Role:              role,
-		TenantID:          tenantID,
-		Status:            initialStatus,
-		PermissionVersion: 1,
-		RoleVersion:       1,
-		AccountVersion:    1,
-	})
-	if err != nil {
-		if errors.Is(err, ErrProviderDuplicateIdentifier) {
-			e.metricInc(MetricAccountCreationDuplicate)
-			e.emitAudit(ctx, auditEventAccountCreationDuplicate, false, "", tenantID, "", ErrAccountExists, func() map[string]string {
-				return map[string]string{
-					"identifier": req.Identifier,
-				}
-			})
-			return nil, ErrAccountExists
-		}
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"identifier": req.Identifier,
-				"reason":     "provider_create_failed",
-			}
-		})
-		return nil, err
-	}
-
-	if created.UserID == "" {
-		e.emitAudit(ctx, auditEventAccountCreationFailure, false, "", tenantID, "", ErrAccountCreationUnavailable, func() map[string]string {
-			return map[string]string{
-				"identifier": req.Identifier,
-				"reason":     "missing_user_id",
-			}
-		})
-		return nil, ErrAccountCreationUnavailable
-	}
-	if created.Role == "" {
-		created.Role = role
-	}
-	if created.TenantID == "" {
-		created.TenantID = tenantID
-	}
-	if created.PermissionVersion == 0 {
-		created.PermissionVersion = 1
-	}
-	if created.RoleVersion == 0 {
-		created.RoleVersion = 1
-	}
-	if created.AccountVersion == 0 {
-		created.AccountVersion = 1
-	}
-
-	result := &CreateAccountResult{
-		UserID: created.UserID,
-		Role:   created.Role,
-	}
-
-	if e.config.Account.AutoLogin {
-		if !(e.shouldRequireVerified() && created.Status == AccountPendingVerification) {
-			accessToken, refreshToken, err := e.issueSessionTokens(ctx, created)
-			if err != nil {
-				e.emitAudit(ctx, auditEventAccountCreationSuccess, false, created.UserID, created.TenantID, "", ErrSessionCreationFailed, func() map[string]string {
-					return map[string]string{
-						"identifier": req.Identifier,
-						"reason":     "auto_login_failed",
-					}
-				})
-				return result, errors.Join(ErrSessionCreationFailed, err)
-			}
-			result.AccessToken = accessToken
-			result.RefreshToken = refreshToken
-		}
-	}
-
-	req.Password = ""
-	e.metricInc(MetricAccountCreationSuccess)
-	e.emitAudit(ctx, auditEventAccountCreationSuccess, true, created.UserID, created.TenantID, "", nil, func() map[string]string {
-		return map[string]string{
-			"identifier": req.Identifier,
-			"role":       created.Role,
-		}
-	})
-	return result, nil
+	return out, nil
 }
 
 func (e *Engine) issueSessionTokens(ctx context.Context, user UserRecord) (string, string, error) {
-	mask, ok := e.roleManager.GetMask(user.Role)
-	if !ok {
-		return "", "", ErrAccountRoleInvalid
+	return internalflows.RunIssueAccountSessionTokens(ctx, toFlowAccountUser(user), e.accountSessionDeps())
+}
+
+func (e *Engine) accountFlowDeps() internalflows.AccountDeps {
+	var cfg Config
+	if e != nil {
+		cfg = e.config
 	}
 
-	sid, err := internal.NewSessionID()
-	if err != nil {
-		return "", "", err
+	deps := internalflows.AccountDeps{
+		Enabled:                     cfg.Account.Enabled,
+		AutoLogin:                   cfg.Account.AutoLogin,
+		RefreshTTL:                  cfg.JWT.RefreshTTL,
+		MultiTenantEnabled:          cfg.MultiTenant.Enabled,
+		DefaultRole:                 cfg.Account.DefaultRole,
+		EmailVerificationEnabled:    cfg.EmailVerification.Enabled,
+		ShouldRequireVerified:       e != nil && e.shouldRequireVerified(),
+		ActiveStatus:                uint8(AccountActive),
+		PendingStatus:               uint8(AccountPendingVerification),
+		TenantIDFromContext:         tenantIDFromContext,
+		TenantIDFromContextExplicit: tenantIDFromContextExplicit,
+		ClientIPFromContext:         clientIPFromContext,
+		MapLimiterError:             mapAccountLimiterError,
+		MetricInc: func(id int) {
+			e.metricInc(MetricID(id))
+		},
+		EmitAudit:     e.emitAudit,
+		EmitRateLimit: e.emitRateLimit,
+		Metrics: internalflows.AccountMetrics{
+			AccountCreationSuccess:     int(MetricAccountCreationSuccess),
+			AccountCreationDuplicate:   int(MetricAccountCreationDuplicate),
+			AccountCreationRateLimited: int(MetricAccountCreationRateLimited),
+		},
+		Events: internalflows.AccountEvents{
+			AccountCreationSuccess:     auditEventAccountCreationSuccess,
+			AccountCreationFailure:     auditEventAccountCreationFailure,
+			AccountCreationDuplicate:   auditEventAccountCreationDuplicate,
+			AccountCreationRateLimited: auditEventAccountCreationRateLimited,
+		},
+		Errors: internalflows.AccountErrors{
+			EngineNotReady:              ErrEngineNotReady,
+			AccountCreationDisabled:     ErrAccountCreationDisabled,
+			AccountCreationUnavailable:  ErrAccountCreationUnavailable,
+			AccountCreationInvalid:      ErrAccountCreationInvalid,
+			AccountRoleInvalid:          ErrAccountRoleInvalid,
+			AccountCreationRateLimited:  ErrAccountCreationRateLimited,
+			PasswordPolicy:              ErrPasswordPolicy,
+			AccountExists:               ErrAccountExists,
+			ProviderDuplicateIdentifier: ErrProviderDuplicateIdentifier,
+			SessionCreationFailed:       ErrSessionCreationFailed,
+		},
 	}
-	sessionID := sid.String()
 
-	refreshSecret, err := internal.NewRefreshSecret()
-	if err != nil {
-		return "", "", err
+	if e != nil && e.accountLimiter != nil {
+		deps.EnforceAccountLimiter = e.accountLimiter.Enforce
+	}
+	if e != nil && e.roleManager != nil {
+		deps.RoleExists = func(role string) bool {
+			_, ok := e.roleManager.GetMask(role)
+			return ok
+		}
+	}
+	if e != nil && e.passwordHash != nil {
+		deps.HashPassword = e.passwordHash.Hash
+	}
+	if e != nil && e.userProvider != nil {
+		deps.CreateUser = func(ctx context.Context, input internalflows.AccountCreateUserInput) (internalflows.AccountUserRecord, error) {
+			record, err := e.userProvider.CreateUser(ctx, CreateUserInput{
+				Identifier:        input.Identifier,
+				PasswordHash:      input.PasswordHash,
+				Role:              input.Role,
+				TenantID:          input.TenantID,
+				Status:            AccountStatus(input.Status),
+				PermissionVersion: input.PermissionVersion,
+				RoleVersion:       input.RoleVersion,
+				AccountVersion:    input.AccountVersion,
+			})
+			if err != nil {
+				return internalflows.AccountUserRecord{}, err
+			}
+			return toFlowAccountUser(record), nil
+		}
+	}
+	if e != nil {
+		deps.IssueSessionTokens = func(ctx context.Context, user internalflows.AccountUserRecord) (string, string, error) {
+			return e.issueSessionTokens(ctx, fromFlowAccountUser(user))
+		}
 	}
 
-	tenantID := user.TenantID
-	if tenantID == "" {
-		tenantID = tenantIDFromContext(ctx)
+	return deps
+}
+
+func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
+	deps := internalflows.AccountSessionDeps{
+		TenantIDFromContext: tenantIDFromContext,
+		Now:                 time.Now,
+		NewSessionID: func() (string, error) {
+			sid, err := internal.NewSessionID()
+			if err != nil {
+				return "", err
+			}
+			return sid.String(), nil
+		},
+		NewRefreshSecret:   internal.NewRefreshSecret,
+		HashRefreshSecret:  internal.HashRefreshSecret,
+		EncodeRefreshToken: internal.EncodeRefreshToken,
+		MetricInc: func(id int) {
+			e.metricInc(MetricID(id))
+		},
+		SessionCreatedMetric:  int(MetricSessionCreated),
+		ErrEngineNotReady:     ErrEngineNotReady,
+		ErrAccountRoleInvalid: ErrAccountRoleInvalid,
 	}
 
-	now := time.Now()
-	sessionLifetime := e.sessionLifetime()
-	accountVersion := user.AccountVersion
-	if accountVersion == 0 {
-		accountVersion = 1
+	if e != nil && e.roleManager != nil {
+		deps.GetRoleMask = e.roleManager.GetMask
+	}
+	if e != nil {
+		deps.SessionLifetime = e.sessionLifetime
+		deps.IssueAccessToken = e.issueAccessToken
+	}
+	if e != nil && e.sessionStore != nil {
+		deps.SaveSession = e.sessionStore.Save
 	}
 
-	sess := &session.Session{
-		SessionID:         sessionID,
+	return deps
+}
+
+func toFlowAccountCreateRequest(req CreateAccountRequest) internalflows.AccountCreateRequest {
+	return internalflows.AccountCreateRequest{
+		Identifier: req.Identifier,
+		Password:   req.Password,
+		Role:       req.Role,
+	}
+}
+
+func fromFlowAccountCreateResult(result *internalflows.AccountCreateResult) *CreateAccountResult {
+	if result == nil {
+		return nil
+	}
+	return &CreateAccountResult{
+		UserID:       result.UserID,
+		Role:         result.Role,
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+	}
+}
+
+func toFlowAccountUser(user UserRecord) internalflows.AccountUserRecord {
+	return internalflows.AccountUserRecord{
 		UserID:            user.UserID,
-		TenantID:          tenantID,
+		Identifier:        user.Identifier,
+		TenantID:          user.TenantID,
+		PasswordHash:      user.PasswordHash,
+		Status:            uint8(user.Status),
 		Role:              user.Role,
-		Mask:              mask,
 		PermissionVersion: user.PermissionVersion,
 		RoleVersion:       user.RoleVersion,
-		AccountVersion:    accountVersion,
-		Status:            uint8(user.Status),
-		RefreshHash:       internal.HashRefreshSecret(refreshSecret),
-		CreatedAt:         now.Unix(),
-		ExpiresAt:         now.Add(sessionLifetime).Unix(),
+		AccountVersion:    user.AccountVersion,
 	}
+}
 
-	if err := e.sessionStore.Save(ctx, sess, sessionLifetime); err != nil {
-		return "", "", err
+func fromFlowAccountUser(user internalflows.AccountUserRecord) UserRecord {
+	return UserRecord{
+		UserID:            user.UserID,
+		Identifier:        user.Identifier,
+		TenantID:          user.TenantID,
+		PasswordHash:      user.PasswordHash,
+		Status:            AccountStatus(user.Status),
+		Role:              user.Role,
+		PermissionVersion: user.PermissionVersion,
+		RoleVersion:       user.RoleVersion,
+		AccountVersion:    user.AccountVersion,
 	}
-	e.metricInc(MetricSessionCreated)
-
-	accessToken, err := e.issueAccessToken(sess)
-	if err != nil {
-		return "", "", err
-	}
-
-	refreshToken, err := internal.EncodeRefreshToken(sessionID, refreshSecret)
-	if err != nil {
-		return "", "", err
-	}
-
-	return accessToken, refreshToken, nil
 }
 
 func mapAccountLimiterError(err error) error {
