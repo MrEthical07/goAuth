@@ -3,12 +3,11 @@ package goAuth
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/stores"
-	"github.com/MrEthical07/goAuth/session"
 )
 
 // LoginWithResult describes the loginwithresult operation and its observable behavior.
@@ -16,7 +15,11 @@ import (
 // LoginWithResult may return an error when input validation, dependency calls, or security checks fail.
 // LoginWithResult does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LoginWithResult(ctx context.Context, username, password string) (*LoginResult, error) {
-	return e.loginWithResultInternal(ctx, username, password)
+	result, err := internalflows.RunLoginWithResult(ctx, username, password, e.loginFlowDeps())
+	if err != nil {
+		return nil, err
+	}
+	return fromFlowLoginResult(result), nil
 }
 
 // ConfirmLoginMFA describes the confirmloginmfa operation and its observable behavior.
@@ -32,413 +35,19 @@ func (e *Engine) ConfirmLoginMFA(ctx context.Context, challengeID, code string) 
 // ConfirmLoginMFAWithType may return an error when input validation, dependency calls, or security checks fail.
 // ConfirmLoginMFAWithType does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType string) (*LoginResult, error) {
-	if !e.config.TOTP.Enabled || !e.config.TOTP.RequireForLogin {
-		return nil, ErrTOTPFeatureDisabled
-	}
-	if e.mfaLoginStore == nil || e.userProvider == nil || e.totp == nil {
-		return nil, ErrEngineNotReady
-	}
-	if challengeID == "" {
-		return nil, ErrMFALoginInvalid
-	}
-
-	record, err := e.mfaLoginStore.Get(ctx, challengeID)
+	result, err := internalflows.RunConfirmLoginMFAWithType(ctx, challengeID, code, mfaType, e.loginFlowDeps())
 	if err != nil {
-		mapped := mapMFALoginStoreError(err)
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, "", tenantIDFromContext(ctx), "", mapped, func() map[string]string {
-			return map[string]string{
-				"reason": "challenge_load_failed",
-			}
-		})
-		return nil, mapped
-	}
-
-	if tenant := tenantIDFromContext(ctx); tenant != "" && record.TenantID != "" && tenant != record.TenantID {
-		_, _ = e.mfaLoginStore.Delete(ctx, challengeID)
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, "", tenant, "", ErrMFALoginInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "tenant_mismatch",
-			}
-		})
-		return nil, ErrMFALoginInvalid
-	}
-
-	user, err := e.userProvider.GetUserByID(record.UserID)
-	if err != nil {
-		_, _ = e.mfaLoginStore.Delete(ctx, challengeID)
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, record.UserID, record.TenantID, "", ErrUserNotFound, nil)
-		return nil, ErrUserNotFound
-	}
-	if statusErr := accountStatusToError(user.Status); statusErr != nil {
-		_, _ = e.mfaLoginStore.Delete(ctx, challengeID)
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", statusErr, func() map[string]string {
-			return map[string]string{
-				"reason": "account_status",
-			}
-		})
-		return nil, statusErr
-	}
-	if e.shouldRequireVerified() && user.Status == AccountPendingVerification {
-		_, _ = e.mfaLoginStore.Delete(ctx, challengeID)
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", ErrAccountUnverified, nil)
-		return nil, ErrAccountUnverified
-	}
-
-	totpRecord, err := e.userProvider.GetTOTPSecret(ctx, user.UserID)
-	if err != nil {
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", ErrMFALoginUnavailable, nil)
-		return nil, ErrMFALoginUnavailable
-	}
-	if totpRecord == nil || !totpRecord.Enabled || len(totpRecord.Secret) == 0 {
-		_, _ = e.mfaLoginStore.Delete(ctx, challengeID)
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", ErrMFALoginInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "totp_disabled_or_missing",
-			}
-		})
-		return nil, ErrMFALoginInvalid
-	}
-	if code == "" {
-		return e.failLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, ErrMFALoginInvalid)
-	}
-
-	switch strings.ToLower(strings.TrimSpace(mfaType)) {
-	case "", "totp":
-		ok, counter, verr := e.totp.VerifyCode(totpRecord.Secret, code, time.Now())
-		if verr != nil || !ok {
-			return e.failLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, ErrMFALoginInvalid)
-		}
-
-		if e.config.TOTP.EnforceReplayProtection {
-			if counter <= totpRecord.LastUsedCounter {
-				e.metricInc(MetricMFAReplayAttempt)
-				e.metricInc(MetricMFALoginFailure)
-				e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", ErrMFALoginReplay, nil)
-				return nil, ErrMFALoginReplay
-			}
-			if err := e.userProvider.UpdateTOTPLastUsedCounter(ctx, user.UserID, counter); err != nil {
-				e.metricInc(MetricMFALoginFailure)
-				e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", ErrMFALoginUnavailable, nil)
-				return nil, ErrMFALoginUnavailable
-			}
-		}
-	case "backup":
-		if berr := e.VerifyBackupCodeInTenant(ctx, record.TenantID, user.UserID, code); berr != nil {
-			switch {
-			case errors.Is(berr, ErrBackupCodeRateLimited):
-				return e.failLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, ErrMFALoginAttemptsExceeded)
-			case errors.Is(berr, ErrBackupCodeInvalid), errors.Is(berr, ErrBackupCodesNotConfigured):
-				return e.failLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, ErrMFALoginInvalid)
-			default:
-				return e.failLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, ErrMFALoginUnavailable)
-			}
-		}
-	default:
-		return e.failLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, ErrMFALoginInvalid)
-	}
-
-	deleted, err := e.mfaLoginStore.Delete(ctx, challengeID)
-	if err != nil {
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", ErrMFALoginUnavailable, nil)
-		return nil, ErrMFALoginUnavailable
-	}
-	if !deleted {
-		e.metricInc(MetricMFAReplayAttempt)
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", ErrMFALoginReplay, nil)
-		return nil, ErrMFALoginReplay
-	}
-
-	identifier := user.Identifier
-	if identifier == "" {
-		identifier = user.UserID
-	}
-	access, refresh, err := e.issueLoginSessionTokensForResult(ctx, identifier, user, record.TenantID)
-	if err != nil {
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, record.TenantID, "", err, nil)
 		return nil, err
 	}
-
-	e.metricInc(MetricMFALoginSuccess)
-	e.emitAudit(ctx, auditEventMFASuccess, true, user.UserID, record.TenantID, "", nil, nil)
-	return &LoginResult{
-		AccessToken:  access,
-		RefreshToken: refresh,
-	}, nil
-}
-
-func (e *Engine) failLoginMFAAttempt(
-	ctx context.Context,
-	challengeID string,
-	userID string,
-	tenantID string,
-	cause error,
-) (*LoginResult, error) {
-	exceeded, recErr := e.mfaLoginStore.RecordFailure(ctx, challengeID, e.config.TOTP.MFALoginMaxAttempts)
-	if recErr != nil {
-		e.metricInc(MetricMFALoginFailure)
-		mapped := mapMFALoginStoreError(recErr)
-		e.emitAudit(ctx, auditEventMFAFailure, false, userID, tenantID, "", mapped, nil)
-		return nil, mapped
-	}
-	if exceeded {
-		e.metricInc(MetricMFALoginFailure)
-		e.emitAudit(ctx, auditEventMFAAttemptsExceeded, false, userID, tenantID, "", ErrMFALoginAttemptsExceeded, nil)
-		return nil, ErrMFALoginAttemptsExceeded
-	}
-	e.metricInc(MetricMFALoginFailure)
-	if cause == nil {
-		cause = ErrMFALoginInvalid
-	}
-	e.emitAudit(ctx, auditEventMFAFailure, false, userID, tenantID, "", cause, nil)
-	return nil, cause
+	return fromFlowLoginResult(result), nil
 }
 
 func (e *Engine) loginWithResultInternal(ctx context.Context, username, password string) (*LoginResult, error) {
-	ip := clientIPFromContext(ctx)
-	tenantID := tenantIDFromContext(ctx)
-	if e.passwordHash == nil {
-		return nil, ErrEngineNotReady
-	}
-	if e.rateLimiter != nil {
-		if err := e.rateLimiter.CheckLogin(ctx, username, ip); err != nil {
-			e.metricInc(MetricLoginRateLimited)
-			e.emitAudit(ctx, auditEventLoginRateLimited, false, "", tenantID, "", ErrLoginRateLimited, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			return nil, ErrLoginRateLimited
-		}
-	}
-	if password == "" {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, "", tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, "", tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "empty_password",
-			}
-		})
-		return nil, ErrInvalidCredentials
-	}
-
-	user, err := e.userProvider.GetUserByIdentifier(username)
-	if err != nil {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, "", tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, "", tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "user_not_found",
-			}
-		})
-		return nil, ErrInvalidCredentials
-	}
-
-	ok, err := e.passwordHash.Verify(password, user.PasswordHash)
-	if err != nil || !ok {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, user.UserID, tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "password_mismatch",
-			}
-		})
-		return nil, ErrInvalidCredentials
-	}
-	if statusErr := accountStatusToError(user.Status); statusErr != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", statusErr, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "account_status",
-			}
-		})
-		return nil, statusErr
-	}
-	if e.shouldRequireVerified() && user.Status == AccountPendingVerification {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrAccountUnverified, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "pending_verification",
-			}
-		})
-		return nil, ErrAccountUnverified
-	}
-
-	if e.config.Password.UpgradeOnLogin {
-		if needsUpgrade, err := e.passwordHash.NeedsUpgrade(user.PasswordHash); err == nil && needsUpgrade {
-			if upgradedHash, err := e.passwordHash.Hash(password); err == nil {
-				// Rehash update is best-effort and must not block successful login.
-				if err := e.userProvider.UpdatePasswordHash(user.UserID, upgradedHash); err != nil {
-					e.warn("goAuth: password hash upgrade update failed")
-				}
-			} else {
-				e.warn("goAuth: password hash upgrade generation failed")
-			}
-		}
-	}
-	password = ""
-
-	if e.config.DeviceBinding.Enabled {
-		if e.config.DeviceBinding.EnforceIPBinding && clientIPFromContext(ctx) == "" {
-			e.metricInc(MetricLoginFailure)
-			e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrDeviceBindingRejected, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-					"reason":     "missing_ip_context",
-				}
-			})
-			return nil, ErrDeviceBindingRejected
-		}
-		if e.config.DeviceBinding.EnforceUserAgentBinding && userAgentFromContext(ctx) == "" {
-			e.metricInc(MetricLoginFailure)
-			e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrDeviceBindingRejected, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-					"reason":     "missing_user_agent_context",
-				}
-			})
-			return nil, ErrDeviceBindingRejected
-		}
-	}
-
-	if err := e.enforceSessionHardeningOnLogin(ctx, tenantID, user.UserID); err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "session_hardening",
-			}
-		})
-		return nil, err
-	}
-
-	if e.config.TOTP.Enabled && e.config.TOTP.RequireForLogin {
-		record, err := e.userProvider.GetTOTPSecret(ctx, user.UserID)
-		if err != nil {
-			e.metricInc(MetricMFALoginFailure)
-			e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, tenantID, "", ErrMFALoginUnavailable, nil)
-			return nil, ErrMFALoginUnavailable
-		}
-		if record != nil && record.Enabled && len(record.Secret) > 0 {
-			challengeID, err := e.createMFALoginChallenge(ctx, user.UserID, tenantID)
-			if err != nil {
-				e.metricInc(MetricMFALoginFailure)
-				e.emitAudit(ctx, auditEventMFAFailure, false, user.UserID, tenantID, "", err, nil)
-				return nil, err
-			}
-			e.metricInc(MetricMFALoginRequired)
-			e.emitAudit(ctx, auditEventMFARequired, true, user.UserID, tenantID, "", nil, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			return &LoginResult{
-				MFARequired: true,
-				MFAType:     "totp",
-				MFASession:  challengeID,
-			}, nil
-		}
-	}
-
-	access, refresh, err := e.issueLoginSessionTokensForResult(ctx, username, user, tenantID)
-	if err != nil {
-		return nil, err
-	}
-	return &LoginResult{
-		AccessToken:  access,
-		RefreshToken: refresh,
-	}, nil
+	return e.LoginWithResult(ctx, username, password)
 }
 
 func (e *Engine) createMFALoginChallenge(ctx context.Context, userID, tenantID string) (string, error) {
-	if e.mfaLoginStore == nil {
-		return "", ErrEngineNotReady
-	}
-	id, err := internal.NewSessionID()
-	if err != nil {
-		return "", ErrMFALoginUnavailable
-	}
-	challengeID := id.String()
-
-	ttl := e.config.TOTP.MFALoginChallengeTTL
-	if ttl <= 0 {
-		ttl = 3 * time.Minute
-	}
-	record := &stores.MFALoginChallenge{
-		UserID:    userID,
-		TenantID:  tenantID,
-		ExpiresAt: time.Now().Add(ttl).Unix(),
-		Attempts:  0,
-	}
-
-	if err := e.mfaLoginStore.Save(ctx, challengeID, record, ttl); err != nil {
-		return "", mapMFALoginStoreError(err)
-	}
-	return challengeID, nil
+	return internalflows.RunCreateMFALoginChallenge(ctx, userID, tenantID, e.loginFlowDeps())
 }
 
 func (e *Engine) issueLoginSessionTokensForResult(
@@ -447,150 +56,218 @@ func (e *Engine) issueLoginSessionTokensForResult(
 	user UserRecord,
 	tenantID string,
 ) (string, string, error) {
-	ip := clientIPFromContext(ctx)
-	mask, ok := e.roleManager.GetMask(user.Role)
-	if !ok {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, user.UserID, tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return "", "", ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "role_mask_missing",
-			}
-		})
-		return "", "", ErrInvalidCredentials
+	return internalflows.RunIssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID, e.loginFlowDeps())
+}
+
+func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
+	var cfg Config
+	if e != nil {
+		cfg = e.config
 	}
 
-	sid, err := internal.NewSessionID()
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "session_id_generation",
-			}
-		})
-		return "", "", err
-	}
-	sessionID := sid.String()
-	refreshSecret, err := internal.NewRefreshSecret()
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "refresh_secret_generation",
-			}
-		})
-		return "", "", err
+	deps := internalflows.LoginDeps{
+		TOTPEnabled:               cfg.TOTP.Enabled,
+		RequireTOTPForLogin:       cfg.TOTP.RequireForLogin,
+		EnforceReplayProtection:   cfg.TOTP.EnforceReplayProtection,
+		RequireVerified:           e != nil && e.shouldRequireVerified(),
+		PendingVerificationStatus: uint8(AccountPendingVerification),
+		PasswordUpgradeOnLogin:    cfg.Password.UpgradeOnLogin,
+		MFALoginMaxAttempts:       cfg.TOTP.MFALoginMaxAttempts,
+		MFALoginChallengeTTL:      cfg.TOTP.MFALoginChallengeTTL,
+		DeviceBindingEnabled:      cfg.DeviceBinding.Enabled,
+		EnforceIPBinding:          cfg.DeviceBinding.EnforceIPBinding,
+		EnforceUserAgentBinding:   cfg.DeviceBinding.EnforceUserAgentBinding,
+		TenantIDFromContext:       tenantIDFromContext,
+		ClientIPFromContext:       clientIPFromContext,
+		UserAgentFromContext:      userAgentFromContext,
+		Now:                       time.Now,
+		AccountStatusError: func(status uint8) error {
+			return accountStatusToError(AccountStatus(status))
+		},
+		MetricInc:   func(id int) { e.metricInc(MetricID(id)) },
+		EmitAudit:   e.emitAudit,
+		EmitRateLimit: e.emitRateLimit,
+		Warn:        e.warn,
+		Errors: internalflows.LoginErrors{
+			EngineNotReady:            ErrEngineNotReady,
+			InvalidCredentials:        ErrInvalidCredentials,
+			LoginRateLimited:          ErrLoginRateLimited,
+			AccountUnverified:         ErrAccountUnverified,
+			DeviceBindingRejected:     ErrDeviceBindingRejected,
+			TOTPFeatureDisabled:       ErrTOTPFeatureDisabled,
+			MFALoginInvalid:           ErrMFALoginInvalid,
+			MFALoginExpired:           ErrMFALoginExpired,
+			MFALoginAttemptsExceeded:  ErrMFALoginAttemptsExceeded,
+			MFALoginReplay:            ErrMFALoginReplay,
+			MFALoginUnavailable:       ErrMFALoginUnavailable,
+			UserNotFound:              ErrUserNotFound,
+			BackupCodeRateLimited:     ErrBackupCodeRateLimited,
+			BackupCodeInvalid:         ErrBackupCodeInvalid,
+			BackupCodesNotConfigured:  ErrBackupCodesNotConfigured,
+		},
+		Metrics: internalflows.LoginMetrics{
+			LoginSuccess:       int(MetricLoginSuccess),
+			LoginFailure:       int(MetricLoginFailure),
+			LoginRateLimited:   int(MetricLoginRateLimited),
+			SessionCreated:     int(MetricSessionCreated),
+			MFALoginRequired:   int(MetricMFALoginRequired),
+			MFALoginSuccess:    int(MetricMFALoginSuccess),
+			MFALoginFailure:    int(MetricMFALoginFailure),
+			MFAReplayAttempt:   int(MetricMFAReplayAttempt),
+		},
+		Events: internalflows.LoginEvents{
+			LoginSuccess:        auditEventLoginSuccess,
+			LoginFailure:        auditEventLoginFailure,
+			LoginRateLimited:    auditEventLoginRateLimited,
+			MFARequired:         auditEventMFARequired,
+			MFASuccess:          auditEventMFASuccess,
+			MFAFailure:          auditEventMFAFailure,
+			MFAAttemptsExceeded: auditEventMFAAttemptsExceeded,
+		},
 	}
 
-	now := time.Now()
-	sessionLifetime := e.sessionLifetime()
-	accountVersion := user.AccountVersion
-	if accountVersion == 0 {
-		accountVersion = 1
+	if e != nil && e.rateLimiter != nil {
+		deps.CheckLoginRate = e.rateLimiter.CheckLogin
+		deps.IncrementLoginRate = e.rateLimiter.IncrementLogin
+		deps.ResetLoginRate = e.rateLimiter.ResetLogin
 	}
-	var ipHash [32]byte
-	var userAgentHash [32]byte
-	if e.config.DeviceBinding.Enabled {
-		if ip := clientIPFromContext(ctx); ip != "" {
-			ipHash = internal.HashBindingValue(ip)
+	if e != nil && e.userProvider != nil {
+		deps.GetUserByIdentifier = func(identifier string) (internalflows.LoginUserRecord, error) {
+			user, err := e.userProvider.GetUserByIdentifier(identifier)
+			if err != nil {
+				return internalflows.LoginUserRecord{}, err
+			}
+			return toFlowLoginUser(user), nil
 		}
-		if ua := userAgentFromContext(ctx); ua != "" {
-			userAgentHash = internal.HashBindingValue(ua)
+		deps.GetUserByID = func(userID string) (internalflows.LoginUserRecord, error) {
+			user, err := e.userProvider.GetUserByID(userID)
+			if err != nil {
+				return internalflows.LoginUserRecord{}, err
+			}
+			return toFlowLoginUser(user), nil
 		}
+		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
+		deps.GetTOTPSecret = func(ctx context.Context, userID string) (*internalflows.LoginTOTPRecord, error) {
+			record, err := e.userProvider.GetTOTPSecret(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			if record == nil {
+				return nil, nil
+			}
+			return &internalflows.LoginTOTPRecord{
+				Secret:          record.Secret,
+				Enabled:         record.Enabled,
+				LastUsedCounter: record.LastUsedCounter,
+			}, nil
+		}
+		deps.UpdateTOTPLastUsedCounter = e.userProvider.UpdateTOTPLastUsedCounter
+	}
+	if e != nil && e.passwordHash != nil {
+		deps.VerifyPassword = e.passwordHash.Verify
+		deps.PasswordNeedsUpgrade = e.passwordHash.NeedsUpgrade
+		deps.HashPassword = e.passwordHash.Hash
+	}
+	if e != nil && e.totp != nil {
+		deps.VerifyTOTPCode = e.totp.VerifyCode
+	}
+	if e != nil {
+		deps.VerifyBackupCodeInTenant = e.VerifyBackupCodeInTenant
+		deps.CreateMFALoginChallenge = e.createMFALoginChallenge
+		deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user internalflows.LoginUserRecord, tenantID string) (string, string, error) {
+			return e.issueLoginSessionTokensForResult(ctx, username, fromFlowLoginUser(user), tenantID)
+		}
+		deps.EnforceSessionHardening = e.enforceSessionHardeningOnLogin
+	}
+	if e != nil && e.mfaLoginStore != nil {
+		deps.GetMFAChallenge = func(ctx context.Context, challengeID string) (*internalflows.MFALoginChallengeRecord, error) {
+			record, err := e.mfaLoginStore.Get(ctx, challengeID)
+			if err != nil {
+				return nil, err
+			}
+			return &internalflows.MFALoginChallengeRecord{
+				UserID:    record.UserID,
+				TenantID:  record.TenantID,
+				ExpiresAt: record.ExpiresAt,
+				Attempts:  record.Attempts,
+			}, nil
+		}
+		deps.SaveMFAChallenge = func(ctx context.Context, challengeID string, record *internalflows.MFALoginChallengeRecord, ttl time.Duration) error {
+			return e.mfaLoginStore.Save(ctx, challengeID, &stores.MFALoginChallenge{
+				UserID:    record.UserID,
+				TenantID:  record.TenantID,
+				ExpiresAt: record.ExpiresAt,
+				Attempts:  record.Attempts,
+			}, ttl)
+		}
+		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete
+		deps.RecordMFAFailure = e.mfaLoginStore.RecordFailure
+	}
+	deps.MapMFAStoreError = mapMFALoginStoreError
+	if e != nil && e.roleManager != nil {
+		deps.GetRoleMask = e.roleManager.GetMask
+	}
+	deps.NewSessionID = func() (string, error) {
+		sid, err := internal.NewSessionID()
+		if err != nil {
+			return "", err
+		}
+		return sid.String(), nil
+	}
+	deps.NewRefreshSecret = internal.NewRefreshSecret
+	deps.HashRefreshSecret = internal.HashRefreshSecret
+	deps.EncodeRefreshToken = internal.EncodeRefreshToken
+	deps.HashBindingValue = internal.HashBindingValue
+	if e != nil {
+		deps.SessionLifetime = e.sessionLifetime
+		deps.IssueAccessToken = e.issueAccessToken
+	}
+	if e != nil && e.sessionStore != nil {
+		deps.SaveSession = e.sessionStore.Save
 	}
 
-	sess := &session.Session{
-		SessionID:         sessionID,
+	return deps
+}
+
+func toFlowLoginUser(user UserRecord) internalflows.LoginUserRecord {
+	return internalflows.LoginUserRecord{
 		UserID:            user.UserID,
-		TenantID:          tenantID,
+		Identifier:        user.Identifier,
+		TenantID:          user.TenantID,
+		PasswordHash:      user.PasswordHash,
 		Role:              user.Role,
-		Mask:              mask,
+		Status:            uint8(user.Status),
 		PermissionVersion: user.PermissionVersion,
 		RoleVersion:       user.RoleVersion,
-		AccountVersion:    accountVersion,
-		Status:            uint8(user.Status),
-		RefreshHash:       internal.HashRefreshSecret(refreshSecret),
-		IPHash:            ipHash,
-		UserAgentHash:     userAgentHash,
-		CreatedAt:         now.Unix(),
-		ExpiresAt:         now.Add(sessionLifetime).Unix(),
+		AccountVersion:    user.AccountVersion,
 	}
+}
 
-	if err := e.sessionStore.Save(ctx, sess, sessionLifetime); err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "session_save_failed",
-			}
-		})
-		return "", "", err
+func fromFlowLoginUser(user internalflows.LoginUserRecord) UserRecord {
+	return UserRecord{
+		UserID:            user.UserID,
+		Identifier:        user.Identifier,
+		TenantID:          user.TenantID,
+		PasswordHash:      user.PasswordHash,
+		Role:              user.Role,
+		Status:            AccountStatus(user.Status),
+		PermissionVersion: user.PermissionVersion,
+		RoleVersion:       user.RoleVersion,
+		AccountVersion:    user.AccountVersion,
 	}
+}
 
-	access, err := e.issueAccessToken(sess)
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "issue_access_failed",
-			}
-		})
-		return "", "", err
+func fromFlowLoginResult(result *internalflows.LoginResult) *LoginResult {
+	if result == nil {
+		return nil
 	}
-
-	refresh, err := internal.EncodeRefreshToken(sessionID, refreshSecret)
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "encode_refresh_failed",
-			}
-		})
-		return "", "", err
+	return &LoginResult{
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		MFARequired:  result.MFARequired,
+		MFAType:      result.MFAType,
+		MFASession:   result.MFASession,
 	}
-
-	if e.rateLimiter != nil {
-		if err := e.rateLimiter.ResetLogin(ctx, username, ip); err != nil {
-			e.metricInc(MetricLoginRateLimited)
-			e.emitAudit(ctx, auditEventLoginRateLimited, false, user.UserID, tenantID, sessionID, ErrLoginRateLimited, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-					"reason":     "reset_limiter_failed",
-				}
-			})
-			return "", "", ErrLoginRateLimited
-		}
-	}
-
-	e.metricInc(MetricSessionCreated)
-	e.metricInc(MetricLoginSuccess)
-	e.emitAudit(ctx, auditEventLoginSuccess, true, user.UserID, tenantID, sessionID, nil, func() map[string]string {
-		return map[string]string{
-			"identifier": username,
-		}
-	})
-
-	return access, refresh, nil
 }
 
 func mapMFALoginStoreError(err error) error {
