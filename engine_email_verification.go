@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/google/uuid"
@@ -19,145 +20,7 @@ import (
 // RequestEmailVerification may return an error when input validation, dependency calls, or security checks fail.
 // RequestEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string) (string, error) {
-	if !e.config.EmailVerification.Enabled {
-		e.emitAudit(ctx, auditEventEmailVerificationRequest, false, "", tenantIDFromContext(ctx), "", ErrEmailVerificationDisabled, nil)
-		return "", ErrEmailVerificationDisabled
-	}
-	if e.verificationStore == nil || e.verificationLimiter == nil || e.userProvider == nil {
-		return "", ErrEngineNotReady
-	}
-	if identifier == "" {
-		e.emitAudit(ctx, auditEventEmailVerificationRequest, false, "", tenantIDFromContext(ctx), "", ErrEmailVerificationInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "empty_identifier",
-			}
-		})
-		return "", ErrEmailVerificationInvalid
-	}
-
-	tenantID := tenantIDFromContext(ctx)
-	if err := e.verificationLimiter.CheckRequest(ctx, tenantID, identifier, clientIPFromContext(ctx)); err != nil {
-		mapped := mapEmailVerificationLimiterError(err)
-		e.metricInc(MetricEmailVerificationFailure)
-		if errors.Is(mapped, ErrEmailVerificationRateLimited) {
-			e.emitAudit(ctx, auditEventEmailVerificationRequest, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-				}
-			})
-			e.emitRateLimit(ctx, "email_verification_request", tenantID, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-				}
-			})
-		} else {
-			e.emitAudit(ctx, auditEventEmailVerificationRequest, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-				}
-			})
-		}
-		return "", mapped
-	}
-
-	user, err := e.userProvider.GetUserByIdentifier(identifier)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", err
-		}
-		if err := sleepPasswordResetEnumerationDelay(ctx); err != nil {
-			return "", err
-		}
-		_, fakeChallenge, _, genErr := generateEmailVerificationChallenge(
-			e.config.EmailVerification.Strategy,
-			e.config.EmailVerification.OTPDigits,
-		)
-		if genErr != nil {
-			e.emitAudit(ctx, auditEventEmailVerificationRequest, false, "", tenantID, "", ErrEmailVerificationUnavailable, func() map[string]string {
-				return map[string]string{
-					"identifier": identifier,
-					"reason":     "fake_generation_failed",
-				}
-			})
-			return "", ErrEmailVerificationUnavailable
-		}
-		e.emitAudit(ctx, auditEventEmailVerificationRequest, true, "", tenantID, "", nil, func() map[string]string {
-			return map[string]string{
-				"identifier":       identifier,
-				"enumeration_safe": "true",
-			}
-		})
-		e.metricInc(MetricEmailVerificationRequest)
-		return fakeChallenge, nil
-	}
-
-	if user.Status == AccountActive {
-		e.emitAudit(ctx, auditEventEmailVerificationRequest, true, user.UserID, tenantID, "", nil, func() map[string]string {
-			return map[string]string{
-				"identifier": identifier,
-				"noop":       "already_active",
-			}
-		})
-		e.metricInc(MetricEmailVerificationRequest)
-		return "", nil
-	}
-	if statusErr := accountStatusToError(user.Status); statusErr != nil {
-		// Keep request enumeration-safe for non-active terminal statuses.
-		e.emitAudit(ctx, auditEventEmailVerificationRequest, true, user.UserID, tenantID, "", nil, func() map[string]string {
-			return map[string]string{
-				"identifier": identifier,
-				"noop":       "non_verifiable_status",
-			}
-		})
-		e.metricInc(MetricEmailVerificationRequest)
-		return "", nil
-	}
-
-	effectiveTenant := tenantID
-	if user.TenantID != "" {
-		effectiveTenant = user.TenantID
-	}
-
-	verificationID, challenge, secretHash, err := generateEmailVerificationChallenge(
-		e.config.EmailVerification.Strategy,
-		e.config.EmailVerification.OTPDigits,
-	)
-	if err != nil {
-		return "", ErrEmailVerificationUnavailable
-	}
-
-	record := &stores.EmailVerificationRecord{
-		UserID:     user.UserID,
-		SecretHash: secretHash,
-		ExpiresAt:  time.Now().Add(e.config.EmailVerification.VerificationTTL).Unix(),
-		Attempts:   0,
-		Strategy:   int(e.config.EmailVerification.Strategy),
-	}
-
-	if err := e.verificationStore.Save(
-		ctx,
-		effectiveTenant,
-		verificationID,
-		record,
-		e.config.EmailVerification.VerificationTTL,
-	); err != nil {
-		mapped := mapEmailVerificationStoreError(err)
-		e.metricInc(MetricEmailVerificationFailure)
-		e.emitAudit(ctx, auditEventEmailVerificationRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
-			return map[string]string{
-				"identifier": identifier,
-			}
-		})
-		return "", mapped
-	}
-
-	e.emitAudit(ctx, auditEventEmailVerificationRequest, true, user.UserID, effectiveTenant, "", nil, func() map[string]string {
-		return map[string]string{
-			"identifier": identifier,
-		}
-	})
-	e.metricInc(MetricEmailVerificationRequest)
-	return challenge, nil
+	return internalflows.RunRequestEmailVerification(ctx, identifier, e.emailVerificationFlowDeps())
 }
 
 // ConfirmEmailVerification describes the confirmemailverification operation and its observable behavior.
@@ -165,124 +28,122 @@ func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string
 // ConfirmEmailVerification may return an error when input validation, dependency calls, or security checks fail.
 // ConfirmEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string) error {
-	if !e.config.EmailVerification.Enabled {
-		e.metricInc(MetricEmailVerificationFailure)
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, "", tenantIDFromContext(ctx), "", ErrEmailVerificationDisabled, nil)
-		return ErrEmailVerificationDisabled
-	}
-	if e.verificationStore == nil || e.verificationLimiter == nil || e.userProvider == nil {
-		return ErrEngineNotReady
-	}
-	if challenge == "" {
-		e.metricInc(MetricEmailVerificationFailure)
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, "", tenantIDFromContext(ctx), "", ErrEmailVerificationInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "empty_challenge",
-			}
-		})
-		return ErrEmailVerificationInvalid
+	return internalflows.RunConfirmEmailVerification(ctx, challenge, e.emailVerificationFlowDeps())
+}
+
+func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps {
+	var cfg Config
+	if e != nil {
+		cfg = e.config
 	}
 
-	verificationID, providedHash, err := parseEmailVerificationChallenge(
-		e.config.EmailVerification.Strategy,
-		challenge,
-		e.config.EmailVerification.OTPDigits,
-	)
-	if err != nil {
-		e.metricInc(MetricEmailVerificationFailure)
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, "", tenantIDFromContext(ctx), "", ErrEmailVerificationInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "parse_failed",
-			}
-		})
-		return ErrEmailVerificationInvalid
+	deps := internalflows.EmailVerificationDeps{
+		Enabled:         cfg.EmailVerification.Enabled,
+		Strategy:        int(cfg.EmailVerification.Strategy),
+		OTPDigits:       cfg.EmailVerification.OTPDigits,
+		VerificationTTL: cfg.EmailVerification.VerificationTTL,
+		MaxAttempts:     cfg.EmailVerification.MaxAttempts,
+		ActiveStatus:    uint8(AccountActive),
+		TenantIDFromContext: tenantIDFromContext,
+		ClientIPFromContext: clientIPFromContext,
+		Now:                time.Now,
+		AccountStatusError: func(status uint8) error {
+			return accountStatusToError(AccountStatus(status))
+		},
+		MapLimiterError:      mapEmailVerificationLimiterError,
+		MapStoreError:        mapEmailVerificationStoreError,
+		GenerateChallenge: func(strategy int, otpDigits int) (string, string, [32]byte, error) {
+			return generateEmailVerificationChallenge(VerificationStrategyType(strategy), otpDigits)
+		},
+		ParseChallenge: func(strategy int, challenge string, otpDigits int) (string, [32]byte, error) {
+			return parseEmailVerificationChallenge(VerificationStrategyType(strategy), challenge, otpDigits)
+		},
+		SleepEnumerationDelay: sleepPasswordResetEnumerationDelay,
+		MetricInc: func(id int) {
+			e.metricInc(MetricID(id))
+		},
+		EmitAudit:     e.emitAudit,
+		EmitRateLimit: e.emitRateLimit,
+		Metrics: internalflows.EmailVerificationMetrics{
+			EmailVerificationRequest:          int(MetricEmailVerificationRequest),
+			EmailVerificationSuccess:          int(MetricEmailVerificationSuccess),
+			EmailVerificationFailure:          int(MetricEmailVerificationFailure),
+			EmailVerificationAttemptsExceeded: int(MetricEmailVerificationAttemptsExceeded),
+		},
+		Events: internalflows.EmailVerificationEvents{
+			EmailVerificationRequest: auditEventEmailVerificationRequest,
+			EmailVerificationConfirm: auditEventEmailVerificationConfirm,
+		},
+		Errors: internalflows.EmailVerificationErrors{
+			EngineNotReady:               ErrEngineNotReady,
+			EmailVerificationDisabled:    ErrEmailVerificationDisabled,
+			EmailVerificationInvalid:     ErrEmailVerificationInvalid,
+			EmailVerificationRateLimited: ErrEmailVerificationRateLimited,
+			EmailVerificationUnavailable: ErrEmailVerificationUnavailable,
+			EmailVerificationAttempts:    ErrEmailVerificationAttempts,
+			UserNotFound:                 ErrUserNotFound,
+		},
 	}
 
-	tenantID := tenantIDFromContext(ctx)
-	if err := e.verificationLimiter.CheckConfirm(ctx, tenantID, verificationID, clientIPFromContext(ctx)); err != nil {
-		mapped := mapEmailVerificationLimiterError(err)
-		e.metricInc(MetricEmailVerificationFailure)
-		if errors.Is(mapped, ErrEmailVerificationRateLimited) {
-			e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"verification_id": verificationID,
-				}
-			})
-			e.emitRateLimit(ctx, "email_verification_confirm", tenantID, func() map[string]string {
-				return map[string]string{
-					"verification_id": verificationID,
-				}
-			})
-		} else {
-			e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"verification_id": verificationID,
-				}
-			})
+	if e != nil && e.verificationLimiter != nil {
+		deps.CheckRequestLimiter = e.verificationLimiter.CheckRequest
+		deps.CheckConfirmLimiter = e.verificationLimiter.CheckConfirm
+	}
+	if e != nil && e.userProvider != nil {
+		deps.GetUserByIdentifier = func(identifier string) (internalflows.EmailVerificationUser, error) {
+			user, err := e.userProvider.GetUserByIdentifier(identifier)
+			if err != nil {
+				return internalflows.EmailVerificationUser{}, err
+			}
+			return internalflows.EmailVerificationUser{
+				UserID:   user.UserID,
+				TenantID: user.TenantID,
+				Status:   uint8(user.Status),
+			}, nil
 		}
-		return mapped
-	}
-
-	record, err := e.verificationStore.Consume(
-		ctx,
-		tenantID,
-		verificationID,
-		providedHash,
-		int(e.config.EmailVerification.Strategy),
-		e.config.EmailVerification.MaxAttempts,
-	)
-	if err != nil {
-		mapped := mapEmailVerificationStoreError(err)
-		e.metricInc(MetricEmailVerificationFailure)
-		if errors.Is(mapped, ErrEmailVerificationAttempts) {
-			e.metricInc(MetricEmailVerificationAttemptsExceeded)
+		deps.GetUserByID = func(userID string) (internalflows.EmailVerificationUser, error) {
+			user, err := e.userProvider.GetUserByID(userID)
+			if err != nil {
+				return internalflows.EmailVerificationUser{}, err
+			}
+			return internalflows.EmailVerificationUser{
+				UserID:   user.UserID,
+				TenantID: user.TenantID,
+				Status:   uint8(user.Status),
+			}, nil
 		}
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-			return map[string]string{
-				"verification_id": verificationID,
+	}
+	if e != nil {
+		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
+			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
+		}
+	}
+	if e != nil && e.verificationStore != nil {
+		deps.SaveVerificationRecord = func(ctx context.Context, tenantID, verificationID string, record internalflows.EmailVerificationStoreRecord, ttl time.Duration) error {
+			return e.verificationStore.Save(ctx, tenantID, verificationID, &stores.EmailVerificationRecord{
+				UserID:     record.UserID,
+				SecretHash: record.SecretHash,
+				ExpiresAt:  record.ExpiresAt,
+				Attempts:   record.Attempts,
+				Strategy:   record.Strategy,
+			}, ttl)
+		}
+		deps.ConsumeVerificationRecord = func(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
+			record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
+			if err != nil {
+				return internalflows.EmailVerificationStoreRecord{}, err
 			}
-		})
-		return mapped
+			return internalflows.EmailVerificationStoreRecord{
+				UserID:     record.UserID,
+				SecretHash: record.SecretHash,
+				ExpiresAt:  record.ExpiresAt,
+				Attempts:   record.Attempts,
+				Strategy:   record.Strategy,
+			}, nil
+		}
 	}
 
-	user, err := e.userProvider.GetUserByID(record.UserID)
-	if err != nil {
-		e.metricInc(MetricEmailVerificationFailure)
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, record.UserID, tenantID, "", ErrUserNotFound, nil)
-		return ErrUserNotFound
-	}
-	if user.Status == AccountActive {
-		e.metricInc(MetricEmailVerificationSuccess)
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, func() map[string]string {
-			return map[string]string{
-				"noop": "already_active",
-			}
-		})
-		return nil
-	}
-	if statusErr := accountStatusToError(user.Status); statusErr != nil {
-		e.metricInc(MetricEmailVerificationFailure)
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, user.UserID, user.TenantID, "", statusErr, func() map[string]string {
-			return map[string]string{
-				"reason": "account_status",
-			}
-		})
-		return statusErr
-	}
-
-	if err := e.updateAccountStatusAndInvalidate(ctx, record.UserID, AccountActive); err != nil {
-		e.metricInc(MetricEmailVerificationFailure)
-		e.emitAudit(ctx, auditEventEmailVerificationConfirm, false, user.UserID, user.TenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"reason": "status_transition_failed",
-			}
-		})
-		return err
-	}
-
-	e.metricInc(MetricEmailVerificationSuccess)
-	e.emitAudit(ctx, auditEventEmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, nil)
-	return nil
+	return deps
 }
 
 func generateEmailVerificationChallenge(
