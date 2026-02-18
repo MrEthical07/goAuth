@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	totpMaxAttempts = 5
-	totpCooldown    = time.Minute
+	defaultTOTPMaxAttempts = 5
+	defaultTOTPCooldown    = time.Minute
 )
 
 var (
@@ -19,12 +19,30 @@ var (
 	ErrTOTPUnavailable = errors.New("totp unavailable")
 )
 
-type TOTPLimiter struct {
-	redis redis.UniversalClient
+// TOTPLimiterConfig holds configurable thresholds for the TOTP rate limiter.
+type TOTPLimiterConfig struct {
+	MaxAttempts int
+	Cooldown    time.Duration
 }
 
-func NewTOTPLimiter(redisClient redis.UniversalClient) *TOTPLimiter {
-	return &TOTPLimiter{redis: redisClient}
+type TOTPLimiter struct {
+	redis       redis.UniversalClient
+	maxAttempts int64
+	cooldown    time.Duration
+}
+
+// NewTOTPLimiter creates a TOTP rate limiter. Zero-value fields in cfg
+// fall back to defaults (5 attempts / 60s).
+func NewTOTPLimiter(redisClient redis.UniversalClient, cfg TOTPLimiterConfig) *TOTPLimiter {
+	max := cfg.MaxAttempts
+	if max <= 0 {
+		max = defaultTOTPMaxAttempts
+	}
+	cd := cfg.Cooldown
+	if cd <= 0 {
+		cd = defaultTOTPCooldown
+	}
+	return &TOTPLimiter{redis: redisClient, maxAttempts: int64(max), cooldown: cd}
 }
 
 func (l *TOTPLimiter) key(userID string) string {
@@ -39,7 +57,7 @@ func (l *TOTPLimiter) Check(ctx context.Context, userID string) error {
 		}
 		return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 	}
-	if count >= totpMaxAttempts {
+	if count >= l.maxAttempts {
 		return ErrTOTPRateLimited
 	}
 	return nil
@@ -51,11 +69,11 @@ func (l *TOTPLimiter) RecordFailure(ctx context.Context, userID string) error {
 		return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 	}
 	if count == 1 {
-		if err := l.redis.Expire(ctx, l.key(userID), totpCooldown).Err(); err != nil {
+		if err := l.redis.Expire(ctx, l.key(userID), l.cooldown).Err(); err != nil {
 			return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 		}
 	}
-	if count >= totpMaxAttempts {
+	if count >= l.maxAttempts {
 		return ErrTOTPRateLimited
 	}
 	return nil

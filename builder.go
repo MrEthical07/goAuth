@@ -238,7 +238,10 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxAttempts:              cfg.Account.AccountCreationMaxAttempts,
 		Cooldown:                 cfg.Account.AccountCreationCooldown,
 	})
-	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis)
+	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis, limiters.TOTPLimiterConfig{
+		MaxAttempts: cfg.TOTP.MaxVerifyAttempts,
+		Cooldown:    cfg.TOTP.VerifyAttemptCooldown,
+	})
 	engine.backupLimiter = limiters.NewBackupCodeLimiter(b.redis, limiters.BackupCodeConfig{
 		MaxAttempts: cfg.TOTP.BackupCodeMaxAttempts,
 		Cooldown:    cfg.TOTP.BackupCodeCooldown,

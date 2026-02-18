@@ -261,6 +261,14 @@ type TOTPConfig struct {
 	RequireForSensitive         bool
 	RequireForPasswordReset     bool
 	RequireTOTPForPasswordReset bool
+
+	// MaxVerifyAttempts is the maximum number of TOTP verification
+	// attempts before rate limiting kicks in. Default: 5.
+	MaxVerifyAttempts int
+
+	// VerifyAttemptCooldown is the window after the first failed attempt
+	// in which MaxVerifyAttempts are counted. Default: 1m.
+	VerifyAttemptCooldown time.Duration
 }
 
 /*
@@ -478,6 +486,8 @@ func defaultConfig() Config {
 			BackupCodeCooldown:          10 * time.Minute,
 			RequireForLogin:             false,
 			RequireBackupForLogin:       false,
+			MaxVerifyAttempts:           5,
+			VerifyAttemptCooldown:       time.Minute,
 			RequireForSensitive:         false,
 			RequireForPasswordReset:     false,
 			RequireTOTPForPasswordReset: false,
