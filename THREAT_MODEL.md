@@ -140,3 +140,18 @@ This threat model captures goAuth v1 scope, assumptions, mitigations, and residu
 - JWT-only mode: highest availability/perf, bounded revocation delay by access TTL.
 
 These are intentional modes, not accidental degradations.
+
+## 8. Invariant Test Mapping
+
+The following threat-model-critical invariants are explicitly enforced in
+`security_invariants_test.go`:
+
+- Refresh replay invalidates session: `TestSecurityInvariantRefreshReplayInvalidatesSession`
+- Strict mode requires Redis session existence: `TestSecurityInvariantStrictValidationRequiresSession`
+- JWT-only validation remains stateless: `TestSecurityInvariantJWTOnlyValidationStaysStateless`
+- Device binding mismatch blocks strict validation:
+  `TestSecurityInvariantDeviceBindingMismatchBlockedInStrictMode`
+- Version drift blocks strict validation:
+  `TestSecurityInvariantPermissionVersionDriftBlockedInStrictMode`
+- Reset/email verification challenge expiry:
+  `TestSecurityInvariantResetAndVerificationTokensExpire`
