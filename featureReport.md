@@ -723,7 +723,7 @@ Password reset uses Redis WATCH/MULTI optimistic locking (up to 4 retries).
 
 | # | Gap | Impact | Fix Plan |
 |---|-----|--------|----------|
-| 2 | **No max password length check** | Memory DoS via extremely long passwords sent to Argon2 | Add `MaxPasswordBytes` config field (default 1024), enforce in `Hash()` and `ChangePassword()`. |
+| 2 | ~~**No max password length check**~~ | ~~Memory DoS via extremely long passwords sent to Argon2~~ | **Fixed.** Added `MaxPasswordBytes` to `password.Config` (default 1024). Enforced in `Hash()` and `Verify()`. Tests: `TestHashTooLongPasswordRejected`, `TestHashAtMaxLengthAccepted`, `TestVerifyTooLongPasswordRejected`, `TestDefaultMaxPasswordBytesApplied`. |
 | 3 | **TOTP limiter has hardcoded thresholds** | Cannot tune TOTP rate limits per deployment | Make `TOTPLimiter` thresholds (5 attempts / 60s) configurable via `TOTPConfig`. |
 | 4 | **Fixed-window rate limiters** | Up to 2× burst at window boundaries | Document limitation; optionally add sliding window mode in future. |
 | 5 | **Permission version drift inconsistency** | Permission mismatch returns failure but doesn't delete session; role/account mismatch deletes session | Align behavior: either all delete or none delete on drift. Consider making severity configurable. |

@@ -159,3 +159,79 @@ func TestHashTooShortPassword(t *testing.T) {
 		t.Fatal("expected short password hash to fail")
 	}
 }
+
+func TestHashTooLongPasswordRejected(t *testing.T) {
+	cfg := secureConfig()
+	cfg.MaxPasswordBytes = 64
+	hasher, err := NewArgon2(cfg)
+	if err != nil {
+		t.Fatalf("NewArgon2 error: %v", err)
+	}
+
+	longPwd := strings.Repeat("a", 65)
+	if _, err := hasher.Hash(longPwd); err == nil {
+		t.Fatal("expected long password to be rejected by Hash()")
+	}
+}
+
+func TestHashAtMaxLengthAccepted(t *testing.T) {
+	cfg := secureConfig()
+	cfg.MaxPasswordBytes = 64
+	hasher, err := NewArgon2(cfg)
+	if err != nil {
+		t.Fatalf("NewArgon2 error: %v", err)
+	}
+
+	exactPwd := strings.Repeat("b", 64)
+	hash, err := hasher.Hash(exactPwd)
+	if err != nil {
+		t.Fatalf("expected exactly-max password to be accepted: %v", err)
+	}
+
+	ok, err := hasher.Verify(exactPwd, hash)
+	if err != nil || !ok {
+		t.Fatalf("Verify failed for max-length password: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestVerifyTooLongPasswordRejected(t *testing.T) {
+	cfg := secureConfig()
+	cfg.MaxPasswordBytes = 64
+	hasher, err := NewArgon2(cfg)
+	if err != nil {
+		t.Fatalf("NewArgon2 error: %v", err)
+	}
+
+	// Hash a valid password first.
+	normalPwd := "valid-password-123"
+	hash, err := hasher.Hash(normalPwd)
+	if err != nil {
+		t.Fatalf("Hash error: %v", err)
+	}
+
+	// Verify with an overly long password should fail fast.
+	longPwd := strings.Repeat("c", 65)
+	_, err = hasher.Verify(longPwd, hash)
+	if err == nil {
+		t.Fatal("expected long password to be rejected by Verify()")
+	}
+}
+
+func TestDefaultMaxPasswordBytesApplied(t *testing.T) {
+	cfg := secureConfig()
+	// MaxPasswordBytes left as zero — should use DefaultMaxPasswordBytes (1024).
+	hasher, err := NewArgon2(cfg)
+	if err != nil {
+		t.Fatalf("NewArgon2 error: %v", err)
+	}
+
+	longPwd := strings.Repeat("d", DefaultMaxPasswordBytes+1)
+	if _, err := hasher.Hash(longPwd); err == nil {
+		t.Fatalf("expected password > %d bytes to be rejected", DefaultMaxPasswordBytes)
+	}
+
+	exactPwd := strings.Repeat("e", DefaultMaxPasswordBytes)
+	if _, err := hasher.Hash(exactPwd); err != nil {
+		t.Fatalf("expected password of exactly %d bytes to be accepted: %v", DefaultMaxPasswordBytes, err)
+	}
+}

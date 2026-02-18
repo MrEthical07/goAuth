@@ -21,6 +21,11 @@ const (
 	minKeyLength   uint32 = 16
 	minPassBytes          = 10
 	algorithmID           = "argon2id"
+
+	// DefaultMaxPasswordBytes is the default upper bound on password length.
+	// Passwords longer than this are rejected before reaching Argon2 to
+	// prevent memory-amplification DoS.
+	DefaultMaxPasswordBytes = 1024
 )
 
 // Config defines a public type used by goAuth APIs.
@@ -32,13 +37,19 @@ type Config struct {
 	Parallelism uint8
 	SaltLength  uint32
 	KeyLength   uint32
+
+	// MaxPasswordBytes sets the upper bound on password length (in bytes).
+	// Passwords longer than this are rejected before reaching Argon2.
+	// Zero means DefaultMaxPasswordBytes (1024).
+	MaxPasswordBytes int
 }
 
 // Argon2 defines a public type used by goAuth APIs.
 //
 // Argon2 instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Argon2 struct {
-	config Config
+	config           Config
+	maxPasswordBytes int
 }
 
 type parsedPHC struct {
@@ -59,7 +70,12 @@ func NewArgon2(cfg Config) (*Argon2, error) {
 		return nil, err
 	}
 
-	return &Argon2{config: cfg}, nil
+	maxPwd := cfg.MaxPasswordBytes
+	if maxPwd <= 0 {
+		maxPwd = DefaultMaxPasswordBytes
+	}
+
+	return &Argon2{config: cfg, maxPasswordBytes: maxPwd}, nil
 }
 
 // Hash describes the hash operation and its observable behavior.
@@ -70,6 +86,9 @@ func (a *Argon2) Hash(password string) (string, error) {
 	// Password processing uses raw string bytes exactly as provided (no Unicode normalization).
 	if len(password) < minPassBytes {
 		return "", errors.New("password must be at least 10 bytes")
+	}
+	if len(password) > a.maxPasswordBytes {
+		return "", fmt.Errorf("password exceeds maximum length of %d bytes", a.maxPasswordBytes)
 	}
 
 	salt := make([]byte, a.config.SaltLength)
@@ -106,6 +125,10 @@ func (a *Argon2) Hash(password string) (string, error) {
 // Verify may return an error when input validation, dependency calls, or security checks fail.
 // Verify does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (a *Argon2) Verify(password string, encodedHash string) (bool, error) {
+	if len(password) > a.maxPasswordBytes {
+		return false, fmt.Errorf("password exceeds maximum length of %d bytes", a.maxPasswordBytes)
+	}
+
 	parsed, err := parsePHC(encodedHash)
 	if err != nil {
 		return false, err
