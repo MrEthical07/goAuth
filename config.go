@@ -211,6 +211,9 @@ type SecurityConfig struct {
 	EnablePermissionVersionCheck bool
 	EnableRoleVersionCheck       bool
 	EnableAccountVersionCheck    bool
+	AutoLockoutEnabled           bool
+	AutoLockoutThreshold         int
+	AutoLockoutDuration          time.Duration // 0 = manual unlock only
 }
 
 // SessionHardeningConfig defines a public type used by goAuth APIs.
@@ -440,6 +443,9 @@ func defaultConfig() Config {
 			EnablePermissionVersionCheck: true,
 			EnableRoleVersionCheck:       true,
 			EnableAccountVersionCheck:    true,
+			AutoLockoutEnabled:           false,
+			AutoLockoutThreshold:         10,
+			AutoLockoutDuration:          30 * time.Minute,
 		},
 		SessionHardening: SessionHardeningConfig{
 			MaxSessionsPerUser:   0,
@@ -823,6 +829,14 @@ func (c *Config) Validate() error {
 	}
 	if c.SessionHardening.MaxClockSkew < 0 {
 		return errors.New("SessionHardening MaxClockSkew must be >= 0")
+	}
+	if c.Security.AutoLockoutEnabled {
+		if c.Security.AutoLockoutThreshold <= 0 {
+			return errors.New("AutoLockoutThreshold must be > 0 when AutoLockoutEnabled")
+		}
+		if c.Security.AutoLockoutDuration < 0 {
+			return errors.New("AutoLockoutDuration must be >= 0")
+		}
 	}
 	if !c.DeviceBinding.Enabled {
 		// disabled mode is valid regardless of per-signal toggles

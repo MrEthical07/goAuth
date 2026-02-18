@@ -42,6 +42,7 @@ type Engine struct {
 	accountLimiter      *limiters.AccountCreationLimiter
 	totpLimiter         *limiters.TOTPLimiter
 	backupLimiter       *limiters.BackupCodeLimiter
+	lockoutLimiter      *limiters.LockoutLimiter
 	mfaLoginStore       *stores.MFALoginChallengeStore
 	audit               *auditDispatcher
 	metrics             *Metrics
@@ -1561,12 +1562,23 @@ func (e *Engine) DisableAccount(ctx context.Context, userID string) error {
 // EnableAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) EnableAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountActive)
+	if err == nil && e.lockoutLimiter != nil {
+		_ = e.lockoutLimiter.Reset(ctx, userID)
+	}
 	e.emitAudit(ctx, auditEventAccountStatusChange, err == nil, userID, tenantIDFromContext(ctx), "", err, func() map[string]string {
 		return map[string]string{
 			"action": "enable",
 		}
 	})
 	return err
+}
+
+// UnlockAccount re-enables a locked account and resets the lockout failure counter.
+// It is the counterpart to LockAccount (both manual and automatic lockout).
+//
+// UnlockAccount may return an error when input validation, dependency calls, or security checks fail.
+func (e *Engine) UnlockAccount(ctx context.Context, userID string) error {
+	return e.EnableAccount(ctx, userID)
 }
 
 // LockAccount describes the lockaccount operation and its observable behavior.
@@ -2566,6 +2578,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			InvalidCredentials:       ErrInvalidCredentials,
 			LoginRateLimited:         ErrLoginRateLimited,
 			AccountUnverified:        ErrAccountUnverified,
+			AccountLocked:            ErrAccountLocked,
 			DeviceBindingRejected:    ErrDeviceBindingRejected,
 			TOTPFeatureDisabled:      ErrTOTPFeatureDisabled,
 			MFALoginInvalid:          ErrMFALoginInvalid,
@@ -2603,6 +2616,12 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.CheckLoginRate = e.rateLimiter.CheckLogin
 		deps.IncrementLoginRate = e.rateLimiter.IncrementLogin
 		deps.ResetLoginRate = e.rateLimiter.ResetLogin
+	}
+	if e != nil && e.lockoutLimiter != nil && e.config.Security.AutoLockoutEnabled {
+		deps.AutoLockoutEnabled = true
+		deps.RecordLockoutFailure = e.lockoutLimiter.RecordFailure
+		deps.ResetLockoutCounter = e.lockoutLimiter.Reset
+		deps.LockAccount = e.LockAccount
 	}
 	if e != nil && e.userProvider != nil {
 		deps.GetUserByIdentifier = func(identifier string) (internalflows.LoginUserRecord, error) {

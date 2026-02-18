@@ -411,33 +411,35 @@ BenchmarkRefresh-16              4,681   304,577 ns/op   224,760 B/op   957 allo
 
 ### 3.10 Account Lockout Enforcement
 
-**Status: Partial**
+**Status: Complete**
 
 **Where implemented:**
-- `engine.go` — `LockAccount()` (explicit admin API)
-- `types.go` — `AccountLocked` status enum
-- `internal/flows/account_status.go` — enforcement in login/refresh/validate
+- `config.go` — `AutoLockoutEnabled`, `AutoLockoutThreshold`, `AutoLockoutDuration` fields in `SecurityConfig`
+- `internal/limiters/lockout.go` — `LockoutLimiter` (persistent Redis failure counter per user)
+- `internal/flows/login.go` — auto-lockout on password mismatch, counter reset on success
+- `engine.go` — `UnlockAccount()` public API, `EnableAccount()` resets lockout counter
+- `builder.go` — wires lockout limiter from config
 
 **What works:**
-- `LockAccount()` sets status to `AccountLocked` + invalidates all sessions
+- After `AutoLockoutThreshold` consecutive failed password attempts, `LockAccount()` is called automatically
+- `AutoLockoutDuration = 0` means manual unlock only; `> 0` means Redis key TTL auto-expires the failure counter
+- Successful login resets the lockout counter
+- `UnlockAccount()` / `EnableAccount()` clear the counter and re-enable the account
 - Login/refresh/validate (strict) all reject locked accounts
-- Re-enabling via `EnableAccount()` required
+- Per-user isolation: locking one user does not affect others
+- When `AutoLockoutEnabled = false`, no lockout occurs regardless of failure count
 
-**What's missing:**
-- **No automatic lockout after N failed login attempts.** `MaxLoginAttempts` controls rate limiting (temporary cooldown) only — not permanent lockout.
-- No `LockoutThreshold` or `LockoutDuration` config fields
-- No automatic unlock timer
-
-**Tests:** Covered under account status tests (`TestAccountStatusLockedCannotLogin`, `TestLockAccountInvalidatesExistingSessions`)
-
-**Security impact:** An attacker who respects rate-limit cooldowns can retry indefinitely. The system relies on the integrating application to call `LockAccount()` based on its own policy.
-
-**Minimal fix plan:**
-- P1: Add `AutoLockoutThreshold` (int) and `AutoLockoutDuration` (duration) to `SecurityConfig`
-- Increment a persistent counter in `IncrementLoginRate` and check threshold
-- On threshold exceeded: call `LockAccount()` automatically
-- On `AutoLockoutDuration` expiry: auto-unlock or require admin action (configurable)
-- No API break — additive config fields only
+**Tests:** `engine_auto_lockout_test.go`
+- `TestAutoLockout_ThresholdTriggersLock` — N failures cause `ErrAccountLocked`
+- `TestAutoLockout_LockedUserCannotLogin` — locked account rejects correct password
+- `TestAutoLockout_UnlockAccountRestoresAccess` — `UnlockAccount()` re-enables login
+- `TestAutoLockout_EnableAccountResetsLockout` — `EnableAccount()` also resets counter
+- `TestAutoLockout_CounterResetsOnSuccessfulLogin` — successful login clears counter
+- `TestAutoLockout_DurationZeroRequiresManualUnlock` — Duration=0 requires manual unlock
+- `TestAutoLockout_OtherUsersNotAffected` — per-user isolation
+- `TestAutoLockout_DisabledDoesNotLock` — 20 failures with feature disabled = no lock
+- `TestAutoLockout_LockedAccountStrictValidateFails` — strict-mode validate rejects locked account
+- `TestAutoLockout_LockedAccountRefreshFails` — refresh rejects locked account
 
 ---
 

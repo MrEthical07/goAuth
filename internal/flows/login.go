@@ -48,110 +48,117 @@ type MFALoginChallengeRecord struct {
 
 // LoginMetrics carries metric IDs needed by login/mfa flows.
 type LoginMetrics struct {
-	LoginSuccess      int
-	LoginFailure      int
-	LoginRateLimited  int
-	SessionCreated    int
-	MFALoginRequired  int
-	MFALoginSuccess   int
-	MFALoginFailure   int
-	MFAReplayAttempt  int
+	LoginSuccess     int
+	LoginFailure     int
+	LoginRateLimited int
+	SessionCreated   int
+	MFALoginRequired int
+	MFALoginSuccess  int
+	MFALoginFailure  int
+	MFAReplayAttempt int
 }
 
 // LoginEvents carries audit event names used by login/mfa flows.
 type LoginEvents struct {
-	LoginSuccess      string
-	LoginFailure      string
-	LoginRateLimited  string
-	MFARequired       string
-	MFASuccess        string
-	MFAFailure        string
+	LoginSuccess        string
+	LoginFailure        string
+	LoginRateLimited    string
+	MFARequired         string
+	MFASuccess          string
+	MFAFailure          string
 	MFAAttemptsExceeded string
 }
 
 // LoginErrors carries host-level sentinel errors used by login/mfa flows.
 type LoginErrors struct {
-	EngineNotReady          error
-	InvalidCredentials      error
-	LoginRateLimited        error
-	AccountUnverified       error
-	DeviceBindingRejected   error
-	TOTPFeatureDisabled     error
-	MFALoginInvalid         error
-	MFALoginExpired         error
+	EngineNotReady           error
+	InvalidCredentials       error
+	LoginRateLimited         error
+	AccountUnverified        error
+	AccountLocked            error
+	DeviceBindingRejected    error
+	TOTPFeatureDisabled      error
+	MFALoginInvalid          error
+	MFALoginExpired          error
 	MFALoginAttemptsExceeded error
-	MFALoginReplay          error
-	MFALoginUnavailable     error
-	UserNotFound            error
-	BackupCodeRateLimited   error
-	BackupCodeInvalid       error
+	MFALoginReplay           error
+	MFALoginUnavailable      error
+	UserNotFound             error
+	BackupCodeRateLimited    error
+	BackupCodeInvalid        error
 	BackupCodesNotConfigured error
 }
 
 // LoginDeps captures login+mfa dependencies.
 type LoginDeps struct {
-	TOTPEnabled                 bool
-	RequireTOTPForLogin         bool
-	EnforceReplayProtection     bool
-	RequireVerified             bool
-	PendingVerificationStatus   uint8
-	PasswordUpgradeOnLogin      bool
-	MFALoginMaxAttempts         int
-	MFALoginChallengeTTL        time.Duration
-	DeviceBindingEnabled        bool
-	EnforceIPBinding            bool
-	EnforceUserAgentBinding     bool
+	TOTPEnabled               bool
+	RequireTOTPForLogin       bool
+	EnforceReplayProtection   bool
+	RequireVerified           bool
+	PendingVerificationStatus uint8
+	PasswordUpgradeOnLogin    bool
+	MFALoginMaxAttempts       int
+	MFALoginChallengeTTL      time.Duration
+	DeviceBindingEnabled      bool
+	EnforceIPBinding          bool
+	EnforceUserAgentBinding   bool
 
-	TenantIDFromContext         func(context.Context) string
-	ClientIPFromContext         func(context.Context) string
-	UserAgentFromContext        func(context.Context) string
-	Now                         func() time.Time
-	AccountStatusError          func(status uint8) error
+	TenantIDFromContext  func(context.Context) string
+	ClientIPFromContext  func(context.Context) string
+	UserAgentFromContext func(context.Context) string
+	Now                  func() time.Time
+	AccountStatusError   func(status uint8) error
 
-	CheckLoginRate              func(context.Context, string, string) error
-	IncrementLoginRate          func(context.Context, string, string) error
-	ResetLoginRate              func(context.Context, string, string) error
+	CheckLoginRate     func(context.Context, string, string) error
+	IncrementLoginRate func(context.Context, string, string) error
+	ResetLoginRate     func(context.Context, string, string) error
 
-	GetUserByIdentifier         func(string) (LoginUserRecord, error)
-	GetUserByID                 func(string) (LoginUserRecord, error)
-	UpdatePasswordHash          func(string, string) error
-	GetTOTPSecret               func(context.Context, string) (*LoginTOTPRecord, error)
-	UpdateTOTPLastUsedCounter   func(context.Context, string, int64) error
+	// Auto-lockout hooks: RecordLockoutFailure returns true when threshold is reached.
+	AutoLockoutEnabled   bool
+	RecordLockoutFailure func(context.Context, string) (bool, error)
+	ResetLockoutCounter  func(context.Context, string) error
+	LockAccount          func(context.Context, string) error
 
-	VerifyPassword              func(string, string) (bool, error)
-	PasswordNeedsUpgrade        func(string) (bool, error)
-	HashPassword                func(string) (string, error)
-	VerifyTOTPCode              func([]byte, string, time.Time) (bool, int64, error)
-	VerifyBackupCodeInTenant    func(context.Context, string, string, string) error
+	GetUserByIdentifier       func(string) (LoginUserRecord, error)
+	GetUserByID               func(string) (LoginUserRecord, error)
+	UpdatePasswordHash        func(string, string) error
+	GetTOTPSecret             func(context.Context, string) (*LoginTOTPRecord, error)
+	UpdateTOTPLastUsedCounter func(context.Context, string, int64) error
 
-	GetMFAChallenge             func(context.Context, string) (*MFALoginChallengeRecord, error)
-	SaveMFAChallenge            func(context.Context, string, *MFALoginChallengeRecord, time.Duration) error
-	DeleteMFAChallenge          func(context.Context, string) (bool, error)
-	RecordMFAFailure            func(context.Context, string, int) (bool, error)
-	MapMFAStoreError            func(error) error
+	VerifyPassword           func(string, string) (bool, error)
+	PasswordNeedsUpgrade     func(string) (bool, error)
+	HashPassword             func(string) (string, error)
+	VerifyTOTPCode           func([]byte, string, time.Time) (bool, int64, error)
+	VerifyBackupCodeInTenant func(context.Context, string, string, string) error
 
-	CreateMFALoginChallenge     func(context.Context, string, string) (string, error)
-	IssueLoginSessionTokens     func(context.Context, string, LoginUserRecord, string) (string, string, error)
-	EnforceSessionHardening     func(context.Context, string, string) error
+	GetMFAChallenge    func(context.Context, string) (*MFALoginChallengeRecord, error)
+	SaveMFAChallenge   func(context.Context, string, *MFALoginChallengeRecord, time.Duration) error
+	DeleteMFAChallenge func(context.Context, string) (bool, error)
+	RecordMFAFailure   func(context.Context, string, int) (bool, error)
+	MapMFAStoreError   func(error) error
 
-	GetRoleMask                 func(string) (interface{}, bool)
-	NewSessionID                func() (string, error)
-	NewRefreshSecret            func() ([32]byte, error)
-	HashRefreshSecret           func([32]byte) [32]byte
-	EncodeRefreshToken          func(string, [32]byte) (string, error)
-	HashBindingValue            func(string) [32]byte
-	SessionLifetime             func() time.Duration
-	SaveSession                 func(context.Context, *session.Session, time.Duration) error
-	IssueAccessToken            func(*session.Session) (string, error)
+	CreateMFALoginChallenge func(context.Context, string, string) (string, error)
+	IssueLoginSessionTokens func(context.Context, string, LoginUserRecord, string) (string, string, error)
+	EnforceSessionHardening func(context.Context, string, string) error
 
-	MetricInc                   func(int)
-	EmitAudit                   func(context.Context, string, bool, string, string, string, error, func() map[string]string)
-	EmitRateLimit               func(context.Context, string, string, func() map[string]string)
-	Warn                        func(string, ...any)
+	GetRoleMask        func(string) (interface{}, bool)
+	NewSessionID       func() (string, error)
+	NewRefreshSecret   func() ([32]byte, error)
+	HashRefreshSecret  func([32]byte) [32]byte
+	EncodeRefreshToken func(string, [32]byte) (string, error)
+	HashBindingValue   func(string) [32]byte
+	SessionLifetime    func() time.Duration
+	SaveSession        func(context.Context, *session.Session, time.Duration) error
+	IssueAccessToken   func(*session.Session) (string, error)
 
-	Metrics                     LoginMetrics
-	Events                      LoginEvents
-	Errors                      LoginErrors
+	MetricInc     func(int)
+	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
+	EmitRateLimit func(context.Context, string, string, func() map[string]string)
+	Warn          func(string, ...any)
+
+	Metrics LoginMetrics
+	Events  LoginEvents
+	Errors  LoginErrors
 }
 
 // RunLoginWithResult executes the login flow and either issues tokens or returns MFA challenge details.
@@ -281,6 +288,19 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 				return nil, deps.Errors.LoginRateLimited
 			}
 		}
+		// Auto-lockout: record failure and lock if threshold reached.
+		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil {
+			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
+				_ = deps.LockAccount(ctx, user.UserID)
+				deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
+					return map[string]string{
+						"identifier": username,
+						"reason":     "auto_lockout",
+					}
+				})
+				return nil, deps.Errors.AccountLocked
+			}
+		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
@@ -391,6 +411,10 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 	access, refresh, err := deps.IssueLoginSessionTokens(ctx, username, user, tenantID)
 	if err != nil {
 		return nil, err
+	}
+	// Reset lockout counter on successful login.
+	if deps.AutoLockoutEnabled && deps.ResetLockoutCounter != nil {
+		_ = deps.ResetLockoutCounter(ctx, user.UserID)
 	}
 	return &LoginResult{
 		AccessToken:  access,

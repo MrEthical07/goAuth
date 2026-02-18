@@ -243,6 +243,11 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxAttempts: cfg.TOTP.BackupCodeMaxAttempts,
 		Cooldown:    cfg.TOTP.BackupCodeCooldown,
 	})
+	engine.lockoutLimiter = limiters.NewLockoutLimiter(b.redis, limiters.LockoutConfig{
+		Enabled:   cfg.Security.AutoLockoutEnabled,
+		Threshold: cfg.Security.AutoLockoutThreshold,
+		Duration:  cfg.Security.AutoLockoutDuration,
+	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
 	engine.audit = newAuditDispatcher(cfg.Audit, b.auditSink)
 	engine.metrics = NewMetrics(cfg.Metrics)
