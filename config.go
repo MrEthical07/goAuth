@@ -985,3 +985,193 @@ func (c *Config) Validate() error {
 
 	return nil
 }
+
+// LintSeverity classifies the importance of a lint warning.
+type LintSeverity int
+
+const (
+	// LintInfo is advisory only — no action required.
+	LintInfo LintSeverity = iota
+	// LintWarn indicates a configuration that may be sub-optimal in production.
+	LintWarn
+	// LintHigh indicates a configuration that is dangerous or contradictory.
+	LintHigh
+)
+
+// String returns a human-readable severity tag.
+func (s LintSeverity) String() string {
+	switch s {
+	case LintInfo:
+		return "INFO"
+	case LintWarn:
+		return "WARN"
+	case LintHigh:
+		return "HIGH"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// LintWarning represents a single advisory warning from Config.Lint().
+// It contains a short code for programmatic matching, a severity level,
+// and a human-readable message.
+type LintWarning struct {
+	Code     string       // e.g., "leeway_large", "access_ttl_long"
+	Severity LintSeverity // INFO, WARN, or HIGH
+	Message  string
+}
+
+// LintResult wraps a slice of LintWarning with helper methods for filtering
+// and promotion to errors.
+type LintResult []LintWarning
+
+// AsError returns an error if any warning meets or exceeds minSeverity.
+// Returns nil if no warnings meet the threshold. Useful for teams that want
+// to fail startup on high-severity configuration issues:
+//
+//	if err := cfg.Lint().AsError(goAuth.LintHigh); err != nil {
+//	    log.Fatalf("config lint: %v", err)
+//	}
+func (lr LintResult) AsError(minSeverity LintSeverity) error {
+	var msgs []string
+	for _, w := range lr {
+		if w.Severity >= minSeverity {
+			msgs = append(msgs, "["+w.Severity.String()+"] "+w.Code+": "+w.Message)
+		}
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return errors.New("config lint failures:\n" + strings.Join(msgs, "\n"))
+}
+
+// BySeverity returns only warnings at or above the given severity.
+func (lr LintResult) BySeverity(minSeverity LintSeverity) LintResult {
+	var filtered LintResult
+	for _, w := range lr {
+		if w.Severity >= minSeverity {
+			filtered = append(filtered, w)
+		}
+	}
+	return filtered
+}
+
+// Codes returns the warning codes as a string slice (for test assertions).
+func (lr LintResult) Codes() []string {
+	codes := make([]string, len(lr))
+	for i, w := range lr {
+		codes[i] = w.Code
+	}
+	return codes
+}
+
+// Lint returns advisory warnings for configurations that are technically valid
+// but potentially dangerous in production. Unlike Validate(), Lint() never
+// rejects a config — it only surfaces things worth reviewing.
+//
+// Each warning has a stable code and a severity level (INFO/WARN/HIGH).
+// Use the returned LintResult helpers to filter or promote to errors:
+//
+//	for _, w := range cfg.Lint() {
+//	    slog.Warn("config lint", "code", w.Code, "severity", w.Severity.String(), "msg", w.Message)
+//	}
+//
+//	// Fail startup on HIGH severity:
+//	if err := cfg.Lint().AsError(goAuth.LintHigh); err != nil {
+//	    log.Fatalf("config lint: %v", err)
+//	}
+func (c *Config) Lint() LintResult {
+	var ws LintResult
+	warn := func(sev LintSeverity, code, msg string) {
+		ws = append(ws, LintWarning{Code: code, Severity: sev, Message: msg})
+	}
+
+	// --- JWT ---
+	if c.JWT.Leeway > 1*time.Minute {
+		warn(LintWarn, "leeway_large",
+			"JWT Leeway > 1m widens the token acceptance window; consider ≤ 30s")
+	}
+
+	if c.JWT.AccessTTL > 10*time.Minute {
+		warn(LintWarn, "access_ttl_long",
+			"JWT AccessTTL > 10m increases the exposure window for stolen tokens")
+	}
+
+	if c.JWT.RefreshTTL > 14*24*time.Hour {
+		warn(LintInfo, "refresh_ttl_long",
+			"JWT RefreshTTL > 14d means long-lived sessions; consider ≤ 7–14d")
+	}
+
+	if !c.JWT.RequireIAT {
+		warn(LintInfo, "iat_not_required",
+			"JWT RequireIAT is false; pre-dated tokens will be accepted")
+	}
+
+	if c.JWT.SigningMethod == "hs256" {
+		warn(LintWarn, "signing_hs256",
+			"HS256 signing is supported but Ed25519 provides better security properties")
+	}
+
+	// --- Validation mode contradictions ---
+	if c.ValidationMode == ModeJWTOnly && c.DeviceBinding.Enabled {
+		warn(LintHigh, "jwtonly_device_binding",
+			"ValidationMode is JWTOnly but DeviceBinding is enabled; device checks require Redis session access and will not execute in JWTOnly mode")
+	}
+
+	if c.ValidationMode == ModeJWTOnly && c.SessionHardening.EnforceSingleSession {
+		warn(LintHigh, "jwtonly_single_session",
+			"ValidationMode is JWTOnly but EnforceSingleSession is enabled; session limits require Redis")
+	}
+
+	if c.ValidationMode == ModeJWTOnly && c.Security.EnablePermissionVersionCheck {
+		warn(LintWarn, "jwtonly_perm_version",
+			"ValidationMode is JWTOnly with PermissionVersionCheck; version checks use embedded claim values only and won't catch real-time revocations")
+	}
+
+	// --- Rate limiting ---
+	if !c.Security.EnableIPThrottle && !c.Security.EnableRefreshThrottle {
+		warn(LintHigh, "rate_limits_disabled",
+			"Both IP throttle and refresh throttle are disabled; public endpoints are unprotected from brute-force")
+	}
+
+	if !c.Security.EnableIPThrottle {
+		warn(LintWarn, "ip_throttle_disabled",
+			"IP throttle is disabled; login endpoints are vulnerable to distributed brute-force")
+	}
+
+	// --- Session ---
+	if c.Session.AbsoluteSessionLifetime > 30*24*time.Hour {
+		warn(LintWarn, "session_lifetime_long",
+			"AbsoluteSessionLifetime > 30d is unusually long; consider shorter sessions")
+	}
+
+	if c.Session.AbsoluteSessionLifetime < c.JWT.RefreshTTL {
+		warn(LintHigh, "session_shorter_than_refresh",
+			"AbsoluteSessionLifetime < RefreshTTL; sessions will expire before refresh tokens, causing unexpected refresh failures")
+	}
+
+	// --- Production readiness ---
+	if !c.Security.ProductionMode {
+		warn(LintInfo, "not_production_mode",
+			"ProductionMode is false; some security constraints are relaxed")
+	}
+
+	if !c.Audit.Enabled {
+		warn(LintWarn, "audit_disabled",
+			"Audit is disabled; security events will not be recorded")
+	}
+
+	// --- TOTP ---
+	if c.TOTP.Enabled && c.TOTP.Skew > 1 {
+		warn(LintWarn, "totp_skew_wide",
+			"TOTP Skew > 1 accepts codes from a wider time window; consider Skew=1 for tighter security")
+	}
+
+	// --- Password ---
+	if c.Password.Memory < 64*1024 {
+		warn(LintWarn, "argon2_memory_low",
+			"Argon2 Memory < 64 MB is below OWASP recommended minimum")
+	}
+
+	return ws
+}

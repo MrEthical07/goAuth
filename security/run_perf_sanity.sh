@@ -23,4 +23,6 @@ echo "benchstat comparison (baseline vs candidate):"
 go run ./security/cmd/perf-regression \
 	-baseline "${BASELINE_FILE}" \
 	-candidate "${CANDIDATE_FILE}" \
-	-threshold 0.30
+	-threshold 0.20 \
+	-allocs-threshold 0.10 \
+	-jitter-band 50

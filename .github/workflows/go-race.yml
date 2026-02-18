@@ -45,6 +45,35 @@ jobs:
             exit 1
           fi
 
+      - name: Require changelog entry for API/config changes
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          # Files that require a CHANGELOG.md entry when modified
+          API_PATTERNS="^(builder|config|context|engine|errors|goAuth|types)\.go$|^docs/api-reference\.md$|^docs/config\.md$"
+          CHANGED=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD || true)
+          NEEDS_CL=false
+          for f in $CHANGED; do
+            if echo "$f" | grep -qE "$API_PATTERNS"; then
+              NEEDS_CL=true
+              break
+            fi
+          done
+          if [ "$NEEDS_CL" = "true" ]; then
+            if ! echo "$CHANGED" | grep -q "^CHANGELOG.md$"; then
+              echo "::error::Public API or config docs changed but CHANGELOG.md was not updated."
+              echo "Add an entry under [Unreleased] in CHANGELOG.md."
+              exit 1
+            fi
+          fi
+
+      - name: Go environment summary
+        run: |
+          echo "=== Go version ==="
+          go version
+          echo "=== Go env (selected) ==="
+          go env GOVERSION GOTOOLCHAIN GOROOT GOPATH GOOS GOARCH CGO_ENABLED
+
       - name: Install goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
 
@@ -58,11 +87,30 @@ jobs:
           files=$(find . -name '*.go' -not -path './vendor/*')
           test -z "$($(go env GOPATH)/bin/goimports -l $files)"
 
-      - name: Run unit tests
+      - name: Run unit tests (includes vet)
         run: go test ./...
 
-      - name: Run integration tests
+      - name: Build example app
+        run: go build ./examples/http-minimal/...
+
+      - name: Check engine.go delegate complexity
+        run: go test -run TestEngine_DelegateMethodComplexity -v .
+
+      - name: Run integration tests (miniredis)
         run: go test -tags=integration ./test/...
+
+      - name: Run integration tests (real Redis)
+        run: |
+          docker compose -f docker-compose.test.yml up -d --wait
+          REDIS_ADDR=127.0.0.1:6379 go test -tags=integration -v -run 'TestRedisCompat' ./test/...
+          docker compose -f docker-compose.test.yml down
+
+      - name: Run fuzz tests (short)
+        run: |
+          go test -fuzz=FuzzSessionDecode -fuzztime=30s ./session/
+          go test -fuzz=FuzzMaskCodecRoundTrip -fuzztime=30s ./permission/
+          go test -fuzz=FuzzDecodeRefreshToken -fuzztime=30s ./internal/
+          go test -fuzz=FuzzJWTParseAccess -fuzztime=30s ./jwt/
 
       - name: Install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest

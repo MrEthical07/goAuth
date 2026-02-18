@@ -67,8 +67,9 @@ type EmailVerificationDeps struct {
 	SaveVerificationRecord   func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
 	ConsumeVerificationRecord func(context.Context, string, string, [32]byte, int, int) (EmailVerificationStoreRecord, error)
 
-	GenerateChallenge        func(int, int) (string, string, [32]byte, error)
-	ParseChallenge           func(int, string, int) (string, [32]byte, error)
+	GenerateChallenge        func(int, int, string) (string, string, [32]byte, error)
+	ParseChallenge           func(int, string, int) (string, string, [32]byte, error)
+	ParseChallengeCode       func(int, string, string, int) ([32]byte, error)
 	SleepEnumerationDelay    func(context.Context) error
 
 	MetricInc                func(int)
@@ -132,7 +133,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		if err := deps.SleepEnumerationDelay(ctx); err != nil {
 			return "", err
 		}
-		_, fakeChallenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits)
+		_, fakeChallenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits, tenantID)
 		if genErr != nil {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", tenantID, "", deps.Errors.EmailVerificationUnavailable, func() map[string]string {
 				return map[string]string{
@@ -153,6 +154,10 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 	}
 
 	if user.Status == deps.ActiveStatus {
+		_, fakeChallenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits, tenantID)
+		if genErr != nil {
+			return "", deps.Errors.EmailVerificationUnavailable
+		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, user.UserID, tenantID, "", nil, func() map[string]string {
 			return map[string]string{
 				"identifier": identifier,
@@ -160,9 +165,13 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			}
 		})
 		deps.MetricInc(deps.Metrics.EmailVerificationRequest)
-		return "", nil
+		return fakeChallenge, nil
 	}
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
+		_, fakeChallenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits, tenantID)
+		if genErr != nil {
+			return "", deps.Errors.EmailVerificationUnavailable
+		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, user.UserID, tenantID, "", nil, func() map[string]string {
 			return map[string]string{
 				"identifier": identifier,
@@ -170,7 +179,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			}
 		})
 		deps.MetricInc(deps.Metrics.EmailVerificationRequest)
-		return "", nil
+		return fakeChallenge, nil
 	}
 
 	effectiveTenant := tenantID
@@ -178,7 +187,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		effectiveTenant = user.TenantID
 	}
 
-	verificationID, challenge, secretHash, err := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits)
+	verificationID, challenge, secretHash, err := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits, effectiveTenant)
 	if err != nil {
 		return "", deps.Errors.EmailVerificationUnavailable
 	}
@@ -232,12 +241,127 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 		return deps.Errors.EmailVerificationInvalid
 	}
 
-	verificationID, providedHash, err := deps.ParseChallenge(deps.Strategy, challenge, deps.OTPDigits)
+	parsedTenant, verificationID, providedHash, err := deps.ParseChallenge(deps.Strategy, challenge, deps.OTPDigits)
 	if err != nil {
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationInvalid, func() map[string]string {
 			return map[string]string{
 				"reason": "parse_failed",
+			}
+		})
+		return deps.Errors.EmailVerificationInvalid
+	}
+
+	tenantID := parsedTenant
+	if tenantID == "" {
+		tenantID = deps.TenantIDFromContext(ctx)
+	}
+	if err := deps.CheckConfirmLimiter(ctx, tenantID, verificationID, deps.ClientIPFromContext(ctx)); err != nil {
+		mapped := deps.MapLimiterError(err)
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
+				return map[string]string{
+					"verification_id": verificationID,
+				}
+			})
+			deps.EmitRateLimit(ctx, "email_verification_confirm", tenantID, func() map[string]string {
+				return map[string]string{
+					"verification_id": verificationID,
+				}
+			})
+		} else {
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
+				return map[string]string{
+					"verification_id": verificationID,
+				}
+			})
+		}
+		return mapped
+	}
+
+	record, err := deps.ConsumeVerificationRecord(ctx, tenantID, verificationID, providedHash, deps.Strategy, deps.MaxAttempts)
+	if err != nil {
+		mapped := deps.MapStoreError(err)
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		if errors.Is(mapped, deps.Errors.EmailVerificationAttempts) {
+			deps.MetricInc(deps.Metrics.EmailVerificationAttemptsExceeded)
+		}
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
+			return map[string]string{
+				"verification_id": verificationID,
+			}
+		})
+		return mapped
+	}
+
+	user, err := deps.GetUserByID(record.UserID)
+	if err != nil {
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, record.UserID, tenantID, "", deps.Errors.UserNotFound, nil)
+		return deps.Errors.UserNotFound
+	}
+	if user.Status == deps.ActiveStatus {
+		deps.MetricInc(deps.Metrics.EmailVerificationSuccess)
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, func() map[string]string {
+			return map[string]string{
+				"noop": "already_active",
+			}
+		})
+		return nil
+	}
+	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, user.UserID, user.TenantID, "", statusErr, func() map[string]string {
+			return map[string]string{
+				"reason": "account_status",
+			}
+		})
+		return statusErr
+	}
+
+	if err := deps.UpdateStatusAndInvalidate(ctx, record.UserID, deps.ActiveStatus); err != nil {
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, user.UserID, user.TenantID, "", err, func() map[string]string {
+			return map[string]string{
+				"reason": "status_transition_failed",
+			}
+		})
+		return err
+	}
+
+	deps.MetricInc(deps.Metrics.EmailVerificationSuccess)
+	deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, nil)
+	return nil
+}
+
+func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code string, deps EmailVerificationDeps) error {
+	normalizeEmailVerificationDeps(&deps)
+
+	if !deps.Enabled {
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationDisabled, nil)
+		return deps.Errors.EmailVerificationDisabled
+	}
+	if deps.ConsumeVerificationRecord == nil || deps.CheckConfirmLimiter == nil || deps.GetUserByID == nil || deps.UpdateStatusAndInvalidate == nil || deps.ParseChallengeCode == nil {
+		return deps.Errors.EngineNotReady
+	}
+	if verificationID == "" || code == "" {
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationInvalid, func() map[string]string {
+			return map[string]string{
+				"reason": "empty_verification_id_or_code",
+			}
+		})
+		return deps.Errors.EmailVerificationInvalid
+	}
+
+	providedHash, err := deps.ParseChallengeCode(deps.Strategy, verificationID, code, deps.OTPDigits)
+	if err != nil {
+		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationInvalid, func() map[string]string {
+			return map[string]string{
+				"reason": "parse_code_failed",
 			}
 		})
 		return deps.Errors.EmailVerificationInvalid

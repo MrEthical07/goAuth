@@ -1,0 +1,73 @@
+# goAuth — Taskfile (https://taskfile.dev)
+# Alternative to Makefile for cross-platform dev workflows.
+#
+# Install: go install github.com/go-task/task/v3/cmd/task@latest
+# Usage:   task test | task ci | task --list
+
+version: "3"
+
+vars:
+  STATICCHECK_CHECKS: "all,-ST1000,-ST1003,-ST1005,-U1000"
+
+tasks:
+  default:
+    desc: Run unit tests (vet enabled by default in Go 1.24+)
+    cmds:
+      - go test ./...
+
+  test:
+    desc: Run all unit tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run all tests with race detector
+    cmds:
+      - go test -race ./...
+
+  vet:
+    desc: Run go vet explicitly
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run vet + staticcheck
+    deps: [vet]
+    cmds:
+      - staticcheck "-checks={{.STATICCHECK_CHECKS}}" ./...
+
+  fmt:
+    desc: Check gofmt formatting
+    cmds:
+      - cmd: test -z "$(gofmt -l .)"
+        platforms: [linux, darwin]
+      - cmd: |
+          $files = Get-ChildItem -Recurse -Filter *.go | Where-Object { $_.FullName -notmatch 'vendor' }
+          $bad = & gofmt -l ($files | ForEach-Object { $_.FullName })
+          if ($bad) { Write-Error "Files need gofmt: $bad"; exit 1 }
+        platforms: [windows]
+
+  bench:
+    desc: Run benchmarks
+    cmds:
+      - go test -bench=. -benchmem -run=^$ ./...
+
+  integration:
+    desc: Run integration tests
+    cmds:
+      - go test -tags=integration ./test/...
+
+  example:
+    desc: Build example app
+    cmds:
+      - go build ./examples/http-minimal/...
+
+  ci:
+    desc: Full local CI pipeline
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: test
+      - task: test:race
+      - task: integration
+      - task: example

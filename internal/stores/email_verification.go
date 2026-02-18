@@ -24,6 +24,85 @@ var (
 	ErrVerificationRedisUnavailable = errors.New("verification redis unavailable")
 )
 
+// consumeVerificationLua atomically performs GET→validate→DEL/SET on a verification record.
+// KEYS[1] = record key
+// ARGV[1] = provided hash (32 bytes)
+// ARGV[2] = expected strategy (byte)
+// ARGV[3] = max attempts (int string)
+// ARGV[4] = current unix timestamp (int string)
+//
+// Returns:
+//
+//	record bytes on success
+//	error string: "not_found", "expired", "strategy_mismatch", "attempts_exceeded", "secret_mismatch"
+var consumeVerificationLua = redis.NewScript(`
+local data = redis.call('GET', KEYS[1])
+if not data then
+  return {err='not_found'}
+end
+
+local providedHash = ARGV[1]
+local expectedStrategy = tonumber(ARGV[2])
+local maxAttempts = tonumber(ARGV[3])
+local nowUnix = tonumber(ARGV[4])
+
+-- Minimal binary decode: version(1) strategy(1) attempts(2 big-endian) expiresAt(8 big-endian) ...
+local version = string.byte(data, 1)
+if version ~= 1 then
+  redis.call('DEL', KEYS[1])
+  return {err='not_found'}
+end
+
+local strategy = string.byte(data, 2)
+
+local a0 = string.byte(data, 3)
+local a1 = string.byte(data, 4)
+local attempts = a0 * 256 + a1
+
+local e0,e1,e2,e3,e4,e5,e6,e7 = string.byte(data, 5, 12)
+local expiresAt = e0
+for _, b in ipairs({e1,e2,e3,e4,e5,e6,e7}) do
+  expiresAt = expiresAt * 256 + b
+end
+
+if nowUnix > expiresAt then
+  redis.call('DEL', KEYS[1])
+  return {err='expired'}
+end
+
+if strategy ~= expectedStrategy then
+  redis.call('DEL', KEYS[1])
+  return {err='strategy_mismatch'}
+end
+
+-- Secret hash starts after version(1)+strategy(1)+attempts(2)+expiresAt(8)+userIDLen(2)+userID(variable)
+local userIDLen = string.byte(data, 13) * 256 + string.byte(data, 14)
+local hashOffset = 15 + userIDLen
+local storedHash = string.sub(data, hashOffset, hashOffset + 31)
+
+if storedHash ~= providedHash then
+  attempts = attempts + 1
+  if attempts >= maxAttempts then
+    redis.call('DEL', KEYS[1])
+    return {err='attempts_exceeded'}
+  end
+  -- Rewrite attempts bytes in the record
+  local newA0 = math.floor(attempts / 256)
+  local newA1 = attempts % 256
+  local newData = string.sub(data, 1, 2) .. string.char(newA0, newA1) .. string.sub(data, 5)
+  local ttlMs = redis.call('PTTL', KEYS[1])
+  if ttlMs <= 0 then
+    redis.call('DEL', KEYS[1])
+    return {err='expired'}
+  end
+  redis.call('SET', KEYS[1], newData, 'PX', ttlMs)
+  return {err='secret_mismatch'}
+end
+
+redis.call('DEL', KEYS[1])
+return data
+`)
+
 type EmailVerificationRecord struct {
 	UserID     string
 	SecretHash [32]byte
@@ -76,114 +155,52 @@ func (s *EmailVerificationStore) Consume(
 	expectedStrategy int,
 	maxAttempts int,
 ) (*EmailVerificationRecord, error) {
-	const maxRetries = 4
 	key := s.key(tenantID, verificationID)
+	nowUnix := time.Now().Unix()
 
-	for i := 0; i < maxRetries; i++ {
-		var matched *EmailVerificationRecord
+	result, err := consumeVerificationLua.Run(ctx, s.redis,
+		[]string{key},
+		string(providedHash[:]),
+		expectedStrategy,
+		maxAttempts,
+		nowUnix,
+	).Result()
 
-		err := s.redis.Watch(ctx, func(tx *redis.Tx) error {
-			data, err := tx.Get(ctx, key).Bytes()
-			if err != nil {
-				return err
-			}
-
-			record, err := decodeEmailVerificationRecord(data)
-			if err != nil {
-				return err
-			}
-
-			now := time.Now()
-			if now.Unix() > record.ExpiresAt {
-				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-					pipe.Del(ctx, key)
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				return ErrVerificationNotFound
-			}
-
-			if record.Strategy != expectedStrategy {
-				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-					pipe.Del(ctx, key)
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				return ErrVerificationSecretMismatch
-			}
-
-			if subtle.ConstantTimeCompare(record.SecretHash[:], providedHash[:]) != 1 {
-				record.Attempts++
-				if int(record.Attempts) >= maxAttempts {
-					_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-						pipe.Del(ctx, key)
-						return nil
-					})
-					if err != nil {
-						return err
-					}
-					return ErrVerificationAttemptsExceeded
-				}
-
-				ttl := time.Until(time.Unix(record.ExpiresAt, 0))
-				if ttl <= 0 {
-					_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-						pipe.Del(ctx, key)
-						return nil
-					})
-					if err != nil {
-						return err
-					}
-					return ErrVerificationNotFound
-				}
-
-				updated, err := encodeEmailVerificationRecord(record)
-				if err != nil {
-					return err
-				}
-
-				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-					pipe.Set(ctx, key, updated, ttl)
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				return ErrVerificationSecretMismatch
-			}
-
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Del(ctx, key)
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-
-			matched = record
-			return nil
-		}, key)
-
-		if err == redis.TxFailedErr {
-			continue
+	if err != nil {
+		msg := err.Error()
+		switch msg {
+		case "not_found":
+			return nil, ErrVerificationNotFound
+		case "expired":
+			return nil, ErrVerificationNotFound
+		case "strategy_mismatch":
+			return nil, ErrVerificationSecretMismatch
+		case "attempts_exceeded":
+			return nil, ErrVerificationAttemptsExceeded
+		case "secret_mismatch":
+			return nil, ErrVerificationSecretMismatch
+		default:
+			return nil, fmt.Errorf("%w: %v", ErrVerificationRedisUnavailable, err)
 		}
-		if err != nil {
-			switch {
-			case errors.Is(err, redis.Nil), errors.Is(err, ErrVerificationNotFound), errors.Is(err, ErrVerificationSecretMismatch), errors.Is(err, ErrVerificationAttemptsExceeded):
-				return nil, err
-			default:
-				return nil, fmt.Errorf("%w: %v", ErrVerificationRedisUnavailable, err)
-			}
-		}
-
-		return matched, nil
 	}
 
-	return nil, ErrVerificationNotFound
+	data, ok := result.(string)
+	if !ok {
+		return nil, fmt.Errorf("%w: unexpected lua result type", ErrVerificationRedisUnavailable)
+	}
+
+	record, decErr := decodeEmailVerificationRecord([]byte(data))
+	if decErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrVerificationRedisUnavailable, decErr)
+	}
+
+	// Final constant-time comparison in Go as defense-in-depth
+	// (Lua already checked, but Lua string comparison is not constant-time)
+	if subtle.ConstantTimeCompare(record.SecretHash[:], providedHash[:]) != 1 {
+		return nil, ErrVerificationSecretMismatch
+	}
+
+	return record, nil
 }
 
 func encodeEmailVerificationRecord(record *EmailVerificationRecord) ([]byte, error) {

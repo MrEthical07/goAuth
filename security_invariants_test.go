@@ -193,7 +193,7 @@ func TestSecurityInvariantResetAndVerificationTokensExpire(t *testing.T) {
 		if err != nil {
 			t.Fatalf("request email verification failed: %v", err)
 		}
-		verificationID, _, err := parseEmailVerificationChallenge(VerificationToken, challenge, 0)
+		_, verificationID, _, err := parseEmailVerificationChallenge(VerificationToken, challenge, 0)
 		if err != nil {
 			t.Fatalf("parse verification challenge failed: %v", err)
 		}

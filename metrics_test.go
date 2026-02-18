@@ -137,6 +137,6 @@ func TestValidateWithMetricsStillAvoidsProviderCalls(t *testing.T) {
 	}
 
 	if up.getByIdentifierCalls != 0 || up.getByIDCalls != 0 || up.createCalls != 0 || up.updatePasswordCalls != 0 || up.updateStatusCalls != 0 {
-		t.Fatalf("expected validate to avoid provider calls, got counts: %+v", *up)
+		t.Fatalf("expected validate to avoid provider calls, got counts: %+v", up)
 	}
 }

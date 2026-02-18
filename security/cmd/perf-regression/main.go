@@ -12,24 +12,37 @@ import (
 
 const defaultThreshold = 0.30
 
+// allocsThreshold is intentionally stricter than timing — allocation counts
+// are deterministic and should not regress without deliberate cause.
+const defaultAllocsThreshold = 0.10
+
+// jitterBand is the minimum absolute delta (in the same unit) below which
+// timing regressions are ignored. Small absolute changes within noise range
+// should not fail the gate.
+const defaultJitterBand = 0.0
+
 var trackedMetrics = map[string][]string{
 	"BenchmarkValidateJWTOnly": {"ns/op", "allocs/op"},
 	"BenchmarkValidateStrict":  {"ns/op", "allocs/op"},
-	"BenchmarkRefresh":         {"ns/op"},
+	"BenchmarkRefresh":         {"ns/op", "allocs/op"},
 }
 
 type sampleSet map[string]map[string][]float64
 
 func main() {
 	var (
-		baselinePath  string
-		candidatePath string
-		threshold     float64
+		baselinePath    string
+		candidatePath   string
+		threshold       float64
+		allocsThreshold float64
+		jitterBand      float64
 	)
 
 	flag.StringVar(&baselinePath, "baseline", "", "path to baseline benchmark output")
 	flag.StringVar(&candidatePath, "candidate", "", "path to candidate benchmark output")
-	flag.Float64Var(&threshold, "threshold", defaultThreshold, "maximum allowed regression ratio (0.30 = +30%)")
+	flag.Float64Var(&threshold, "threshold", defaultThreshold, "maximum allowed regression ratio for ns/op (0.30 = +30%)")
+	flag.Float64Var(&allocsThreshold, "allocs-threshold", defaultAllocsThreshold, "maximum allowed regression ratio for allocs/op (0.10 = +10%)")
+	flag.Float64Var(&jitterBand, "jitter-band", defaultJitterBand, "minimum absolute delta to consider (ignores noise below this)")
 	flag.Parse()
 
 	if baselinePath == "" || candidatePath == "" {
@@ -54,7 +67,7 @@ func main() {
 
 	var failures []string
 	fmt.Println("perf regression check:")
-	fmt.Println("benchmark metric baseline candidate delta")
+	fmt.Println("benchmark metric baseline candidate delta threshold")
 
 	for benchmark, metrics := range trackedMetrics {
 		for _, metric := range metrics {
@@ -73,9 +86,30 @@ func main() {
 			}
 
 			delta := (candidateMedian - baseMedian) / baseMedian
-			fmt.Printf("%s %s %.3f %.3f %+0.2f%%\n", benchmark, metric, baseMedian, candidateMedian, delta*100)
-			if delta > threshold {
-				failures = append(failures, fmt.Sprintf("%s %s regressed by %+0.2f%% (limit %+0.2f%%)", benchmark, metric, delta*100, threshold*100))
+			absDelta := candidateMedian - baseMedian
+			if absDelta < 0 {
+				absDelta = -absDelta
+			}
+
+			// Select threshold: allocs/op uses the stricter allocs threshold.
+			metricThreshold := threshold
+			if metric == "allocs/op" {
+				metricThreshold = allocsThreshold
+			}
+
+			fmt.Printf("%s %s %.3f %.3f %+0.2f%% (limit %+0.2f%%)\n",
+				benchmark, metric, baseMedian, candidateMedian, delta*100, metricThreshold*100)
+
+			// Skip regression if the absolute delta is within jitter band
+			// (only applies to timing metrics; allocs are deterministic).
+			if metric == "ns/op" && jitterBand > 0 && absDelta < jitterBand {
+				fmt.Printf("  (within jitter band of %.1f, skipped)\n", jitterBand)
+				continue
+			}
+
+			if delta > metricThreshold {
+				failures = append(failures, fmt.Sprintf("%s %s regressed by %+0.2f%% (limit %+0.2f%%)",
+					benchmark, metric, delta*100, metricThreshold*100))
 			}
 		}
 	}

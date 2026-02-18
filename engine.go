@@ -701,7 +701,7 @@ func (e *Engine) Validate(ctx context.Context, tokenStr string, routeMode RouteM
 	e.ensureFlowDeps()
 	if e.metrics != nil && e.metrics.LatencyEnabled() {
 		start := time.Now()
-		defer e.metrics.Observe(MetricValidateLatency, time.Since(start))
+		defer func() { e.metrics.Observe(MetricValidateLatency, time.Since(start)) }()
 	}
 
 	result := e.flows.Validate(ctx, tokenStr, int(routeMode))
@@ -2106,6 +2106,17 @@ func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string)
 	return e.flows.ConfirmEmailVerification(ctx, challenge)
 }
 
+// ConfirmEmailVerificationCode is the preferred method for completing email verification.
+// It accepts the verificationID (safe to log) and the secret code separately.
+// The tenant is determined from the context. For cross-tenant scenarios, use
+// ConfirmEmailVerification with the full challenge string instead.
+//
+// ConfirmEmailVerificationCode may return an error when input validation, dependency calls, or security checks fail.
+func (e *Engine) ConfirmEmailVerificationCode(ctx context.Context, verificationID, code string) error {
+	e.ensureFlowDeps()
+	return e.flows.ConfirmEmailVerificationCode(ctx, verificationID, code)
+}
+
 func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps {
 	var cfg Config
 	if e != nil {
@@ -2127,11 +2138,14 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		},
 		MapLimiterError: mapEmailVerificationLimiterError,
 		MapStoreError:   mapEmailVerificationStoreError,
-		GenerateChallenge: func(strategy int, otpDigits int) (string, string, [32]byte, error) {
-			return generateEmailVerificationChallenge(VerificationStrategyType(strategy), otpDigits)
+		GenerateChallenge: func(strategy int, otpDigits int, tenant string) (string, string, [32]byte, error) {
+			return generateEmailVerificationChallenge(VerificationStrategyType(strategy), otpDigits, tenant)
 		},
-		ParseChallenge: func(strategy int, challenge string, otpDigits int) (string, [32]byte, error) {
+		ParseChallenge: func(strategy int, challenge string, otpDigits int) (string, string, [32]byte, error) {
 			return parseEmailVerificationChallenge(VerificationStrategyType(strategy), challenge, otpDigits)
+		},
+		ParseChallengeCode: func(strategy int, verificationID, code string, otpDigits int) ([32]byte, error) {
+			return parseEmailVerificationChallengeCode(VerificationStrategyType(strategy), verificationID, code, otpDigits)
 		},
 		SleepEnumerationDelay: sleepPasswordResetEnumerationDelay,
 		MetricInc: func(id int) {
@@ -2224,6 +2238,7 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 func generateEmailVerificationChallenge(
 	strategy VerificationStrategyType,
 	otpDigits int,
+	tenant string,
 ) (string, string, [32]byte, error) {
 	var emptyHash [32]byte
 
@@ -2239,17 +2254,19 @@ func generateEmailVerificationChallenge(
 			return "", "", emptyHash, err
 		}
 
-		challenge, err := internal.EncodeResetToken(verificationID.String(), secret)
+		code, err := internal.EncodeResetToken(verificationID.String(), secret)
 		if err != nil {
 			return "", "", emptyHash, err
 		}
 
+		challenge := tenant + ":" + verificationID.String() + ":" + code
 		return verificationID.String(), challenge, internal.HashResetSecret(secret), nil
 
 	case VerificationUUID:
 		verificationUUID := uuid.New()
 		verificationID := verificationUUID.String()
-		return verificationID, verificationID, internal.HashResetBytes([]byte(verificationID)), nil
+		challenge := tenant + ":" + verificationID + ":" + verificationID
+		return verificationID, challenge, internal.HashResetBytes([]byte(verificationID)), nil
 
 	case VerificationOTP:
 		verificationID, err := internal.NewSessionID()
@@ -2261,7 +2278,7 @@ func generateEmailVerificationChallenge(
 			return "", "", emptyHash, err
 		}
 
-		challenge := verificationID.String() + "." + otp
+		challenge := tenant + ":" + verificationID.String() + ":" + otp
 		return verificationID.String(), challenge, internal.HashResetBytes([]byte(otp)), nil
 
 	default:
@@ -2273,46 +2290,62 @@ func parseEmailVerificationChallenge(
 	strategy VerificationStrategyType,
 	challenge string,
 	otpDigits int,
-) (string, [32]byte, error) {
+) (string, string, [32]byte, error) {
+	var emptyHash [32]byte
+
+	parts := strings.SplitN(challenge, ":", 3)
+	if len(parts) != 3 {
+		return "", "", emptyHash, errors.New("invalid challenge format: expected tenant:verificationID:code")
+	}
+
+	tenant := parts[0]
+	verificationID := parts[1]
+	code := parts[2]
+
+	hash, err := parseEmailVerificationChallengeCode(strategy, verificationID, code, otpDigits)
+	if err != nil {
+		return "", "", emptyHash, err
+	}
+
+	return tenant, verificationID, hash, nil
+}
+
+func parseEmailVerificationChallengeCode(
+	strategy VerificationStrategyType,
+	verificationID, code string,
+	otpDigits int,
+) ([32]byte, error) {
 	var emptyHash [32]byte
 
 	switch strategy {
 	case VerificationToken:
-		verificationID, secret, err := internal.DecodeResetToken(challenge)
+		_, secret, err := internal.DecodeResetToken(code)
 		if err != nil {
-			return "", emptyHash, err
+			return emptyHash, err
 		}
-		return verificationID, internal.HashResetSecret(secret), nil
+		return internal.HashResetSecret(secret), nil
 
 	case VerificationUUID:
-		parsed, err := uuid.Parse(challenge)
+		parsed, err := uuid.Parse(code)
 		if err != nil {
-			return "", emptyHash, err
+			return emptyHash, err
 		}
-		verificationID := parsed.String()
-		return verificationID, internal.HashResetBytes([]byte(verificationID)), nil
+		return internal.HashResetBytes([]byte(parsed.String())), nil
 
 	case VerificationOTP:
-		parts := strings.SplitN(challenge, ".", 2)
-		if len(parts) != 2 {
-			return "", emptyHash, errors.New("invalid verification otp challenge format")
-		}
-
-		verificationID := parts[0]
-		otp := parts[1]
 		if _, err := internal.ParseSessionID(verificationID); err != nil {
-			return "", emptyHash, err
+			return emptyHash, err
 		}
-		if len(otp) != otpDigits {
-			return "", emptyHash, errors.New("invalid verification otp length")
+		if len(code) != otpDigits {
+			return emptyHash, errors.New("invalid verification otp length")
 		}
-		if !isNumericString(otp) {
-			return "", emptyHash, errors.New("invalid verification otp format")
+		if !isNumericString(code) {
+			return emptyHash, errors.New("invalid verification otp format")
 		}
-		return verificationID, internal.HashResetBytes([]byte(otp)), nil
+		return internal.HashResetBytes([]byte(code)), nil
 
 	default:
-		return "", emptyHash, errors.New("unsupported verification strategy")
+		return emptyHash, errors.New("unsupported verification strategy")
 	}
 }
 

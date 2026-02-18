@@ -82,6 +82,10 @@ func (s Service) ConfirmEmailVerification(ctx context.Context, challenge string)
 	return RunConfirmEmailVerification(ctx, challenge, s.deps.EmailVerification)
 }
 
+func (s Service) ConfirmEmailVerificationCode(ctx context.Context, verificationID, code string) error {
+	return RunConfirmEmailVerificationCode(ctx, verificationID, code, s.deps.EmailVerification)
+}
+
 func (s Service) GetActiveSessionCount(ctx context.Context, userID string) (int, error) {
 	return RunGetActiveSessionCount(ctx, userID, s.deps.Introspection)
 }
