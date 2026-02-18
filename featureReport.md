@@ -728,7 +728,7 @@ Password reset uses Redis WATCH/MULTI optimistic locking (up to 4 retries).
 | 4 | **Fixed-window rate limiters** | Up to 2× burst at window boundaries | Document limitation; optionally add sliding window mode in future. |
 | 5 | **Permission version drift inconsistency** | Permission mismatch returns failure but doesn't delete session; role/account mismatch deletes session | Align behavior: either all delete or none delete on drift. Consider making severity configurable. |
 | 6 | **`DeleteAllForUser` not fully atomic** | Race: session created between EXISTS pipeline and TxPipelined DEL could be missed | Document; mitigate by running `DeleteAllForUser` + counter reconciliation. Low real-world impact. |
-| 7 | **Missing `RequireIAT=true` test** | No explicit test that `RequireIAT` rejects tokens missing `iat` entirely | Add one test case to `manager_hardening_test.go`. |
+| 7 | ~~**Missing `RequireIAT=true` test**~~ | ~~No explicit test that `RequireIAT` rejects tokens missing `iat` entirely~~ | **Fixed.** Added explicit `RequireIAT` check in `ParseAccess()` (golang-jwt's `WithIssuedAt` only validates iat if present, doesn't require it). Added test case in `TestParseAccessIATPolicy`: token without iat rejected, token with iat accepted. |
 | 8 | **Empty password timing oracle** | Empty password returns early without dummy hash (mitigated by rate limiting) | Add dummy `Argon2.Verify` on empty password path to eliminate timing signal. |
 
 ---

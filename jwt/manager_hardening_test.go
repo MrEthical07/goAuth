@@ -236,6 +236,37 @@ func TestParseAccessIATPolicy(t *testing.T) {
 		t.Fatalf("expected missing iat to pass by default: %v", err)
 	}
 
+	// RequireIAT: reject tokens that have no iat claim at all.
+	requireMgr, err := NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodEd25519,
+		PrivateKey:    priv,
+		PublicKey:     pub,
+		RequireIAT:    true,
+	})
+	if err != nil {
+		t.Fatalf("new require-iat manager: %v", err)
+	}
+
+	// Token without iat must be rejected.
+	if _, err := requireMgr.ParseAccess(noIATSigned); err == nil {
+		t.Fatal("expected missing iat to be rejected when RequireIAT=true")
+	}
+
+	// Token with iat must pass.
+	claimsWithIAT := AccessClaims{
+		SID: "s1",
+		RegisteredClaims: gjwt.RegisteredClaims{
+			ExpiresAt: gjwt.NewNumericDate(time.Now().Add(time.Minute)),
+			IssuedAt:  gjwt.NewNumericDate(time.Now()),
+		},
+	}
+	withIATTok := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, claimsWithIAT)
+	withIATSigned, _ := withIATTok.SignedString(priv)
+	if _, err := requireMgr.ParseAccess(withIATSigned); err != nil {
+		t.Fatalf("expected token with iat to pass when RequireIAT=true: %v", err)
+	}
+
 	// Tolerant "not crazy future" check.
 	futureMgr, err := NewManager(Config{
 		AccessTTL:     time.Minute,

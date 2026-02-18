@@ -245,6 +245,9 @@ func (j *Manager) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	if !ok || !token.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
+	if j.config.RequireIAT && claims.IssuedAt == nil {
+		return nil, errors.New("token missing required iat claim")
+	}
 	if claims.IssuedAt != nil && j.config.MaxFutureIAT > 0 {
 		maxAllowed := time.Now().Add(j.config.MaxFutureIAT)
 		if claims.IssuedAt.Time.After(maxAllowed) {
