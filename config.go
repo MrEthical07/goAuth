@@ -1,6 +1,8 @@
 package goAuth
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
@@ -500,6 +502,90 @@ func defaultConfig() Config {
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ValidationMode: ModeHybrid,
 	}
+}
+
+// DefaultConfig returns a production-safe baseline preset.
+//
+// The preset keeps hybrid validation, refresh rotation/reuse enforcement, and
+// Ed25519 signing. It also generates an ephemeral signing keypair so the result
+// validates without additional key wiring.
+func DefaultConfig() Config {
+	cfg := defaultConfig()
+	applyPresetBase(&cfg)
+	return cfg
+}
+
+// HighSecurityConfig returns a strict preset for security-critical deployments.
+//
+// This preset enables strict validation mode and tighter token/rate-limiter
+// windows, and enforces iat presence.
+func HighSecurityConfig() Config {
+	cfg := DefaultConfig()
+
+	cfg.Security.ProductionMode = true
+	cfg.ValidationMode = ModeStrict
+	cfg.Security.StrictMode = true
+
+	cfg.JWT.RequireIAT = true
+	cfg.JWT.AccessTTL = 5 * time.Minute
+	cfg.JWT.RefreshTTL = 24 * time.Hour
+	cfg.Session.AbsoluteSessionLifetime = 24 * time.Hour
+
+	cfg.Security.EnableIPThrottle = true
+	cfg.Security.MaxLoginAttempts = 3
+	cfg.Security.LoginCooldownDuration = 15 * time.Minute
+	cfg.Security.MaxRefreshAttempts = 10
+	cfg.Security.RefreshCooldownDuration = 2 * time.Minute
+
+	cfg.DeviceBinding.Enabled = true
+	cfg.DeviceBinding.DetectIPChange = true
+	cfg.DeviceBinding.DetectUserAgentChange = true
+	cfg.DeviceBinding.EnforceUserAgentBinding = true
+
+	return cfg
+}
+
+// HighThroughputConfig returns a preset optimized for higher sustained request
+// volume while keeping security defaults intact.
+//
+// It keeps Hybrid validation as the global mode; callers can use per-route
+// `ModeJWTOnly` where immediate revocation is not required.
+func HighThroughputConfig() Config {
+	cfg := DefaultConfig()
+
+	cfg.Security.ProductionMode = true
+	cfg.ValidationMode = ModeHybrid
+
+	cfg.JWT.AccessTTL = 15 * time.Minute
+	cfg.JWT.RefreshTTL = 14 * 24 * time.Hour
+	cfg.Session.AbsoluteSessionLifetime = 14 * 24 * time.Hour
+
+	cfg.Security.EnableIPThrottle = false
+	cfg.Security.MaxRefreshAttempts = 60
+	cfg.Security.RefreshCooldownDuration = 1 * time.Minute
+
+	return cfg
+}
+
+func applyPresetBase(cfg *Config) {
+	cfg.Account.Enabled = false
+	cfg.Account.DefaultRole = ""
+	ensureEd25519Keys(cfg)
+}
+
+func ensureEd25519Keys(cfg *Config) {
+	if cfg.JWT.SigningMethod != "ed25519" {
+		return
+	}
+	if len(cfg.JWT.PrivateKey) > 0 && len(cfg.JWT.PublicKey) > 0 {
+		return
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return
+	}
+	cfg.JWT.PrivateKey = cloneBytes(privateKey)
+	cfg.JWT.PublicKey = cloneBytes(publicKey)
 }
 
 func cloneConfig(cfg Config) Config {

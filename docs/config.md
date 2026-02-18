@@ -26,6 +26,9 @@ This file belongs to package `goAuth` and implements part of the goAuth authenti
 - `ResultConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
 - `ValidationMode`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
 - `RouteMode`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `DefaultConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `HighSecurityConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
+- `HighThroughputConfig`: public API element defined in this file; see source doc comments for exact behavior, error conditions, and guarantees.
 
 ## 3) Internal Interactions
 - Depends on imports such as: errors, math, net/http, strings, time.

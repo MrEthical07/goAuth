@@ -59,6 +59,10 @@ For the full index, see [docs/api-reference.md](docs/api-reference.md).
 
 All fields are defined in [`Config`](config.go) and nested config structs. See [docs/config.md](docs/config.md) for detailed notes.
 
+Preset helpers are available for production-ready starting points:
+`DefaultConfig()`, `HighSecurityConfig()`, and `HighThroughputConfig()`.
+See [docs/config-presets.md](docs/config-presets.md).
+
 ### Top-level config groups
 
 - `JWT` (`JWTConfig`): signing method/key material, issuer/audience, TTL.
@@ -166,6 +170,7 @@ engine, _ = goAuth.New().WithRedis(universal) /* ... */.Build()
 - [Engine internals](docs/engine.md)
 - [Builder internals](docs/builder.md)
 - [Configuration internals](docs/config.md)
+- [Configuration presets](docs/config-presets.md)
 - [Session internals](docs/store.md)
 - [Permission internals](docs/registry.md)
 - [JWT manager internals](docs/manager.md)
