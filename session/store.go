@@ -389,7 +389,16 @@ func (s *Store) Delete(ctx context.Context, tenantID, sessionID string) error {
 	return s.deleteSessionAndIndex(ctx, sess.TenantID, sess.UserID, sessionID)
 }
 
-// DeleteAllForUser describes the deleteallforuser operation and its observable behavior.
+// DeleteAllForUser removes all sessions for a user within a tenant.
+//
+// ATOMICITY NOTE: This operation is NOT fully atomic. It reads the user's
+// session set (SMembers), checks which sessions still exist (pipeline EXISTS),
+// then deletes them (TxPipelined DEL). A session created between the read
+// and delete phases will not be captured by this call. In practice this race
+// is extremely narrow and only affects logout-all semantics — the stray
+// session will expire naturally or be caught by the next DeleteAllForUser call.
+// Callers requiring stronger guarantees can follow up with a counter
+// reconciliation or a second DeleteAllForUser invocation.
 //
 // DeleteAllForUser may return an error when input validation, dependency calls, or security checks fail.
 // DeleteAllForUser does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.

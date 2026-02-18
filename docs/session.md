@@ -102,6 +102,7 @@ rotated, err := store.RotateRefreshHash(ctx, "tenant-0", "sid-abc", oldHash, new
 
 ## Edge Cases & Gotchas
 
+- **`DeleteAllForUser` is not fully atomic.** It reads the user's session set, checks existence via pipeline, then deletes via `TxPipelined`. A session created between the read and delete phases will not be captured. The race window is extremely narrow and the stray session will expire naturally or be caught by a subsequent call. For stronger guarantees, call `DeleteAllForUser` twice or follow up with a counter reconciliation.
 - First Lua call may use 2 commands (EVALSHA miss + EVAL fallback); subsequent calls are 1.
 - `Delete` is idempotent — deleting a non-existent session succeeds silently.
 - Counter can never go negative (Lua script clamps at 0).
