@@ -4,6 +4,10 @@ package session
 //
 // Session instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
 type Session struct {
+	// SchemaVersion is the on-wire session schema version decoded from Redis.
+	// New writes always encode with CurrentSchemaVersion.
+	SchemaVersion uint8
+
 	SessionID string
 	UserID    string
 	TenantID  string

@@ -164,6 +164,7 @@ engine, _ = goAuth.New().WithRedis(universal) /* ... */.Build()
 - [Security findings register](SECURITY_FINDINGS.md)
 - [Benchmarks summary](docs/benchmarks.md)
 - [Performance budgets](docs/perf-budgets.md)
+- [Session migrations](docs/migrations.md)
 
 ### Package/file-level technical docs
 

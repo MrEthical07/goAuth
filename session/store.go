@@ -348,6 +348,10 @@ func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Du
 		return nil, redis.Nil
 	}
 
+	if err := s.maybeMigrateSessionSchema(ctx, key, sess); err != nil {
+		return nil, err
+	}
+
 	if s.sliding {
 		nextTTL, err := s.nextSlidingTTL(remainingAbsolute)
 		if err != nil {
@@ -525,6 +529,9 @@ func (s *Store) GetReadOnly(ctx context.Context, tenantID, sessionID string) (*S
 	if time.Now().Unix() > sess.ExpiresAt {
 		return nil, redis.Nil
 	}
+	if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionID), sess); err != nil {
+		return nil, err
+	}
 
 	return sess, nil
 }
@@ -564,6 +571,9 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 		sess.SessionID = sessionIDs[i]
 		if nowUnix > sess.ExpiresAt {
 			continue
+		}
+		if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionIDs[i]), sess); err != nil {
+			return nil, err
 		}
 
 		sessions = append(sessions, sess)
@@ -685,6 +695,31 @@ func (s *Store) nextSlidingTTL(remainingAbsolute time.Duration) (time.Duration, 
 	return nextTTL, nil
 }
 
+func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess *Session) error {
+	if sess == nil || sess.SchemaVersion == CurrentSchemaVersion {
+		return nil
+	}
+
+	pttl, err := s.redis.PTTL(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	if pttl <= 0 {
+		return nil
+	}
+
+	sess.SchemaVersion = CurrentSchemaVersion
+	encoded, err := Encode(sess)
+	if err != nil {
+		return err
+	}
+
+	if err := s.redis.Set(ctx, key, encoded, pttl).Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	return nil
+}
+
 func randomJitter(jitterRange time.Duration) (time.Duration, error) {
 	if jitterRange <= 0 {
 		return 0, nil
@@ -766,6 +801,9 @@ func (s *Store) RotateRefreshHash(
 			return nil, decErr
 		}
 		sess.SessionID = sessionID
+		if err := s.maybeMigrateSessionSchema(ctx, key, sess); err != nil {
+			return nil, err
+		}
 		return sess, nil
 	case rotateStatusInvalidBlob:
 		return nil, errors.Join(ErrRedisUnavailable, ErrRefreshSessionCorrupt)

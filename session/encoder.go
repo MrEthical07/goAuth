@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/MrEthical07/goAuth/permission"
 )
 
 const (
-	sessionFormatVersionCurrent = 5
+	// CurrentSchemaVersion is the currently encoded Redis session schema version.
+	CurrentSchemaVersion = 5
+
+	sessionFormatVersionCurrent = CurrentSchemaVersion
 	sessionFormatVersionV4      = 4
 	sessionFormatVersionV3      = 3
 	sessionFormatVersionV2      = 2
@@ -24,7 +28,15 @@ const (
 func Encode(s *Session) ([]byte, error) {
 	var buf bytes.Buffer
 
-	buf.WriteByte(sessionFormatVersionCurrent)
+	schemaVersion := s.SchemaVersion
+	if schemaVersion == 0 {
+		schemaVersion = sessionFormatVersionCurrent
+	}
+	if schemaVersion != sessionFormatVersionCurrent {
+		return nil, fmt.Errorf("unsupported session schema version for encode: %d", schemaVersion)
+	}
+
+	buf.WriteByte(schemaVersion)
 
 	if len(s.UserID) > 255 {
 		return nil, errors.New("userID too long")
@@ -98,10 +110,10 @@ func Decode(data []byte) (*Session, error) {
 		version != sessionFormatVersionV3 &&
 		version != sessionFormatVersionV2 &&
 		version != sessionFormatVersionV1 {
-		return nil, errors.New("invalid session version")
+		return nil, fmt.Errorf("unsupported session schema version: %d", version)
 	}
 
-	s := &Session{}
+	s := &Session{SchemaVersion: version}
 
 	userLen, err := reader.ReadByte()
 	if err != nil {
