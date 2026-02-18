@@ -18,10 +18,11 @@ goAuth is a low-latency authentication guard that combines short-lived JWT acces
 ## Package interaction flow
 
 1. `Builder.Build()` freezes config and registries.
-2. `Engine.Login*` verifies credentials via `UserProvider`, then writes session state.
-3. `Engine.Validate*` verifies JWT and optionally Redis session state depending on validation mode.
-4. `Engine.Refresh` rotates refresh secret and issues fresh tokens.
-5. Middleware wraps application handlers and enforces route-level authorization.
+2. `Builder.Build()` wires a single `internal/flows.Service` from one `flows.Deps` graph.
+3. `Engine.Login*` verifies credentials via `UserProvider`, then writes session state.
+4. `Engine.Validate*` verifies JWT and optionally Redis session state depending on validation mode.
+5. `Engine.Refresh` rotates refresh secret and issues fresh tokens.
+6. Middleware wraps application handlers and enforces route-level authorization.
 
 ## Design principles
 
@@ -29,6 +30,7 @@ goAuth is a low-latency authentication guard that combines short-lived JWT acces
 - No DB access in request hot path.
 - Fixed-size bitmasks (up to 512 bits) for O(1) permission checks.
 - Immutable-after-build configuration model.
+- Centralized flow dependency wiring (`flows.New(deps)`) with root method delegation.
 
 ## Trade-offs
 

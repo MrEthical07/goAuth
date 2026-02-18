@@ -50,7 +50,7 @@ type Engine struct {
 	jwtManager          *jwt.Manager
 	userProvider        UserProvider
 	logger              *slog.Logger
-	flowDeps            internalflows.Deps
+	flows               internalflows.Service
 }
 
 type auditDispatcher = internalaudit.Dispatcher
@@ -593,7 +593,7 @@ func (e *Engine) loginInternal(ctx context.Context, username, password, totpCode
 // Refresh does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, string, error) {
 	e.ensureFlowDeps()
-	result := internalflows.RunRefresh(ctx, refreshToken, e.flowDeps.Refresh)
+	result := e.flows.Refresh(ctx, refreshToken)
 
 	switch result.Failure {
 	case internalflows.RefreshFailureDecode:
@@ -704,7 +704,7 @@ func (e *Engine) Validate(ctx context.Context, tokenStr string, routeMode RouteM
 		defer e.metrics.Observe(MetricValidateLatency, time.Since(start))
 	}
 
-	result := internalflows.RunValidate(ctx, tokenStr, int(routeMode), e.flowDeps.Validate)
+	result := e.flows.Validate(ctx, tokenStr, int(routeMode))
 	switch result.Failure {
 	case internalflows.ValidateFailureUnauthorized:
 		return nil, ErrUnauthorized
@@ -849,7 +849,7 @@ func (e *Engine) issueAccessToken(sess *session.Session) (string, error) {
 // Logout does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Logout(ctx context.Context, sessionID string) error {
 	e.ensureFlowDeps()
-	return e.LogoutInTenant(ctx, e.flowDeps.Logout.TenantIDFromContext(ctx), sessionID)
+	return e.LogoutInTenant(ctx, tenantIDFromContext(ctx), sessionID)
 }
 
 // LogoutInTenant describes the logoutintenant operation and its observable behavior.
@@ -858,7 +858,7 @@ func (e *Engine) Logout(ctx context.Context, sessionID string) error {
 // LogoutInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string) error {
 	e.ensureFlowDeps()
-	err := internalflows.RunLogoutInTenant(ctx, tenantID, sessionID, e.flowDeps.Logout)
+	err := e.flows.LogoutInTenant(ctx, tenantID, sessionID)
 	if err == nil {
 		e.metricInc(MetricLogout)
 		e.metricInc(MetricSessionInvalidated)
@@ -873,7 +873,7 @@ func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string)
 // LogoutByAccessToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error {
 	e.ensureFlowDeps()
-	result := internalflows.RunLogoutByAccessToken(ctx, tokenStr, e.flowDeps.Logout)
+	result := e.flows.LogoutByAccessToken(ctx, tokenStr)
 	if result.Err != nil && result.SessionID == "" {
 		e.emitAudit(ctx, auditEventLogoutSession, false, "", tenantIDFromContext(ctx), "", ErrTokenInvalid, func() map[string]string {
 			return map[string]string{
@@ -898,7 +898,7 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 // LogoutAll does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutAll(ctx context.Context, userID string) error {
 	e.ensureFlowDeps()
-	return e.LogoutAllInTenant(ctx, e.flowDeps.Logout.TenantIDFromContext(ctx), userID)
+	return e.LogoutAllInTenant(ctx, tenantIDFromContext(ctx), userID)
 }
 
 // LogoutAllInTenant describes the logoutallintenant operation and its observable behavior.
@@ -907,7 +907,7 @@ func (e *Engine) LogoutAll(ctx context.Context, userID string) error {
 // LogoutAllInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string) error {
 	e.ensureFlowDeps()
-	err := internalflows.RunLogoutAllInTenant(ctx, tenantID, userID, e.flowDeps.Logout)
+	err := e.flows.LogoutAllInTenant(ctx, tenantID, userID)
 	if err == nil {
 		e.metricInc(MetricLogoutAll)
 		e.metricInc(MetricSessionInvalidated)
@@ -1053,7 +1053,7 @@ func (e *Engine) sessionLifetime() time.Duration {
 }
 
 func (e *Engine) initFlowDeps() {
-	e.flowDeps = internalflows.Deps{
+	deps := internalflows.Deps{
 		Refresh: internalflows.RefreshDeps{
 			TenantIDFromContext:       tenantIDFromContext,
 			DecodeRefreshToken:        internal.DecodeRefreshToken,
@@ -1113,14 +1113,24 @@ func (e *Engine) initFlowDeps() {
 			SessionNotFoundErr:          ErrSessionNotFound,
 			RedisNil:                    redis.Nil,
 		},
+		Account:           e.accountFlowDeps(),
+		AccountSession:    e.accountSessionDeps(),
+		AccountStatus:     e.accountStatusFlowDeps(),
+		BackupCode:        e.backupCodeFlowDeps(),
+		DeviceBinding:     e.deviceBindingFlowDeps(),
+		EmailVerification: e.emailVerificationFlowDeps(),
+		Login:             e.loginFlowDeps(),
+		PasswordReset:     e.passwordResetFlowDeps(),
+		TOTP:              e.totpFlowDeps(),
 	}
+	e.flows = internalflows.New(deps)
 }
 
 func (e *Engine) ensureFlowDeps() {
 	if e == nil {
 		return
 	}
-	if e.flowDeps.Refresh.TenantIDFromContext != nil {
+	if e.flows.Initialized() {
 		return
 	}
 	e.initFlowDeps()
@@ -1284,7 +1294,8 @@ func tenantIDFromToken(tid uint32) string {
 // CreateAccount may return an error when input validation, dependency calls, or security checks fail.
 // CreateAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) CreateAccount(ctx context.Context, req CreateAccountRequest) (*CreateAccountResult, error) {
-	result, err := internalflows.RunCreateAccount(ctx, toFlowAccountCreateRequest(req), e.accountFlowDeps())
+	e.ensureFlowDeps()
+	result, err := e.flows.CreateAccount(ctx, toFlowAccountCreateRequest(req))
 	out := fromFlowAccountCreateResult(result)
 	if err != nil {
 		return out, err
@@ -1293,7 +1304,8 @@ func (e *Engine) CreateAccount(ctx context.Context, req CreateAccountRequest) (*
 }
 
 func (e *Engine) issueSessionTokens(ctx context.Context, user UserRecord) (string, string, error) {
-	return internalflows.RunIssueAccountSessionTokens(ctx, toFlowAccountUser(user), e.accountSessionDeps())
+	e.ensureFlowDeps()
+	return e.flows.IssueAccountSessionTokens(ctx, toFlowAccountUser(user))
 }
 
 func (e *Engine) accountFlowDeps() internalflows.AccountDeps {
@@ -1414,8 +1426,54 @@ func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
 		deps.SessionLifetime = e.sessionLifetime
 		deps.IssueAccessToken = e.issueAccessToken
 	}
-	if e != nil && e.sessionStore != nil {
-		deps.SaveSession = e.sessionStore.Save
+	if e != nil {
+		deps.SaveSession = func(ctx context.Context, sess *session.Session, ttl time.Duration) error {
+			if e.sessionStore == nil {
+				return ErrEngineNotReady
+			}
+			return e.sessionStore.Save(ctx, sess, ttl)
+		}
+	}
+
+	return deps
+}
+
+func (e *Engine) accountStatusFlowDeps() internalflows.UpdateAccountStatusDeps {
+	deps := internalflows.UpdateAccountStatusDeps{
+		TenantIDFromContext:          tenantIDFromContext,
+		ErrEngineNotReady:            ErrEngineNotReady,
+		ErrUserNotFound:              ErrUserNotFound,
+		ErrAccountVersionNotAdvanced: ErrAccountVersionNotAdvanced,
+		ErrUnauthorized:              ErrUnauthorized,
+		ErrSessionInvalidationFailed: ErrSessionInvalidationFailed,
+	}
+
+	if e != nil && e.userProvider != nil {
+		deps.GetUserByID = func(userID string) (internalflows.AccountStatusRecord, error) {
+			user, err := e.userProvider.GetUserByID(userID)
+			if err != nil {
+				return internalflows.AccountStatusRecord{}, err
+			}
+			return internalflows.AccountStatusRecord{
+				Status:         uint8(user.Status),
+				AccountVersion: user.AccountVersion,
+				TenantID:       user.TenantID,
+			}, nil
+		}
+		deps.UpdateAccountStatus = func(ctx context.Context, userID string, status uint8) (internalflows.AccountStatusRecord, error) {
+			user, err := e.userProvider.UpdateAccountStatus(ctx, userID, AccountStatus(status))
+			if err != nil {
+				return internalflows.AccountStatusRecord{}, err
+			}
+			return internalflows.AccountStatusRecord{
+				Status:         uint8(user.Status),
+				AccountVersion: user.AccountVersion,
+				TenantID:       user.TenantID,
+			}, nil
+		}
+	}
+	if e != nil {
+		deps.LogoutAllInTenant = e.LogoutAllInTenant
 	}
 
 	return deps
@@ -1550,37 +1608,8 @@ func (e *Engine) updateAccountStatusAndInvalidate(ctx context.Context, userID st
 		return ErrEngineNotReady
 	}
 
-	return internalflows.RunUpdateAccountStatusAndInvalidate(ctx, userID, uint8(status), internalflows.UpdateAccountStatusDeps{
-		GetUserByID: func(userID string) (internalflows.AccountStatusRecord, error) {
-			user, err := e.userProvider.GetUserByID(userID)
-			if err != nil {
-				return internalflows.AccountStatusRecord{}, err
-			}
-			return internalflows.AccountStatusRecord{
-				Status:         uint8(user.Status),
-				AccountVersion: user.AccountVersion,
-				TenantID:       user.TenantID,
-			}, nil
-		},
-		UpdateAccountStatus: func(ctx context.Context, userID string, status uint8) (internalflows.AccountStatusRecord, error) {
-			user, err := e.userProvider.UpdateAccountStatus(ctx, userID, AccountStatus(status))
-			if err != nil {
-				return internalflows.AccountStatusRecord{}, err
-			}
-			return internalflows.AccountStatusRecord{
-				Status:         uint8(user.Status),
-				AccountVersion: user.AccountVersion,
-				TenantID:       user.TenantID,
-			}, nil
-		},
-		LogoutAllInTenant:            e.LogoutAllInTenant,
-		TenantIDFromContext:          tenantIDFromContext,
-		ErrEngineNotReady:            ErrEngineNotReady,
-		ErrUserNotFound:              ErrUserNotFound,
-		ErrAccountVersionNotAdvanced: ErrAccountVersionNotAdvanced,
-		ErrUnauthorized:              ErrUnauthorized,
-		ErrSessionInvalidationFailed: ErrSessionInvalidationFailed,
-	})
+	e.ensureFlowDeps()
+	return e.flows.UpdateAccountStatusAndInvalidate(ctx, userID, uint8(status))
 }
 
 func accountStatusToError(status AccountStatus) error {
@@ -1843,7 +1872,8 @@ func auditErrorCode(err error) AuditErrorCode {
 // GenerateBackupCodes may return an error when input validation, dependency calls, or security checks fail.
 // GenerateBackupCodes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GenerateBackupCodes(ctx context.Context, userID string) ([]string, error) {
-	return internalflows.RunGenerateBackupCodes(ctx, userID, e.backupCodeFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.GenerateBackupCodes(ctx, userID)
 }
 
 // RegenerateBackupCodes describes the regeneratebackupcodes operation and its observable behavior.
@@ -1851,7 +1881,8 @@ func (e *Engine) GenerateBackupCodes(ctx context.Context, userID string) ([]stri
 // RegenerateBackupCodes may return an error when input validation, dependency calls, or security checks fail.
 // RegenerateBackupCodes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RegenerateBackupCodes(ctx context.Context, userID, totpCode string) ([]string, error) {
-	return internalflows.RunRegenerateBackupCodes(ctx, userID, totpCode, e.backupCodeFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.RegenerateBackupCodes(ctx, userID, totpCode)
 }
 
 // VerifyBackupCode describes the verifybackupcode operation and its observable behavior.
@@ -1859,7 +1890,8 @@ func (e *Engine) RegenerateBackupCodes(ctx context.Context, userID, totpCode str
 // VerifyBackupCode may return an error when input validation, dependency calls, or security checks fail.
 // VerifyBackupCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) VerifyBackupCode(ctx context.Context, userID, code string) error {
-	return internalflows.RunVerifyBackupCode(ctx, userID, code, e.backupCodeFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.VerifyBackupCode(ctx, userID, code)
 }
 
 // VerifyBackupCodeInTenant describes the verifybackupcodeintenant operation and its observable behavior.
@@ -1867,7 +1899,8 @@ func (e *Engine) VerifyBackupCode(ctx context.Context, userID, code string) erro
 // VerifyBackupCodeInTenant may return an error when input validation, dependency calls, or security checks fail.
 // VerifyBackupCodeInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code string) error {
-	return internalflows.RunVerifyBackupCodeInTenant(ctx, tenantID, userID, code, e.backupCodeFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code)
 }
 
 func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
@@ -2010,13 +2043,17 @@ func (e *Engine) validateDeviceBinding(ctx context.Context, sess *session.Sessio
 	if e == nil || sess == nil || !e.config.DeviceBinding.Enabled {
 		return nil
 	}
-	return internalflows.RunValidateDeviceBinding(ctx, internalflows.DeviceBindingSession{
+	return e.flows.ValidateDeviceBinding(ctx, internalflows.DeviceBindingSession{
 		SessionID:     sess.SessionID,
 		UserID:        sess.UserID,
 		TenantID:      sess.TenantID,
 		IPHash:        sess.IPHash,
 		UserAgentHash: sess.UserAgentHash,
-	}, internalflows.DeviceBindingDeps{
+	})
+}
+
+func (e *Engine) deviceBindingFlowDeps() internalflows.DeviceBindingDeps {
+	deps := internalflows.DeviceBindingDeps{
 		Config: internalflows.DeviceBindingConfig{
 			Enabled:                 e.config.DeviceBinding.Enabled,
 			EnforceIPBinding:        e.config.DeviceBinding.EnforceIPBinding,
@@ -2036,7 +2073,8 @@ func (e *Engine) validateDeviceBinding(ctx context.Context, sess *session.Sessio
 		MetricDeviceUAMismatch:     int(MetricDeviceUAMismatch),
 		MetricDeviceRejected:       int(MetricDeviceRejected),
 		ErrDeviceBindingRejected:   ErrDeviceBindingRejected,
-	})
+	}
+	return deps
 }
 
 func (e *Engine) shouldEmitDeviceAnomaly(ctx context.Context, sessionID, kind string) bool {
@@ -2055,7 +2093,8 @@ func (e *Engine) shouldEmitDeviceAnomaly(ctx context.Context, sessionID, kind st
 // RequestEmailVerification may return an error when input validation, dependency calls, or security checks fail.
 // RequestEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string) (string, error) {
-	return internalflows.RunRequestEmailVerification(ctx, identifier, e.emailVerificationFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.RequestEmailVerification(ctx, identifier)
 }
 
 // ConfirmEmailVerification describes the confirmemailverification operation and its observable behavior.
@@ -2063,7 +2102,8 @@ func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string
 // ConfirmEmailVerification may return an error when input validation, dependency calls, or security checks fail.
 // ConfirmEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string) error {
-	return internalflows.RunConfirmEmailVerification(ctx, challenge, e.emailVerificationFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.ConfirmEmailVerification(ctx, challenge)
 }
 
 func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps {
@@ -2326,7 +2366,7 @@ type HealthStatus struct {
 // GetActiveSessionCount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int, error) {
 	e.ensureFlowDeps()
-	return internalflows.RunGetActiveSessionCount(ctx, userID, e.flowDeps.Introspection)
+	return e.flows.GetActiveSessionCount(ctx, userID)
 }
 
 // ListActiveSessions describes the listactivesessions operation and its observable behavior.
@@ -2335,7 +2375,7 @@ func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int,
 // ListActiveSessions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]SessionInfo, error) {
 	e.ensureFlowDeps()
-	sessions, err := internalflows.RunListActiveSessions(ctx, userID, e.flowDeps.Introspection)
+	sessions, err := e.flows.ListActiveSessions(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -2354,7 +2394,7 @@ func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]Sessi
 // GetSessionInfo does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string) (*SessionInfo, error) {
 	e.ensureFlowDeps()
-	sess, err := internalflows.RunGetSessionInfo(ctx, tenantID, sessionID, e.flowDeps.Introspection)
+	sess, err := e.flows.GetSessionInfo(ctx, tenantID, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -2369,7 +2409,7 @@ func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string)
 // ActiveSessionEstimate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
 	e.ensureFlowDeps()
-	return internalflows.RunActiveSessionEstimate(ctx, e.flowDeps.Introspection)
+	return e.flows.ActiveSessionEstimate(ctx)
 }
 
 // Health describes the health operation and its observable behavior.
@@ -2378,7 +2418,7 @@ func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
 // Health does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) Health(ctx context.Context) HealthStatus {
 	e.ensureFlowDeps()
-	available, latency := internalflows.RunHealth(ctx, e.flowDeps.Introspection)
+	available, latency := e.flows.Health(ctx)
 	return HealthStatus{
 		RedisAvailable: available,
 		RedisLatency:   latency,
@@ -2391,7 +2431,7 @@ func (e *Engine) Health(ctx context.Context) HealthStatus {
 // GetLoginAttempts does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GetLoginAttempts(ctx context.Context, identifier string) (int, error) {
 	e.ensureFlowDeps()
-	return internalflows.RunGetLoginAttempts(ctx, identifier, e.flowDeps.Introspection)
+	return e.flows.GetLoginAttempts(ctx, identifier)
 }
 
 func toSessionInfo(sess *session.Session) SessionInfo {
@@ -2411,7 +2451,8 @@ func toSessionInfo(sess *session.Session) SessionInfo {
 // LoginWithResult may return an error when input validation, dependency calls, or security checks fail.
 // LoginWithResult does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) LoginWithResult(ctx context.Context, username, password string) (*LoginResult, error) {
-	result, err := internalflows.RunLoginWithResult(ctx, username, password, e.loginFlowDeps())
+	e.ensureFlowDeps()
+	result, err := e.flows.LoginWithResult(ctx, username, password)
 	if err != nil {
 		return nil, err
 	}
@@ -2431,7 +2472,8 @@ func (e *Engine) ConfirmLoginMFA(ctx context.Context, challengeID, code string) 
 // ConfirmLoginMFAWithType may return an error when input validation, dependency calls, or security checks fail.
 // ConfirmLoginMFAWithType does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType string) (*LoginResult, error) {
-	result, err := internalflows.RunConfirmLoginMFAWithType(ctx, challengeID, code, mfaType, e.loginFlowDeps())
+	e.ensureFlowDeps()
+	result, err := e.flows.ConfirmLoginMFAWithType(ctx, challengeID, code, mfaType)
 	if err != nil {
 		return nil, err
 	}
@@ -2443,7 +2485,8 @@ func (e *Engine) loginWithResultInternal(ctx context.Context, username, password
 }
 
 func (e *Engine) createMFALoginChallenge(ctx context.Context, userID, tenantID string) (string, error) {
-	return internalflows.RunCreateMFALoginChallenge(ctx, userID, tenantID, e.loginFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.CreateMFALoginChallenge(ctx, userID, tenantID)
 }
 
 func (e *Engine) issueLoginSessionTokensForResult(
@@ -2452,7 +2495,8 @@ func (e *Engine) issueLoginSessionTokensForResult(
 	user UserRecord,
 	tenantID string,
 ) (string, string, error) {
-	return internalflows.RunIssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID, e.loginFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.IssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID)
 }
 
 func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
@@ -2618,8 +2662,13 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.SessionLifetime = e.sessionLifetime
 		deps.IssueAccessToken = e.issueAccessToken
 	}
-	if e != nil && e.sessionStore != nil {
-		deps.SaveSession = e.sessionStore.Save
+	if e != nil {
+		deps.SaveSession = func(ctx context.Context, sess *session.Session, ttl time.Duration) error {
+			if e.sessionStore == nil {
+				return ErrEngineNotReady
+			}
+			return e.sessionStore.Save(ctx, sess, ttl)
+		}
 	}
 
 	return deps
@@ -2686,7 +2735,8 @@ func mapMFALoginStoreError(err error) error {
 // RequestPasswordReset may return an error when input validation, dependency calls, or security checks fail.
 // RequestPasswordReset does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {
-	return internalflows.RunRequestPasswordReset(ctx, identifier, e.passwordResetFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.RequestPasswordReset(ctx, identifier)
 }
 
 // ConfirmPasswordReset describes the confirmpasswordreset operation and its observable behavior.
@@ -2718,7 +2768,8 @@ func (e *Engine) ConfirmPasswordResetWithBackupCode(ctx context.Context, challen
 // ConfirmPasswordResetWithMFA may return an error when input validation, dependency calls, or security checks fail.
 // ConfirmPasswordResetWithMFA does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword, mfaType, mfaCode string) error {
-	return internalflows.RunConfirmPasswordResetWithMFA(ctx, challenge, newPassword, mfaType, mfaCode, e.passwordResetFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, mfaType, mfaCode)
 }
 
 func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
@@ -3024,7 +3075,8 @@ func isNumericString(v string) bool {
 // GenerateTOTPSetup may return an error when input validation, dependency calls, or security checks fail.
 // GenerateTOTPSetup does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSetup, error) {
-	setup, err := internalflows.RunGenerateTOTPSetup(ctx, userID, e.totpFlowDeps())
+	e.ensureFlowDeps()
+	setup, err := e.flows.GenerateTOTPSetup(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -3036,7 +3088,8 @@ func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSet
 // ProvisionTOTP may return an error when input validation, dependency calls, or security checks fail.
 // ProvisionTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvision, error) {
-	provision, err := internalflows.RunProvisionTOTP(ctx, userID, e.totpFlowDeps())
+	e.ensureFlowDeps()
+	provision, err := e.flows.ProvisionTOTP(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -3048,7 +3101,8 @@ func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvisi
 // ConfirmTOTPSetup may return an error when input validation, dependency calls, or security checks fail.
 // ConfirmTOTPSetup does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) ConfirmTOTPSetup(ctx context.Context, userID, code string) error {
-	return internalflows.RunConfirmTOTPSetup(ctx, userID, code, e.totpFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.ConfirmTOTPSetup(ctx, userID, code)
 }
 
 // VerifyTOTP describes the verifytotp operation and its observable behavior.
@@ -3056,7 +3110,8 @@ func (e *Engine) ConfirmTOTPSetup(ctx context.Context, userID, code string) erro
 // VerifyTOTP may return an error when input validation, dependency calls, or security checks fail.
 // VerifyTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) VerifyTOTP(ctx context.Context, userID, code string) error {
-	return internalflows.RunVerifyTOTP(ctx, userID, code, e.totpFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.VerifyTOTP(ctx, userID, code)
 }
 
 // DisableTOTP describes the disabletotp operation and its observable behavior.
@@ -3064,11 +3119,13 @@ func (e *Engine) VerifyTOTP(ctx context.Context, userID, code string) error {
 // DisableTOTP may return an error when input validation, dependency calls, or security checks fail.
 // DisableTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
 func (e *Engine) DisableTOTP(ctx context.Context, userID string) error {
-	return internalflows.RunDisableTOTP(ctx, userID, e.totpFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.DisableTOTP(ctx, userID)
 }
 
 func (e *Engine) verifyTOTPForUser(ctx context.Context, user UserRecord, code string) error {
-	return internalflows.RunVerifyTOTPForUser(ctx, toFlowTOTPUser(user), code, e.totpFlowDeps())
+	e.ensureFlowDeps()
+	return e.flows.VerifyTOTPForUser(ctx, toFlowTOTPUser(user), code)
 }
 
 func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
