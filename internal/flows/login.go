@@ -216,6 +216,12 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 	}
 
 	if password == "" {
+		// Perform a dummy password verification to prevent timing oracle.
+		// Without this, an attacker could distinguish empty-password rejections
+		// from wrong-password rejections by measuring response time.
+		if deps.VerifyPassword != nil {
+			_, _ = deps.VerifyPassword("dummy-timing-equalization", "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+		}
 		if deps.IncrementLoginRate != nil {
 			if err := deps.IncrementLoginRate(ctx, username, ip); err != nil {
 				deps.MetricInc(deps.Metrics.LoginRateLimited)

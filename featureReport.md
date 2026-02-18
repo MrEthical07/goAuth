@@ -729,7 +729,7 @@ Password reset uses Redis WATCH/MULTI optimistic locking (up to 4 retries).
 | 5 | ~~**Permission version drift inconsistency**~~ | ~~Permission mismatch returns failure but doesn't delete session; role/account mismatch deletes session~~ | **Fixed.** Permission version drift now also deletes the session in `RunValidate()`, consistent with role and account version drift. All validation tests pass. |
 | 6 | ~~**`DeleteAllForUser` not fully atomic**~~ | ~~Race: session created between EXISTS pipeline and TxPipelined DEL could be missed~~ | **Documented.** Added atomicity note to `DeleteAllForUser` godoc in `session/store.go` and to `docs/session.md` Edge Cases section. Explains race window, natural expiry mitigation, and double-call workaround. |
 | 7 | ~~**Missing `RequireIAT=true` test**~~ | ~~No explicit test that `RequireIAT` rejects tokens missing `iat` entirely~~ | **Fixed.** Added explicit `RequireIAT` check in `ParseAccess()` (golang-jwt's `WithIssuedAt` only validates iat if present, doesn't require it). Added test case in `TestParseAccessIATPolicy`: token without iat rejected, token with iat accepted. |
-| 8 | **Empty password timing oracle** | Empty password returns early without dummy hash (mitigated by rate limiting) | Add dummy `Argon2.Verify` on empty password path to eliminate timing signal. |
+| 8 | ~~**Empty password timing oracle**~~ | ~~Empty password returns early without dummy hash (mitigated by rate limiting)~~ | **Fixed.** Added dummy `VerifyPassword` call on the empty-password path in `RunLoginWithResult()` to equalize response time with the wrong-password path. All login tests pass. |
 
 ---
 
