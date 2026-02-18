@@ -121,6 +121,7 @@ func RunValidate(ctx context.Context, tokenStr string, routeMode int, deps Valid
 	}
 
 	if deps.EnablePermissionCheck && claims.PermVersion != sess.PermissionVersion {
+		_ = deps.SessionStore.Delete(ctx, tenantID, claims.SID)
 		return ValidateResult{Failure: ValidateFailureSessionNotFound}
 	}
 	if deps.EnableRoleCheck && claims.RoleVersion != sess.RoleVersion {
