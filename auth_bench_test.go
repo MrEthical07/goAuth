@@ -93,6 +93,7 @@ func newBenchmarkEngine(tb testing.TB, mode ValidationMode) (*Engine, func()) {
 	cfg := accountTestConfig()
 	cfg.ValidationMode = mode
 	cfg.Security.EnableAccountVersionCheck = mode != ModeJWTOnly
+	cfg.Security.EnableRefreshThrottle = false
 	cfg.Password.Memory = 8 * 1024
 	cfg.Password.Time = 1
 	cfg.Password.Parallelism = 1

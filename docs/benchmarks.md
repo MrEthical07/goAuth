@@ -29,3 +29,5 @@ Use these as initial targets (adjust to your hardware and Redis topology):
 - `ValidateStrict`: p95 under 5ms with Redis healthy.
 - `Refresh`: p95 under 8ms including Redis round trip and rotation logic.
 - `Login`: bounded primarily by password hash policy; tune Argon2 cost against latency budget.
+
+For CI-enforced baseline regression gates, see `docs/perf-budgets.md`.
