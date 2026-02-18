@@ -75,9 +75,31 @@ Domain limiters use tenant-scoped keys via `normalizeTenantID()` (empty → `"0"
 
 ## Security Notes
 
-- TOTP limiter is hardcoded: 5 attempts / 1 minute — not configurable.
 - Each domain limiter uses separate `Unavailable` errors so callers can distinguish Redis failures from policy rejections.
 - Disabling both IP and refresh throttles triggers a HIGH-severity config lint warning (`rate_limits_disabled`).
+
+### Fixed-Window Boundary Burst
+
+All rate limiters use **fixed-window counters** (`INCR` + `EXPIRE`). This is simple and efficient but allows up to **2× the configured limit** at window boundaries:
+
+```
+Window A (60s)          Window B (60s)
+   ───────────────┬───────────────
+                  │
+          5 reqs  │  5 reqs
+        (last 1s) │ (first 1s)
+                  │
+10 requests in 2 seconds, but each window sees only 5
+```
+
+**Impact:** An attacker can time requests at the boundary of two consecutive windows to achieve double the intended rate for a short burst. For login throttling with `MaxLoginAttempts=5` and `LoginCooldownDuration=60s`, up to 10 attempts could occur within ~2 seconds straddling the boundary.
+
+**Mitigations already in place:**
+- Auto-lockout (when enabled) counts failures persistently across all windows — a burst still triggers lockout once the threshold is reached.
+- Argon2 hashing cost limits the practical throughput of password-guessing regardless of rate limit windows.
+- All rate-limited paths also emit audit events, enabling detection of boundary bursts.
+
+**Future improvement:** Replace fixed-window with sliding-window log or sliding-window counter (Redis sorted sets or dual-counter approach). This is deferred because the current approach is sufficient for most deployments given the mitigations above.
 
 ## Performance Notes
 
