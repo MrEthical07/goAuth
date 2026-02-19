@@ -1,0 +1,15 @@
+﻿goos: windows
+goarch: amd64
+pkg: github.com/MrEthical07/goAuth
+cpu: AMD Ryzen 7 5800HS with Radeon Graphics        
+BenchmarkValidateJWTOnly-16            	   73614	     15837 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   76912	     15539 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   73196	     15899 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   69768	     15428 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   72895	     15549 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   79297	     15137 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   78583	     15828 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   79024	     15597 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   77271	     15920 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateJWTOnly-16            	   81162	     15582 ns/op	    3240 B/op	      57 allocs/op
+BenchmarkValidateStrict-16             	    3979	    304190 ns/op	    4546 B/op	      99 allocs/op

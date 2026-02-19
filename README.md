@@ -126,6 +126,15 @@ Three presets: `DefaultConfig()`, `HighSecurityConfig()`, `HighThroughputConfig(
 | [docs/roadmap.md](docs/roadmap.md) | Future plans |
 | [CHANGELOG.md](CHANGELOG.md) | Release history |
 
+### Root-Level Documents
+
+| File | Purpose |
+|------|---------|
+| [CHANGELOG.md](CHANGELOG.md) | Release history — follows [Keep a Changelog](https://keepachangelog.com/) format with Semantic Versioning |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines — conventions for docs, code, testing, and changelog entries |
+| [docsAuditReport.md](docsAuditReport.md) | Documentation hardening audit — tracks doc coverage, accuracy, and consistency across all features |
+| [featureReport.md](featureReport.md) | Full feature verification report — all 21 features + 4 NFRs with test evidence and benchmarks |
+
 ## Testing
 
 ```bash
@@ -148,3 +157,7 @@ go test -run '^$' -bench . -benchmem ./...
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+---
+
+> **Note:** AI agents were used for documentation and report generation in this project. Content has been verified against actual test outputs and code, but please exercise caution — review carefully and [report any issues](https://github.com/MrEthical07/goAuth/issues) in the Issues tab.
