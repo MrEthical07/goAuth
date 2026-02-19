@@ -26,9 +26,15 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Engine defines a public type used by goAuth APIs.
+// Engine is the central authentication coordinator.
 //
-// Engine instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// It holds references to every subsystem (JWT manager, session store,
+// rate limiters, TOTP manager, audit dispatcher, etc.) and exposes the
+// public operations: Login, Refresh, Validate, Logout, and account
+// management. Build an Engine through [Builder.Build]; once built the
+// Engine is safe for concurrent use and must not be reconfigured.
+//
+//	Docs: docs/engine.md, docs/architecture.md
 type Engine struct {
 	config              Config
 	registry            *permission.Registry
@@ -79,10 +85,11 @@ func hotpCode(secret []byte, counter int64, digits int, algorithm string) (strin
 	return internalsecurity.HOTPCode(secret, counter, digits, algorithm)
 }
 
-// Close describes the close operation and its observable behavior.
+// Close shuts down the Engine by flushing and closing the audit dispatcher.
+// It is safe to call on a nil receiver. After Close returns, no further
+// audit events will be buffered.
 //
-// Close may return an error when input validation, dependency calls, or security checks fail.
-// Close does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/engine.md, docs/audit.md
 func (e *Engine) Close() {
 	if e == nil {
 		return
@@ -92,10 +99,12 @@ func (e *Engine) Close() {
 	}
 }
 
-// AuditDropped describes the auditdropped operation and its observable behavior.
+// AuditDropped returns the total number of audit events that were dropped
+// because the audit buffer was full and DropIfFull was enabled. Useful for
+// monitoring back-pressure on the audit pipeline.
 //
-// AuditDropped may return an error when input validation, dependency calls, or security checks fail.
-// AuditDropped does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/audit.md
+//	Performance: O(1) atomic load, no allocations, no Redis.
 func (e *Engine) AuditDropped() uint64 {
 	if e == nil || e.audit == nil {
 		return 0
@@ -103,10 +112,12 @@ func (e *Engine) AuditDropped() uint64 {
 	return e.audit.Dropped()
 }
 
-// MetricsSnapshot describes the metricssnapshot operation and its observable behavior.
+// MetricsSnapshot returns a point-in-time copy of all counters and latency
+// histograms. The returned [MetricsSnapshot] is a deep copy; callers may
+// inspect or export it without holding any lock.
 //
-// MetricsSnapshot may return an error when input validation, dependency calls, or security checks fail.
-// MetricsSnapshot does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/metrics.md
+//	Performance: O(n) where n = number of metric IDs. No Redis.
 func (e *Engine) MetricsSnapshot() MetricsSnapshot {
 	if e == nil || e.metrics == nil {
 		return MetricsSnapshot{
@@ -117,10 +128,13 @@ func (e *Engine) MetricsSnapshot() MetricsSnapshot {
 	return e.metrics.Snapshot()
 }
 
-// SecurityReport describes the securityreport operation and its observable behavior.
+// SecurityReport returns a read-only summary of the engine's active
+// security configuration: signing algorithm, validation mode, Argon2
+// parameters, TOTP/device-binding enablement, session caps, and more.
+// Useful for admin dashboards and config auditing.
 //
-// SecurityReport may return an error when input validation, dependency calls, or security checks fail.
-// SecurityReport does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/security.md, docs/config.md
+//	Performance: allocation-only, no Redis.
 func (e *Engine) SecurityReport() SecurityReport {
 	if e == nil {
 		return SecurityReport{}
@@ -184,10 +198,15 @@ func (e *Engine) warn(msg string, args ...any) {
 	e.logger.Warn(msg, args...)
 }
 
-// Login describes the login operation and its observable behavior.
+// Login authenticates a user by identifier and password, returning an
+// access token and a refresh token. If the user has TOTP enabled and
+// RequireForLogin is true, Login returns [ErrTOTPRequired]; use
+// [Engine.LoginWithTOTP] or the two-step MFA flow instead.
 //
-// Login may return an error when input validation, dependency calls, or security checks fail.
-// Login does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Login (without MFA)
+//	Docs:        docs/flows.md#login-without-mfa, docs/engine.md
+//	Performance: 5–7 Redis commands; dominated by Argon2 hash (~100 ms).
+//	Security:    rate-limited per identifier+IP; timing-equalized on unknown users.
 func (e *Engine) Login(ctx context.Context, username, password string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
@@ -202,10 +221,14 @@ func (e *Engine) Login(ctx context.Context, username, password string) (string, 
 	return result.AccessToken, result.RefreshToken, nil
 }
 
-// LoginWithTOTP describes the loginwithtotp operation and its observable behavior.
+// LoginWithTOTP authenticates a user with identifier, password, and a TOTP
+// code in a single call. Internally it delegates to [Engine.LoginWithResult]
+// followed by [Engine.ConfirmLoginMFAWithType] when MFA is required.
 //
-// LoginWithTOTP may return an error when input validation, dependency calls, or security checks fail.
-// LoginWithTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Login → Confirm MFA (TOTP)
+//	Docs:        docs/flows.md#login-with-mfa, docs/mfa.md
+//	Performance: 7–9 Redis commands (login + MFA challenge store).
+//	Security:    TOTP rate-limited; replay protection if EnforceReplayProtection is set.
 func (e *Engine) LoginWithTOTP(ctx context.Context, username, password, totpCode string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
@@ -231,10 +254,15 @@ func (e *Engine) LoginWithTOTP(ctx context.Context, username, password, totpCode
 	return result.AccessToken, result.RefreshToken, nil
 }
 
-// LoginWithBackupCode describes the loginwithbackupcode operation and its observable behavior.
+// LoginWithBackupCode authenticates a user with identifier, password, and a
+// one-time backup code in a single call. Internally it delegates to
+// [Engine.LoginWithResult] followed by [Engine.ConfirmLoginMFAWithType]
+// with type "backup".
 //
-// LoginWithBackupCode may return an error when input validation, dependency calls, or security checks fail.
-// LoginWithBackupCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Login → Confirm MFA (backup code)
+//	Docs:        docs/flows.md#login-with-mfa, docs/mfa.md
+//	Performance: 7–9 Redis commands.
+//	Security:    backup code is consumed on success; rate-limited per user.
 func (e *Engine) LoginWithBackupCode(ctx context.Context, username, password, backupCode string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
@@ -260,338 +288,15 @@ func (e *Engine) LoginWithBackupCode(ctx context.Context, username, password, ba
 	return result.AccessToken, result.RefreshToken, nil
 }
 
-func (e *Engine) loginInternal(ctx context.Context, username, password, totpCode string) (string, string, error) {
-	ip := clientIPFromContext(ctx)
-	tenantID := tenantIDFromContext(ctx)
-	if e.passwordHash == nil {
-		return "", "", ErrEngineNotReady
-	}
-	if e.rateLimiter != nil {
-		if err := e.rateLimiter.CheckLogin(ctx, username, ip); err != nil {
-			e.metricInc(MetricLoginRateLimited)
-			e.emitAudit(ctx, auditEventLoginRateLimited, false, "", tenantID, "", ErrLoginRateLimited, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			return "", "", ErrLoginRateLimited
-		}
-	}
-	if password == "" {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, "", tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return "", "", ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, "", tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "empty_password",
-			}
-		})
-		return "", "", ErrInvalidCredentials
-	}
-
-	user, err := e.userProvider.GetUserByIdentifier(username)
-	if err != nil {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, "", tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return "", "", ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, "", tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "user_not_found",
-			}
-		})
-		return "", "", ErrInvalidCredentials
-	}
-
-	ok, err := e.passwordHash.Verify(password, user.PasswordHash)
-	if err != nil || !ok {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, user.UserID, tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return "", "", ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "password_mismatch",
-			}
-		})
-		return "", "", ErrInvalidCredentials
-	}
-	if statusErr := accountStatusToError(user.Status); statusErr != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", statusErr, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "account_status",
-			}
-		})
-		return "", "", statusErr
-	}
-	if e.shouldRequireVerified() && user.Status == AccountPendingVerification {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrAccountUnverified, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "pending_verification",
-			}
-		})
-		return "", "", ErrAccountUnverified
-	}
-	if err := e.enforceTOTPForLogin(ctx, user, totpCode); err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "totp_validation",
-			}
-		})
-		return "", "", err
-	}
-
-	if e.config.Password.UpgradeOnLogin {
-		if needsUpgrade, err := e.passwordHash.NeedsUpgrade(user.PasswordHash); err == nil && needsUpgrade {
-			if upgradedHash, err := e.passwordHash.Hash(password); err == nil {
-				// Rehash update is best-effort and must not block successful login.
-				if err := e.userProvider.UpdatePasswordHash(user.UserID, upgradedHash); err != nil {
-					e.warn("goAuth: password hash upgrade update failed")
-				}
-			} else {
-				e.warn("goAuth: password hash upgrade generation failed")
-			}
-		}
-	}
-	password = ""
-
-	mask, ok := e.roleManager.GetMask(user.Role)
-	if !ok {
-		if e.rateLimiter != nil {
-			if err := e.rateLimiter.IncrementLogin(ctx, username, ip); err != nil {
-				e.metricInc(MetricLoginRateLimited)
-				e.emitAudit(ctx, auditEventLoginRateLimited, false, user.UserID, tenantID, "", ErrLoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				e.emitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return "", "", ErrLoginRateLimited
-			}
-		}
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrInvalidCredentials, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "role_mask_missing",
-			}
-		})
-		return "", "", ErrInvalidCredentials
-	}
-
-	if e.config.DeviceBinding.Enabled {
-		if e.config.DeviceBinding.EnforceIPBinding && clientIPFromContext(ctx) == "" {
-			e.metricInc(MetricLoginFailure)
-			e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrDeviceBindingRejected, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-					"reason":     "missing_ip_context",
-				}
-			})
-			return "", "", ErrDeviceBindingRejected
-		}
-		if e.config.DeviceBinding.EnforceUserAgentBinding && userAgentFromContext(ctx) == "" {
-			e.metricInc(MetricLoginFailure)
-			e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", ErrDeviceBindingRejected, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-					"reason":     "missing_user_agent_context",
-				}
-			})
-			return "", "", ErrDeviceBindingRejected
-		}
-	}
-
-	if err := e.enforceSessionHardeningOnLogin(ctx, tenantID, user.UserID); err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "session_hardening",
-			}
-		})
-		return "", "", err
-	}
-
-	sid, err := internal.NewSessionID()
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "session_id_generation",
-			}
-		})
-		return "", "", err
-	}
-	sessionID := sid.String()
-	refreshSecret, err := internal.NewRefreshSecret()
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "refresh_secret_generation",
-			}
-		})
-		return "", "", err
-	}
-
-	now := time.Now()
-	sessionLifetime := e.sessionLifetime()
-	accountVersion := user.AccountVersion
-	if accountVersion == 0 {
-		accountVersion = 1
-	}
-	var ipHash [32]byte
-	var userAgentHash [32]byte
-	if e.config.DeviceBinding.Enabled {
-		if ip := clientIPFromContext(ctx); ip != "" {
-			ipHash = internal.HashBindingValue(ip)
-		}
-		if ua := userAgentFromContext(ctx); ua != "" {
-			userAgentHash = internal.HashBindingValue(ua)
-		}
-	}
-
-	sess := &session.Session{
-		SessionID:         sessionID,
-		UserID:            user.UserID,
-		TenantID:          tenantID,
-		Role:              user.Role,
-		Mask:              mask,
-		PermissionVersion: user.PermissionVersion,
-		RoleVersion:       user.RoleVersion,
-		AccountVersion:    accountVersion,
-		Status:            uint8(user.Status),
-		RefreshHash:       internal.HashRefreshSecret(refreshSecret),
-		IPHash:            ipHash,
-		UserAgentHash:     userAgentHash,
-		CreatedAt:         now.Unix(),
-		ExpiresAt:         now.Add(sessionLifetime).Unix(),
-	}
-
-	if err := e.sessionStore.Save(ctx, sess, sessionLifetime); err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "session_save_failed",
-			}
-		})
-		return "", "", err
-	}
-
-	access, err := e.issueAccessToken(sess)
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "issue_access_failed",
-			}
-		})
-		return "", "", err
-	}
-
-	refresh, err := internal.EncodeRefreshToken(sessionID, refreshSecret)
-	if err != nil {
-		e.metricInc(MetricLoginFailure)
-		e.emitAudit(ctx, auditEventLoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
-			return map[string]string{
-				"identifier": username,
-				"reason":     "encode_refresh_failed",
-			}
-		})
-		return "", "", err
-	}
-
-	if e.rateLimiter != nil {
-		if err := e.rateLimiter.ResetLogin(ctx, username, ip); err != nil {
-			e.metricInc(MetricLoginRateLimited)
-			e.emitAudit(ctx, auditEventLoginRateLimited, false, user.UserID, tenantID, sessionID, ErrLoginRateLimited, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-					"reason":     "reset_limiter_failed",
-				}
-			})
-			return "", "", ErrLoginRateLimited
-		}
-	}
-
-	e.metricInc(MetricSessionCreated)
-	e.metricInc(MetricLoginSuccess)
-	e.emitAudit(ctx, auditEventLoginSuccess, true, user.UserID, tenantID, sessionID, nil, func() map[string]string {
-		return map[string]string{
-			"identifier": username,
-		}
-	})
-
-	return access, refresh, nil
-}
-
-// Refresh describes the refresh operation and its observable behavior.
+// Refresh exchanges a valid refresh token for a new access+refresh token
+// pair. The old refresh secret is atomically rotated via a Lua CAS script;
+// presenting a previously-used refresh token triggers reuse detection and
+// invalidates the entire session.
 //
-// Refresh may return an error when input validation, dependency calls, or security checks fail.
-// Refresh does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Refresh / Rotate
+//	Docs:        docs/flows.md#refresh-token-rotation, docs/session.md
+//	Performance: 3–5 Redis commands (GET + Lua CAS + optional rate check).
+//	Security:    rotation enforced; reuse detection invalidates session immediately.
 func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, string, error) {
 	e.ensureFlowDeps()
 	result := e.flows.Refresh(ctx, refreshToken)
@@ -686,18 +391,33 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 	return result.AccessToken, result.RefreshToken, nil
 }
 
-// ValidateAccess describes the validateaccess operation and its observable behavior.
+// ValidateAccess validates an access token using the engine's configured
+// default [ValidationMode]. It is equivalent to calling
+// Validate(ctx, tokenStr, [ModeInherit]).
 //
-// ValidateAccess may return an error when input validation, dependency calls, or security checks fail.
-// ValidateAccess does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Validate (inherited mode)
+//	Docs:        docs/flows.md#validate, docs/jwt.md
+//	Performance: 0 Redis in JWTOnly, 1 GET in Strict.
+//	Security:    clock-skew guard, permission/role/account version checks.
 func (e *Engine) ValidateAccess(ctx context.Context, tokenStr string) (*AuthResult, error) {
 	return e.Validate(ctx, tokenStr, ModeInherit)
 }
 
-// Validate describes the validate operation and its observable behavior.
+// Validate parses and validates an access token, optionally performing a
+// Redis session lookup depending on the requested [ValidationMode]:
 //
-// Validate may return an error when input validation, dependency calls, or security checks fail.
-// Validate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//   - ModeJWTOnly  – signature + claims only, zero Redis.
+//   - ModeHybrid   – JWT validation; Redis lookup used when available.
+//   - ModeStrict   – JWT validation + mandatory session GET.
+//   - ModeInherit  – use the engine’s configured default mode.
+//
+// Returns an [AuthResult] containing userID, tenantID, role, and decoded
+// permission mask.
+//
+//	Flow:        Validate
+//	Docs:        docs/flows.md#validate, docs/jwt.md, docs/engine.md
+//	Performance: 0–1 Redis commands depending on mode.
+//	Security:    clock-skew guard, version checks, device binding, account status.
 func (e *Engine) Validate(ctx context.Context, tokenStr string, routeMode RouteMode) (*AuthResult, error) {
 	e.ensureFlowDeps()
 	if e.metrics != nil && e.metrics.LatencyEnabled() {
@@ -785,10 +505,13 @@ func (e *Engine) buildResultFromClaims(claims *jwt.AccessClaims) *AuthResult {
 	return res
 }
 
-// HasPermission describes the haspermission operation and its observable behavior.
+// HasPermission checks whether the given permission bitmask grants the
+// named permission. mask must be one of [permission.Mask64],
+// [permission.Mask128], [permission.Mask256], or [permission.Mask512].
+// If RootBitReserved is enabled, root-bit holders implicitly pass.
 //
-// HasPermission may return an error when input validation, dependency calls, or security checks fail.
-// HasPermission does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs:        docs/permission.md
+//	Performance: O(1) bitmask check, no Redis, no allocations.
 func (e *Engine) HasPermission(mask interface{}, perm string) bool {
 	bit, ok := e.registry.Bit(perm)
 	if !ok {
@@ -844,19 +567,24 @@ func (e *Engine) issueAccessToken(sess *session.Session) (string, error) {
 	)
 }
 
-// Logout describes the logout operation and its observable behavior.
+// Logout destroys a single session by session ID, using the tenant from
+// context. Equivalent to LogoutInTenant(ctx, tenantFromCtx, sessionID).
 //
-// Logout may return an error when input validation, dependency calls, or security checks fail.
-// Logout does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Logout (single session)
+//	Docs:        docs/flows.md#logout, docs/session.md
+//	Performance: 1–2 Redis commands (DEL + counter decrement).
+//	Security:    audit-logged; session immediately unreachable after return.
 func (e *Engine) Logout(ctx context.Context, sessionID string) error {
 	e.ensureFlowDeps()
 	return e.LogoutInTenant(ctx, tenantIDFromContext(ctx), sessionID)
 }
 
-// LogoutInTenant describes the logoutintenant operation and its observable behavior.
+// LogoutInTenant destroys a single session by tenant and session ID.
 //
-// LogoutInTenant may return an error when input validation, dependency calls, or security checks fail.
-// LogoutInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Logout (single session)
+//	Docs:        docs/flows.md#logout, docs/session.md
+//	Performance: 1–2 Redis commands.
+//	Security:    audit-logged.
 func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string) error {
 	e.ensureFlowDeps()
 	err := e.flows.LogoutInTenant(ctx, tenantID, sessionID)
@@ -868,10 +596,14 @@ func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string)
 	return err
 }
 
-// LogoutByAccessToken describes the logoutbyaccesstoken operation and its observable behavior.
+// LogoutByAccessToken parses the given access token to extract the session
+// ID and tenant, then destroys that session. Returns [ErrTokenInvalid] when
+// the token cannot be parsed.
 //
-// LogoutByAccessToken may return an error when input validation, dependency calls, or security checks fail.
-// LogoutByAccessToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Logout (by access token)
+//	Docs:        docs/flows.md#logout, docs/session.md
+//	Performance: 1 JWT parse + 1–2 Redis commands.
+//	Security:    audit-logged.
 func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error {
 	e.ensureFlowDeps()
 	result := e.flows.LogoutByAccessToken(ctx, tokenStr)
@@ -893,19 +625,25 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 	return nil
 }
 
-// LogoutAll describes the logoutall operation and its observable behavior.
+// LogoutAll destroys every session for the given userID in the tenant
+// derived from context. Equivalent to LogoutAllInTenant(ctx, ctxTenant, userID).
 //
-// LogoutAll may return an error when input validation, dependency calls, or security checks fail.
-// LogoutAll does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Logout All
+//	Docs:        docs/flows.md#logout, docs/session.md
+//	Performance: O(n) Redis DELs where n = active sessions for the user.
 func (e *Engine) LogoutAll(ctx context.Context, userID string) error {
 	e.ensureFlowDeps()
 	return e.LogoutAllInTenant(ctx, tenantIDFromContext(ctx), userID)
 }
 
-// LogoutAllInTenant describes the logoutallintenant operation and its observable behavior.
+// LogoutAllInTenant destroys every session for userID within the specified
+// tenant. Called internally after password changes and account status
+// transitions to force re-authentication.
 //
-// LogoutAllInTenant may return an error when input validation, dependency calls, or security checks fail.
-// LogoutAllInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Logout All
+//	Docs:        docs/flows.md#logout, docs/session.md
+//	Performance: O(n) Redis DELs.
+//	Security:    audit-logged; emits MetricLogoutAll + MetricSessionInvalidated.
 func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string) error {
 	e.ensureFlowDeps()
 	err := e.flows.LogoutAllInTenant(ctx, tenantID, userID)
@@ -917,18 +655,24 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 	return err
 }
 
-// InvalidateUserSessions describes the invalidateusersessions operation and its observable behavior.
+// InvalidateUserSessions is an alias for [Engine.LogoutAll]. It destroys
+// every session for the user in the current tenant.
 //
-// InvalidateUserSessions may return an error when input validation, dependency calls, or security checks fail.
-// InvalidateUserSessions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Logout All
+//	Docs:        docs/flows.md#logout
 func (e *Engine) InvalidateUserSessions(ctx context.Context, userID string) error {
 	return e.LogoutAll(ctx, userID)
 }
 
-// ChangePassword describes the changepassword operation and its observable behavior.
+// ChangePassword verifies the old password, hashes the new one, persists
+// the updated hash via [UserProvider.UpdatePasswordHash], and invalidates
+// all of the user’s sessions so they must re-authenticate. The login rate
+// limiter is also reset on success.
 //
-// ChangePassword may return an error when input validation, dependency calls, or security checks fail.
-// ChangePassword does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Change Password
+//	Docs:        docs/flows.md#change-password, docs/password.md
+//	Performance: Argon2 verify + hash (~200 ms) + O(n) session DELs.
+//	Security:    rejects same-password reuse; audit-logged.
 func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error {
 	if e.passwordHash == nil {
 		return ErrEngineNotReady
@@ -1212,88 +956,19 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	return nil
 }
 
-func (e *Engine) enforceTOTPForLogin(ctx context.Context, user UserRecord, totpCode string) error {
-	if e == nil || !e.config.TOTP.Enabled || !e.config.TOTP.RequireForLogin {
-		return nil
-	}
-	if e.totp == nil || e.totpLimiter == nil || e.userProvider == nil {
-		return ErrEngineNotReady
-	}
-
-	record, err := e.userProvider.GetTOTPSecret(ctx, user.UserID)
-	if err != nil {
-		return ErrTOTPUnavailable
-	}
-	if record == nil || !record.Enabled || len(record.Secret) == 0 {
-		return nil
-	}
-
-	if err := e.totpLimiter.Check(ctx, user.UserID); err != nil {
-		e.metricInc(MetricTOTPFailure)
-		if errors.Is(err, limiters.ErrTOTPRateLimited) {
-			e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPRateLimited, nil)
-			return ErrTOTPRateLimited
-		}
-		e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPUnavailable, nil)
-		return ErrTOTPUnavailable
-	}
-
-	if totpCode == "" {
-		e.metricInc(MetricTOTPRequired)
-		e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPRequired, nil)
-		return ErrTOTPRequired
-	}
-
-	ok, counter, err := e.totp.VerifyCode(record.Secret, totpCode, time.Now())
-	if err != nil {
-		e.metricInc(MetricTOTPFailure)
-		e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPInvalid, nil)
-		return ErrTOTPInvalid
-	}
-	if !ok {
-		recErr := e.totpLimiter.RecordFailure(ctx, user.UserID)
-		e.metricInc(MetricTOTPFailure)
-		if recErr != nil {
-			if errors.Is(recErr, limiters.ErrTOTPRateLimited) {
-				e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPRateLimited, nil)
-				return ErrTOTPRateLimited
-			}
-			e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPUnavailable, nil)
-			return ErrTOTPUnavailable
-		}
-		e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPInvalid, nil)
-		return ErrTOTPInvalid
-	}
-	if e.config.TOTP.EnforceReplayProtection {
-		if counter <= record.LastUsedCounter {
-			e.metricInc(MetricTOTPFailure)
-			e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPInvalid, nil)
-			return ErrTOTPInvalid
-		}
-		if err := e.userProvider.UpdateTOTPLastUsedCounter(ctx, user.UserID, counter); err != nil {
-			e.metricInc(MetricTOTPFailure)
-			e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPUnavailable, nil)
-			return ErrTOTPUnavailable
-		}
-	}
-
-	if err := e.totpLimiter.Reset(ctx, user.UserID); err != nil {
-		e.emitAudit(ctx, auditEventTOTPFailure, false, user.UserID, user.TenantID, "", ErrTOTPUnavailable, nil)
-		return ErrTOTPUnavailable
-	}
-	e.metricInc(MetricTOTPSuccess)
-	e.emitAudit(ctx, auditEventTOTPSuccess, true, user.UserID, user.TenantID, "", nil, nil)
-	return nil
-}
-
 func tenantIDFromToken(tid uint32) string {
 	return strconv.FormatUint(uint64(tid), 10)
 }
 
-// CreateAccount describes the createaccount operation and its observable behavior.
+// CreateAccount creates a new user account. The password is hashed with
+// Argon2, a role mask is assigned, and sessions are optionally issued when
+// Account.AutoLogin is enabled. Returns a [CreateAccountResult] containing
+// the new userID and (when auto-login is on) access+refresh tokens.
 //
-// CreateAccount may return an error when input validation, dependency calls, or security checks fail.
-// CreateAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Create Account
+//	Docs:        docs/flows.md#create-account, docs/engine.md
+//	Performance: Argon2 hash + 3–5 Redis commands.
+//	Security:    rate-limited per identifier+IP; duplicate detection.
 func (e *Engine) CreateAccount(ctx context.Context, req CreateAccountRequest) (*CreateAccountResult, error) {
 	e.ensureFlowDeps()
 	result, err := e.flows.CreateAccount(ctx, toFlowAccountCreateRequest(req))
@@ -1539,10 +1214,13 @@ func mapAccountLimiterError(err error) error {
 	}
 }
 
-// DisableAccount describes the disableaccount operation and its observable behavior.
+// DisableAccount sets the account status to [AccountDisabled] and
+// invalidates all of the user’s sessions, forcing re-authentication.
 //
-// DisableAccount may return an error when input validation, dependency calls, or security checks fail.
-// DisableAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Account Status Transition (disable)
+//	Docs:        docs/flows.md#account-status-transitions, docs/functionality-account-status.md
+//	Performance: 1 provider call + O(n) session DELs.
+//	Security:    audit-logged; emits MetricAccountDisabled.
 func (e *Engine) DisableAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountDisabled)
 	if err == nil {
@@ -1556,10 +1234,12 @@ func (e *Engine) DisableAccount(ctx context.Context, userID string) error {
 	return err
 }
 
-// EnableAccount describes the enableaccount operation and its observable behavior.
+// EnableAccount sets the account status back to [AccountActive] and resets
+// the lockout failure counter (if auto-lockout is enabled).
 //
-// EnableAccount may return an error when input validation, dependency calls, or security checks fail.
-// EnableAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Account Status Transition (enable)
+//	Docs:        docs/flows.md#account-status-transitions, docs/functionality-account-status.md
+//	Security:    audit-logged.
 func (e *Engine) EnableAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountActive)
 	if err == nil && e.lockoutLimiter != nil {
@@ -1581,10 +1261,13 @@ func (e *Engine) UnlockAccount(ctx context.Context, userID string) error {
 	return e.EnableAccount(ctx, userID)
 }
 
-// LockAccount describes the lockaccount operation and its observable behavior.
+// LockAccount sets the account status to [AccountLocked] and invalidates
+// all of the user’s sessions. This is the manual counterpart to the
+// automatic lockout triggered by too many failed login attempts.
 //
-// LockAccount may return an error when input validation, dependency calls, or security checks fail.
-// LockAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Account Status Transition (lock)
+//	Docs:        docs/flows.md#account-status-transitions, docs/functionality-account-status.md
+//	Security:    audit-logged; emits MetricAccountLocked.
 func (e *Engine) LockAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountLocked)
 	if err == nil {
@@ -1598,10 +1281,13 @@ func (e *Engine) LockAccount(ctx context.Context, userID string) error {
 	return err
 }
 
-// DeleteAccount describes the deleteaccount operation and its observable behavior.
+// DeleteAccount sets the account status to [AccountDeleted] and invalidates
+// all of the user’s sessions. Actual data deletion is the caller’s
+// responsibility via the [UserProvider].
 //
-// DeleteAccount may return an error when input validation, dependency calls, or security checks fail.
-// DeleteAccount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Account Status Transition (delete)
+//	Docs:        docs/flows.md#account-status-transitions, docs/functionality-account-status.md
+//	Security:    audit-logged; emits MetricAccountDeleted.
 func (e *Engine) DeleteAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountDeleted)
 	if err == nil {
@@ -1879,37 +1565,45 @@ func auditErrorCode(err error) AuditErrorCode {
 	}
 }
 
-// GenerateBackupCodes describes the generatebackupcodes operation and its observable behavior.
+// GenerateBackupCodes generates a fresh set of one-time backup codes for
+// the user. Existing codes are replaced. The plaintext codes are returned
+// once and must be displayed to the user immediately.
 //
-// GenerateBackupCodes may return an error when input validation, dependency calls, or security checks fail.
-// GenerateBackupCodes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Generate Backup Codes
+//	Docs:        docs/flows.md#backup-codes, docs/mfa.md
+//	Security:    codes stored as SHA-256 hashes; originals never persisted.
 func (e *Engine) GenerateBackupCodes(ctx context.Context, userID string) ([]string, error) {
 	e.ensureFlowDeps()
 	return e.flows.GenerateBackupCodes(ctx, userID)
 }
 
-// RegenerateBackupCodes describes the regeneratebackupcodes operation and its observable behavior.
+// RegenerateBackupCodes replaces all existing backup codes after verifying
+// the caller’s TOTP code. Previous codes are invalidated.
 //
-// RegenerateBackupCodes may return an error when input validation, dependency calls, or security checks fail.
-// RegenerateBackupCodes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Regenerate Backup Codes
+//	Docs:        docs/flows.md#backup-codes, docs/mfa.md
+//	Security:    requires valid TOTP code; rate-limited.
 func (e *Engine) RegenerateBackupCodes(ctx context.Context, userID, totpCode string) ([]string, error) {
 	e.ensureFlowDeps()
 	return e.flows.RegenerateBackupCodes(ctx, userID, totpCode)
 }
 
-// VerifyBackupCode describes the verifybackupcode operation and its observable behavior.
+// VerifyBackupCode validates and consumes a one-time backup code for the
+// user. The tenant is derived from context.
 //
-// VerifyBackupCode may return an error when input validation, dependency calls, or security checks fail.
-// VerifyBackupCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Consume Backup Code
+//	Docs:        docs/flows.md#backup-codes, docs/mfa.md
+//	Security:    constant-time comparison; code consumed on success.
 func (e *Engine) VerifyBackupCode(ctx context.Context, userID, code string) error {
 	e.ensureFlowDeps()
 	return e.flows.VerifyBackupCode(ctx, userID, code)
 }
 
-// VerifyBackupCodeInTenant describes the verifybackupcodeintenant operation and its observable behavior.
+// VerifyBackupCodeInTenant validates and consumes a backup code within a
+// specific tenant.
 //
-// VerifyBackupCodeInTenant may return an error when input validation, dependency calls, or security checks fail.
-// VerifyBackupCodeInTenant does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Consume Backup Code
+//	Docs:        docs/flows.md#backup-codes, docs/mfa.md
 func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code string) error {
 	e.ensureFlowDeps()
 	return e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code)
@@ -2033,14 +1727,6 @@ func fromFlowBackupCodeRecords(records []internalflows.BackupCodeRecord) []Backu
 	return out
 }
 
-func newBackupCode(length int) (string, error) {
-	return internalflows.NewBackupCode(length, nil)
-}
-
-func formatBackupCode(code string) string {
-	return internalflows.FormatBackupCode(code)
-}
-
 func canonicalizeBackupCode(code string) string {
 	return internalflows.CanonicalizeBackupCode(code)
 }
@@ -2100,19 +1786,26 @@ func (e *Engine) shouldEmitDeviceAnomaly(ctx context.Context, sessionID, kind st
 	return ok
 }
 
-// RequestEmailVerification describes the requestemailverification operation and its observable behavior.
+// RequestEmailVerification starts the email verification flow for the given
+// identifier. Returns a challenge string (or OTP, depending on strategy)
+// that should be delivered to the user out-of-band.
 //
-// RequestEmailVerification may return an error when input validation, dependency calls, or security checks fail.
-// RequestEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Request Email Verification
+//	Docs:        docs/flows.md#email-verification, docs/email_verification.md
+//	Performance: 2–3 Redis commands.
+//	Security:    rate-limited per identifier+IP; enumeration-resistant delay.
 func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string) (string, error) {
 	e.ensureFlowDeps()
 	return e.flows.RequestEmailVerification(ctx, identifier)
 }
 
-// ConfirmEmailVerification describes the confirmemailverification operation and its observable behavior.
+// ConfirmEmailVerification completes email verification using the full
+// challenge string. On success, the account status transitions from
+// [AccountPendingVerification] to [AccountActive].
 //
-// ConfirmEmailVerification may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmEmailVerification does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Confirm Email Verification
+//	Docs:        docs/flows.md#email-verification, docs/email_verification.md
+//	Security:    constant-time comparison; attempts tracked.
 func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string) error {
 	e.ensureFlowDeps()
 	return e.flows.ConfirmEmailVerification(ctx, challenge)
@@ -2254,6 +1947,13 @@ func generateEmailVerificationChallenge(
 ) (string, string, [32]byte, error) {
 	var emptyHash [32]byte
 
+	if strings.ContainsRune(tenant, ':') {
+		return "", "", emptyHash, errors.New("tenant ID must not contain ':'")
+	}
+	if len(tenant) > 256 {
+		return "", "", emptyHash, errors.New("tenant ID exceeds maximum length")
+	}
+
 	switch strategy {
 	case VerificationToken:
 		verificationID, err := internal.NewSessionID()
@@ -2313,6 +2013,13 @@ func parseEmailVerificationChallenge(
 	tenant := parts[0]
 	verificationID := parts[1]
 	code := parts[2]
+
+	if tenant == "" || verificationID == "" || code == "" {
+		return "", "", emptyHash, errors.New("invalid challenge format: empty segment")
+	}
+	if len(tenant) > 256 {
+		return "", "", emptyHash, errors.New("invalid challenge format: tenant too long")
+	}
 
 	hash, err := parseEmailVerificationChallengeCode(strategy, verificationID, code, otpDigits)
 	if err != nil {
@@ -2405,19 +2112,23 @@ type HealthStatus struct {
 	RedisLatency   time.Duration
 }
 
-// GetActiveSessionCount describes the getactivesessioncount operation and its observable behavior.
+// GetActiveSessionCount returns the number of active sessions for a user
+// in the tenant derived from context.
 //
-// GetActiveSessionCount may return an error when input validation, dependency calls, or security checks fail.
-// GetActiveSessionCount does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Introspection
+//	Docs:        docs/flows.md#introspection, docs/introspection.md
+//	Performance: 1 Redis GET (counter).
 func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int, error) {
 	e.ensureFlowDeps()
 	return e.flows.GetActiveSessionCount(ctx, userID)
 }
 
-// ListActiveSessions describes the listactivesessions operation and its observable behavior.
+// ListActiveSessions returns metadata for every active session belonging
+// to the user (session ID, created/expires timestamps, role, status).
 //
-// ListActiveSessions may return an error when input validation, dependency calls, or security checks fail.
-// ListActiveSessions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Introspection
+//	Docs:        docs/flows.md#introspection, docs/introspection.md
+//	Performance: 1 SCAN + N GETs.
 func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]SessionInfo, error) {
 	e.ensureFlowDeps()
 	sessions, err := e.flows.ListActiveSessions(ctx, userID)
@@ -2433,10 +2144,12 @@ func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]Sessi
 	return out, nil
 }
 
-// GetSessionInfo describes the getsessioninfo operation and its observable behavior.
+// GetSessionInfo returns metadata for a single session by tenant and
+// session ID.
 //
-// GetSessionInfo may return an error when input validation, dependency calls, or security checks fail.
-// GetSessionInfo does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Introspection
+//	Docs:        docs/flows.md#introspection, docs/introspection.md
+//	Performance: 1 Redis GET.
 func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string) (*SessionInfo, error) {
 	e.ensureFlowDeps()
 	sess, err := e.flows.GetSessionInfo(ctx, tenantID, sessionID)
@@ -2448,19 +2161,22 @@ func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string)
 	return &info, nil
 }
 
-// ActiveSessionEstimate describes the activesessionestimate operation and its observable behavior.
+// ActiveSessionEstimate returns an estimated total of active sessions
+// across all tenants using a Redis SCAN-based count.
 //
-// ActiveSessionEstimate may return an error when input validation, dependency calls, or security checks fail.
-// ActiveSessionEstimate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Introspection
+//	Docs:        docs/introspection.md
+//	Performance: 1 SCAN (may be slow on large keyspaces).
 func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
 	e.ensureFlowDeps()
 	return e.flows.ActiveSessionEstimate(ctx)
 }
 
-// Health describes the health operation and its observable behavior.
+// Health performs a lightweight Redis PING and returns availability and
+// round-trip latency. Suitable for readiness probes.
 //
-// Health may return an error when input validation, dependency calls, or security checks fail.
-// Health does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs:        docs/ops.md
+//	Performance: 1 Redis PING.
 func (e *Engine) Health(ctx context.Context) HealthStatus {
 	e.ensureFlowDeps()
 	available, latency := e.flows.Health(ctx)
@@ -2470,10 +2186,11 @@ func (e *Engine) Health(ctx context.Context) HealthStatus {
 	}
 }
 
-// GetLoginAttempts describes the getloginattempts operation and its observable behavior.
+// GetLoginAttempts returns the current failed-login attempt count for the
+// given identifier. Useful for admin dashboards and lockout monitoring.
 //
-// GetLoginAttempts may return an error when input validation, dependency calls, or security checks fail.
-// GetLoginAttempts does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs:        docs/rate_limiting.md, docs/introspection.md
+//	Performance: 1 Redis GET.
 func (e *Engine) GetLoginAttempts(ctx context.Context, identifier string) (int, error) {
 	e.ensureFlowDeps()
 	return e.flows.GetLoginAttempts(ctx, identifier)
@@ -2491,10 +2208,15 @@ func toSessionInfo(sess *session.Session) SessionInfo {
 	}
 }
 
-// LoginWithResult describes the loginwithresult operation and its observable behavior.
+// LoginWithResult authenticates a user and returns a [LoginResult] that
+// includes MFA metadata (MFARequired, MFASession). Use this for the
+// two-step MFA login flow: first call LoginWithResult, then if
+// MFARequired is true, call [Engine.ConfirmLoginMFA].
 //
-// LoginWithResult may return an error when input validation, dependency calls, or security checks fail.
-// LoginWithResult does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Login (step 1 of two-step MFA)
+//	Docs:        docs/flows.md#login-with-mfa, docs/mfa.md
+//	Performance: 5–7 Redis commands; Argon2 dominated.
+//	Security:    rate-limited; timing-equalized.
 func (e *Engine) LoginWithResult(ctx context.Context, username, password string) (*LoginResult, error) {
 	e.ensureFlowDeps()
 	result, err := e.flows.LoginWithResult(ctx, username, password)
@@ -2504,18 +2226,23 @@ func (e *Engine) LoginWithResult(ctx context.Context, username, password string)
 	return fromFlowLoginResult(result), nil
 }
 
-// ConfirmLoginMFA describes the confirmloginmfa operation and its observable behavior.
+// ConfirmLoginMFA completes a two-step MFA login by verifying a TOTP code
+// against the challenge ID returned by [Engine.LoginWithResult]. This is
+// equivalent to ConfirmLoginMFAWithType(ctx, challengeID, code, "totp").
 //
-// ConfirmLoginMFA may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmLoginMFA does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Confirm MFA (step 2 of two-step)
+//	Docs:        docs/flows.md#confirm-mfa, docs/mfa.md
 func (e *Engine) ConfirmLoginMFA(ctx context.Context, challengeID, code string) (*LoginResult, error) {
 	return e.ConfirmLoginMFAWithType(ctx, challengeID, code, "totp")
 }
 
-// ConfirmLoginMFAWithType describes the confirmloginmfawithtype operation and its observable behavior.
+// ConfirmLoginMFAWithType completes a two-step MFA login. mfaType must be
+// "totp" or "backup". On success it returns a [LoginResult] with tokens.
 //
-// ConfirmLoginMFAWithType may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmLoginMFAWithType does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Confirm MFA (step 2 of two-step)
+//	Docs:        docs/flows.md#confirm-mfa, docs/mfa.md
+//	Performance: 2–4 Redis commands (challenge lookup + session creation).
+//	Security:    challenge expires after MFA.LoginChallengeTTL; attempt-limited.
 func (e *Engine) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType string) (*LoginResult, error) {
 	e.ensureFlowDeps()
 	result, err := e.flows.ConfirmLoginMFAWithType(ctx, challengeID, code, mfaType)
@@ -2523,10 +2250,6 @@ func (e *Engine) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code,
 		return nil, err
 	}
 	return fromFlowLoginResult(result), nil
-}
-
-func (e *Engine) loginWithResultInternal(ctx context.Context, username, password string) (*LoginResult, error) {
-	return e.LoginWithResult(ctx, username, password)
 }
 
 func (e *Engine) createMFALoginChallenge(ctx context.Context, userID, tenantID string) (string, error) {
@@ -2782,43 +2505,56 @@ func mapMFALoginStoreError(err error) error {
 	}
 }
 
-// RequestPasswordReset describes the requestpasswordreset operation and its observable behavior.
+// RequestPasswordReset starts the password reset flow for the given
+// identifier. Returns a challenge string (or OTP) to be delivered
+// out-of-band. If the identifier is unknown, an enumeration-resistant
+// delay is injected and a non-nil challenge is still returned.
 //
-// RequestPasswordReset may return an error when input validation, dependency calls, or security checks fail.
-// RequestPasswordReset does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Request Password Reset
+//	Docs:        docs/flows.md#password-reset, docs/password_reset.md
+//	Performance: 2–3 Redis commands.
+//	Security:    rate-limited per identifier+IP; timing-equalized.
 func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {
 	e.ensureFlowDeps()
 	return e.flows.RequestPasswordReset(ctx, identifier)
 }
 
-// ConfirmPasswordReset describes the confirmpasswordreset operation and its observable behavior.
+// ConfirmPasswordReset completes a password reset without MFA verification.
+// Equivalent to ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", "").
 //
-// ConfirmPasswordReset may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmPasswordReset does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Confirm Password Reset
+//	Docs:        docs/flows.md#password-reset, docs/password_reset.md
 func (e *Engine) ConfirmPasswordReset(ctx context.Context, challenge, newPassword string) error {
 	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", "")
 }
 
-// ConfirmPasswordResetWithTOTP describes the confirmpasswordresetwithtotp operation and its observable behavior.
+// ConfirmPasswordResetWithTOTP completes a password reset with TOTP
+// verification.
 //
-// ConfirmPasswordResetWithTOTP may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmPasswordResetWithTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Confirm Password Reset (MFA)
+//	Docs:        docs/flows.md#password-reset, docs/password_reset.md, docs/mfa.md
 func (e *Engine) ConfirmPasswordResetWithTOTP(ctx context.Context, challenge, newPassword, totpCode string) error {
 	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", totpCode)
 }
 
-// ConfirmPasswordResetWithBackupCode describes the confirmpasswordresetwithbackupcode operation and its observable behavior.
+// ConfirmPasswordResetWithBackupCode completes a password reset using a
+// backup code instead of TOTP.
 //
-// ConfirmPasswordResetWithBackupCode may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmPasswordResetWithBackupCode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Confirm Password Reset (MFA)
+//	Docs:        docs/flows.md#password-reset, docs/password_reset.md, docs/mfa.md
 func (e *Engine) ConfirmPasswordResetWithBackupCode(ctx context.Context, challenge, newPassword, backupCode string) error {
 	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "backup", backupCode)
 }
 
-// ConfirmPasswordResetWithMFA describes the confirmpasswordresetwithmfa operation and its observable behavior.
+// ConfirmPasswordResetWithMFA completes a password reset with an optional
+// MFA code. When RequireMFA is enabled in config, mfaCode must be valid.
+// On success the password hash is updated and all user sessions are
+// invalidated.
 //
-// ConfirmPasswordResetWithMFA may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmPasswordResetWithMFA does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        Confirm Password Reset (MFA)
+//	Docs:        docs/flows.md#password-reset, docs/password_reset.md
+//	Performance: Argon2 hash + 2–4 Redis commands + session invalidation.
+//	Security:    challenge consumed atomically; attempts tracked.
 func (e *Engine) ConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword, mfaType, mfaCode string) error {
 	e.ensureFlowDeps()
 	return e.flows.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, mfaType, mfaCode)
@@ -3122,10 +2858,13 @@ func isNumericString(v string) bool {
 	return true
 }
 
-// GenerateTOTPSetup describes the generatetotpsetup operation and its observable behavior.
+// GenerateTOTPSetup generates a new TOTP secret for the user and returns
+// a [TOTPSetup] containing the base32-encoded secret and a QR code URL.
+// The secret is not persisted until [Engine.ConfirmTOTPSetup] succeeds.
 //
-// GenerateTOTPSetup may return an error when input validation, dependency calls, or security checks fail.
-// GenerateTOTPSetup does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        TOTP Setup
+//	Docs:        docs/flows.md#totp-setup, docs/mfa.md
+//	Security:    requires active account status.
 func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSetup, error) {
 	e.ensureFlowDeps()
 	setup, err := e.flows.GenerateTOTPSetup(ctx, userID)
@@ -3135,10 +2874,12 @@ func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSet
 	return fromFlowTOTPSetup(setup), nil
 }
 
-// ProvisionTOTP describes the provisiontotp operation and its observable behavior.
+// ProvisionTOTP provisions a TOTP secret and returns a [TOTPProvision]
+// with the raw secret and otpauth:// URI. Like GenerateTOTPSetup but
+// returns the secret in raw form rather than base32.
 //
-// ProvisionTOTP may return an error when input validation, dependency calls, or security checks fail.
-// ProvisionTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        TOTP Setup (alternate)
+//	Docs:        docs/flows.md#totp-setup, docs/mfa.md
 func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvision, error) {
 	e.ensureFlowDeps()
 	provision, err := e.flows.ProvisionTOTP(ctx, userID)
@@ -3148,28 +2889,34 @@ func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvisi
 	return fromFlowTOTPProvision(provision), nil
 }
 
-// ConfirmTOTPSetup describes the confirmtotpsetup operation and its observable behavior.
+// ConfirmTOTPSetup verifies a TOTP code against the provisioned secret
+// and, on success, persists the secret and marks TOTP as enabled for the
+// user.
 //
-// ConfirmTOTPSetup may return an error when input validation, dependency calls, or security checks fail.
-// ConfirmTOTPSetup does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        TOTP Confirm
+//	Docs:        docs/flows.md#totp-confirm, docs/mfa.md
+//	Security:    rate-limited; replay-protected if configured.
 func (e *Engine) ConfirmTOTPSetup(ctx context.Context, userID, code string) error {
 	e.ensureFlowDeps()
 	return e.flows.ConfirmTOTPSetup(ctx, userID, code)
 }
 
-// VerifyTOTP describes the verifytotp operation and its observable behavior.
+// VerifyTOTP validates a TOTP code for the user without any login context.
+// Useful for step-up verification in sensitive operations.
 //
-// VerifyTOTP may return an error when input validation, dependency calls, or security checks fail.
-// VerifyTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        TOTP Verify
+//	Docs:        docs/flows.md#totp-verify, docs/mfa.md
+//	Security:    rate-limited; replay-protected if configured.
 func (e *Engine) VerifyTOTP(ctx context.Context, userID, code string) error {
 	e.ensureFlowDeps()
 	return e.flows.VerifyTOTP(ctx, userID, code)
 }
 
-// DisableTOTP describes the disabletotp operation and its observable behavior.
+// DisableTOTP removes the TOTP secret for the user, disabling two-factor
+// authentication. Existing sessions are not affected.
 //
-// DisableTOTP may return an error when input validation, dependency calls, or security checks fail.
-// DisableTOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Flow:        TOTP Disable
+//	Docs:        docs/flows.md#totp-disable, docs/mfa.md
 func (e *Engine) DisableTOTP(ctx context.Context, userID string) error {
 	e.ensureFlowDeps()
 	return e.flows.DisableTOTP(ctx, userID)

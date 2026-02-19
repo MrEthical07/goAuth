@@ -107,3 +107,61 @@ decoded, _ := permission.DecodeMask(encoded)
 - Exceeding `maxBits` permission registrations causes `Build()` to fail.
 - Permission names are case-sensitive.
 - Role masks are computed once at build time and never change.
+
+## Architecture
+
+The permission system is a compile-time registry with no runtime mutation. At `Build()` time, permissions are registered as bit positions, roles are compiled into bitmasks, and both are frozen. The resulting masks are embedded into JWT claims and session data.
+
+```
+Builder.Build()
+  ├─ Registry.Register(name) → assigns bit index
+  ├─ Registry.Freeze() → locks registration
+  ├─ RoleManager.RegisterRole(role, perms) → compiles mask
+  ├─ RoleManager.Freeze() → locks role definitions
+  └─ Masks embedded in JWT claims + session binary encoding
+```
+
+Permission checks at runtime are a single bitwise AND on fixed-size masks — no map lookups, no allocations.
+
+## Error Reference
+
+| Error | Condition |
+|-------|----------|
+| `ErrRegistryFrozen` | Attempt to register permissions after `Freeze()` |
+| `ErrPermissionNotFound` | Permission name not in registry |
+| `ErrMaxBitsExceeded` | Registered permissions exceed `maxBits` capacity |
+| `ErrInvalidMaxBits` | `maxBits` not one of 64, 128, 256, 512 |
+| `ErrRoleNotFound` | Role name not registered in role manager |
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Permission Registration | `Builder.WithPermissions` | `permission.Registry.Register` |
+| Role Compilation | `Builder.WithRoles` | `permission.RoleManager.RegisterRole` |
+| Permission Check | `Engine.HasPermission` | `permission.Mask*.Has(bit)` |
+| Mask Encoding | Session save / JWT issuance | `permission.EncodeMask` / `permission.DecodeMask` |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Codec Fuzz | `permission/fuzz_codec_test.go` | Encode/decode round-trip with random masks |
+| Security Invariants | `security_invariants_test.go` | Cross-module permission checks |
+| Config Validation | `config_test.go` | MaxBits validation, role mapping |
+| Integration | `test/public_api_test.go` | HasPermission in full engine context |
+
+## Migration Notes
+
+- **Adding permissions**: New permissions can be appended to the `WithPermissions` list. Existing bit assignments are stable as long as the order is preserved.
+- **Changing `maxBits`**: Increasing `maxBits` (e.g., 64 → 128) changes the mask type. All active sessions and tokens become incompatible — force re-login.
+- **Removing permissions**: Removing a permission from the list shifts bit assignments for subsequent permissions. This invalidates all existing masks. Prefer deprecating (not removing) permissions.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Engine](engine.md)
+- [Security Model](security.md)
+- [JWT](jwt.md)
+- [Middleware](middleware.md)

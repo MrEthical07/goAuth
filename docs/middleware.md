@@ -86,3 +86,64 @@ mux.Handle("/api/data/write", middleware.Guard(engine, goAuth.ModeStrict)(writeH
 - Missing or malformed `Authorization` header returns 401 immediately.
 - `ModeInherit` (-1) uses the engine's global `ValidationMode`.
 - Context must carry client IP and tenant ID for rate limiting / multi-tenancy — set via `goAuth.WithClientIP()` and `goAuth.WithTenantID()` in an outer middleware.
+
+## Architecture
+
+The middleware package is a thin HTTP adapter layer. It does not contain business logic — all authorization decisions are delegated to `Engine.Validate()`.
+
+```
+HTTP Request
+  └─ Guard(engine, routeMode)
+       ├─ Extract Bearer token from Authorization header
+       ├─ engine.Validate(ctx, token, routeMode)
+       ├─ On success: store *AuthResult in context, call next handler
+       └─ On failure: respond 401 JSON
+```
+
+The middleware is stateless and safe for concurrent use across all HTTP handlers.
+
+## Error Reference
+
+| HTTP Status | Condition |
+|-------------|----------|
+| `401 Unauthorized` | Missing/malformed `Authorization` header |
+| `401 Unauthorized` | Token expired, invalid signature, or revoked session |
+| `401 Unauthorized` | Account disabled/locked/deleted (strict mode) |
+| `401 Unauthorized` | Device binding rejection (strict mode) |
+
+All 401 responses include a JSON body: `{"error": "<message>"}`. The error message is taken from the underlying `Engine.Validate()` error.
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| JWT-Only Validation | `RequireJWTOnly(engine)` | Delegates to `Engine.Validate` → `internal/flows/validate.go` |
+| Strict Validation | `RequireStrict(engine)` | Delegates to `Engine.Validate` → `internal/flows/validate.go` |
+| Hybrid Validation | `Guard(engine, ModeHybrid)` | Delegates to `Engine.Validate` → `internal/flows/validate.go` |
+| Auth Result Extraction | `AuthResultFromContext(ctx)` | Context value lookup (no flow) |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Validation Modes | `validation_mode_test.go` | JWT-Only, Hybrid, Strict through middleware |
+| Security Invariants | `security_invariants_test.go` | Middleware auth enforcement |
+| Integration | `test/public_api_test.go` | HTTP handler integration |
+| Session Hardening | `engine_session_hardening_test.go` | Strict mode session checks |
+| Benchmarks | `auth_bench_test.go` | Validate hot path latency |
+
+## Migration Notes
+
+- **Per-route modes**: Use `Guard(engine, mode)` instead of the global shorthands when different routes need different validation modes.
+- **Context values**: Middleware expects `goAuth.WithClientIP()` and `goAuth.WithTenantID()` to be set in an outer middleware. If missing, rate limiting and multi-tenancy features are disabled for that request.
+- **Error format**: The JSON error body format (`{"error": "..."}`) is fixed and not customizable. For custom error responses, wrap the middleware and intercept 401 responses.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Engine](engine.md)
+- [JWT](jwt.md)
+- [Session](session.md)
+- [Security Model](security.md)
+- [Permission](permission.md)

@@ -105,3 +105,63 @@ Window A (60s)          Window B (60s)
 
 - Single `INCR` round-trip per check (atomic).
 - No Lua scripts — relies on Redis single-key atomicity.
+
+## Architecture
+
+Rate limiting is split into two layers:
+
+1. **Core limiter** (`internal/rate`): Handles login and refresh throttling with per-user and per-IP counters.
+2. **Domain limiters** (`internal/limiters`): Per-flow limiters for account creation, TOTP, backup codes, email verification, and password reset.
+
+```
+Engine.Login()
+  ├─ rate.Limiter.CheckLogin(user, ip)     ← core limiter
+  │   ├─ Redis INCR al:{user}
+  │   └─ Redis INCR ali:{ip}  (if EnableIPThrottle)
+  └─ On failure: rate.Limiter.IncrementLogin(user, ip)
+
+Engine.ConfirmTOTPSetup()
+  └─ limiters.TOTPLimiter.Check(user)       ← domain limiter
+       └─ Redis INCR totp:{tenant}:{user}
+```
+
+All limiters use fixed-window counters (`INCR` + conditional `EXPIRE`).
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Login Throttle | `Limiter.CheckLogin`, `Limiter.IncrementLogin` | `internal/rate/limiter.go` |
+| Refresh Throttle | `Limiter.CheckRefresh`, `Limiter.IncrementRefresh` | `internal/rate/limiter.go` |
+| Account Creation | `AccountCreationLimiter.Enforce` | `internal/limiters/account.go` |
+| TOTP Attempts | `TOTPLimiter.Check`, `TOTPLimiter.RecordFailure` | `internal/limiters/totp.go` |
+| Backup Code Attempts | `BackupCodeLimiter.Check`, `BackupCodeLimiter.RecordFailure` | `internal/limiters/backup_code.go` |
+| Email Verification | `EmailVerificationLimiter.CheckRequest/CheckConfirm` | `internal/limiters/email_verification.go` |
+| Password Reset | `PasswordResetLimiter.CheckRequest/CheckConfirm` | `internal/limiters/password_reset.go` |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Auto Lockout | `engine_auto_lockout_test.go` | Lockout threshold, cooldown, reset |
+| Account Rate Limit | `engine_account_test.go` | Account creation throttling |
+| TOTP Rate Limit | `engine_totp_test.go` | TOTP attempt limiting |
+| Backup Code Limit | `engine_backup_codes_test.go` | Backup code attempt limiting |
+| Password Reset Limit | `engine_password_reset_test.go` | Request and confirm throttling |
+| Email Verification Limit | `engine_email_verification_test.go` | Request and confirm throttling |
+| Config Lint | `config_lint_test.go` | Rate-limits-disabled warnings |
+| Security Invariants | `security_invariants_test.go` | Rate limiting enforcement |
+
+## Migration Notes
+
+- **Disabling rate limits**: Setting both `EnableIPThrottle` and `EnableRefreshThrottle` to false triggers a HIGH-severity lint warning. Not recommended for production.
+- **Changing cooldown durations**: Increasing `LoginCooldownDuration` takes effect on the next EXPIRE. Existing cooldown windows continue with the old TTL until they expire naturally.
+- **Redis key changes**: Rate limiter keys use fixed prefixes (`al:`, `ali:`, `ar:`). These are not configurable. Changing tenancy settings may create new key namespaces.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Security Model](security.md)
+- [Engine](engine.md)
+- [Performance](performance.md)

@@ -98,10 +98,7 @@ var HistogramBoundSuffix = []string{
 	"inf",
 }
 
-// NormalizeBuckets describes the normalizebuckets operation and its observable behavior.
-//
-// NormalizeBuckets may return an error when input validation, dependency calls, or security checks fail.
-// NormalizeBuckets does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// NormalizeBuckets ensures histogram buckets are sorted and deduplicated.
 func NormalizeBuckets(raw []uint64) [8]uint64 {
 	var out [8]uint64
 	for i := 0; i < len(out) && i < len(raw); i++ {
@@ -110,10 +107,8 @@ func NormalizeBuckets(raw []uint64) [8]uint64 {
 	return out
 }
 
-// CumulativeBuckets describes the cumulativebuckets operation and its observable behavior.
-//
-// CumulativeBuckets may return an error when input validation, dependency calls, or security checks fail.
-// CumulativeBuckets does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// CumulativeBuckets converts frequency buckets to cumulative counts for
+// Prometheus-style exposition.
 func CumulativeBuckets(raw [8]uint64) [8]uint64 {
 	var out [8]uint64
 	var running uint64

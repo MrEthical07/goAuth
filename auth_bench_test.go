@@ -2,6 +2,7 @@ package goAuth
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -156,5 +157,127 @@ func newBenchmarkEngine(tb testing.TB, mode ValidationMode) (*Engine, func()) {
 		engine.Close()
 		_ = rdb.Close()
 		mr.Close()
+	}
+}
+
+// newBenchmarkEngineRealRedis creates a benchmark engine backed by real Redis.
+// Skips the test when REDIS_ADDR is not set.
+func newBenchmarkEngineRealRedis(tb testing.TB, mode ValidationMode) (*Engine, func()) {
+	tb.Helper()
+
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		tb.Skip("REDIS_ADDR not set; skipping real-Redis benchmark")
+	}
+
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		tb.Skipf("Redis not available at %s: %v", addr, err)
+	}
+	rdb.FlushDB(context.Background())
+
+	cfg := accountTestConfig()
+	cfg.ValidationMode = mode
+	cfg.Security.EnableAccountVersionCheck = mode != ModeJWTOnly
+	cfg.Security.EnableRefreshThrottle = false
+	cfg.Password.Memory = 8 * 1024
+	cfg.Password.Time = 1
+	cfg.Password.Parallelism = 1
+	cfg.Metrics.Enabled = false
+	cfg.Audit.Enabled = false
+	cfg.SessionHardening.MaxSessionsPerUser = 0
+	cfg.SessionHardening.MaxSessionsPerTenant = 0
+	cfg.JWT.AccessTTL = 10 * time.Minute
+	cfg.JWT.RefreshTTL = 10 * time.Minute
+
+	hasher, err := password.NewArgon2(password.Config{
+		Memory:      cfg.Password.Memory,
+		Time:        cfg.Password.Time,
+		Parallelism: cfg.Password.Parallelism,
+		SaltLength:  cfg.Password.SaltLength,
+		KeyLength:   cfg.Password.KeyLength,
+	})
+	if err != nil {
+		tb.Fatalf("argon2 init failed: %v", err)
+	}
+	hash, err := hasher.Hash("correct-password-123")
+	if err != nil {
+		tb.Fatalf("hash failed: %v", err)
+	}
+
+	up := &mockUserProvider{
+		users: map[string]UserRecord{
+			"u1": {
+				UserID:            "u1",
+				Identifier:        "alice",
+				TenantID:          "0",
+				PasswordHash:      hash,
+				Status:            AccountActive,
+				Role:              "member",
+				PermissionVersion: 1,
+				RoleVersion:       1,
+				AccountVersion:    1,
+			},
+		},
+		byIdentifier: map[string]string{
+			"alice": "u1",
+		},
+	}
+
+	engine, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{
+			"member": {},
+			"admin":  {"perm.read"},
+		}).
+		WithUserProvider(up).
+		Build()
+	if err != nil {
+		tb.Fatalf("Build failed: %v", err)
+	}
+
+	return engine, func() {
+		engine.Close()
+		_ = rdb.Close()
+	}
+}
+
+func BenchmarkRefreshRealRedis(b *testing.B) {
+	engine, cleanup := newBenchmarkEngineRealRedis(b, ModeHybrid)
+	defer cleanup()
+
+	_, refresh, err := engine.Login(context.Background(), "alice", "correct-password-123")
+	if err != nil {
+		b.Fatalf("login failed: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, nextRefresh, err := engine.Refresh(context.Background(), refresh)
+		if err != nil {
+			b.Fatalf("refresh failed: %v", err)
+		}
+		refresh = nextRefresh
+	}
+}
+
+func BenchmarkValidateStrictRealRedis(b *testing.B) {
+	engine, cleanup := newBenchmarkEngineRealRedis(b, ModeStrict)
+	defer cleanup()
+
+	access, _, err := engine.Login(context.Background(), "alice", "correct-password-123")
+	if err != nil {
+		b.Fatalf("login failed: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := engine.Validate(context.Background(), access, ModeInherit); err != nil {
+			b.Fatalf("validate failed: %v", err)
+		}
 	}
 }

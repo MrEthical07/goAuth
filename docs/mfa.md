@@ -115,3 +115,72 @@ if result.MFARequired {
 - Backup codes are one-time: each code can only be used once.
 - `GenerateBackupCodes` replaces any existing backup codes.
 - TOTP counter tracking prevents code reuse within the same time step.
+
+## Architecture
+
+MFA is integrated directly into the engine's login flow rather than existing as a standalone module. TOTP management methods live on the `Engine` struct, while the underlying TOTP verification uses an internal `TOTPManager` and the backup code logic delegates to `UserProvider`.
+
+```
+Login flow (MFA-aware)
+  ├─ Credential verification (password)
+  ├─ MFA check: is TOTP enabled for user?
+  │   ├─ Yes + code provided → verify inline (LoginWithTOTP)
+  │   ├─ Yes + no code → create MFA challenge (LoginWithResult)
+  │   └─ No → proceed to session creation
+  └─ Challenge flow: ConfirmLoginMFA → verify code → issue tokens
+```
+
+Rate limiting for TOTP and backup codes uses dedicated domain limiters (`TOTPLimiter`, `BackupCodeLimiter`) separate from the login rate limiter.
+
+## Error Reference
+
+| Error | Condition |
+|-------|----------|
+| `ErrMFALoginRequired` | TOTP enabled but no code provided in login |
+| `ErrTOTPRequired` | TOTP code required for this operation |
+| `ErrTOTPInvalid` | Wrong TOTP code |
+| `ErrTOTPRateLimited` | TOTP attempt limit exceeded |
+| `ErrTOTPNotEnabled` | TOTP not set up for user |
+| `ErrBackupCodeInvalid` | Wrong backup code |
+| `ErrBackupCodeRateLimited` | Backup code attempt limit exceeded |
+| `ErrMFALoginExpired` | MFA challenge TTL elapsed |
+| `ErrMFALoginAttemptsExceeded` | Too many failed MFA attempts |
+| `ErrMFALoginInvalid` | Malformed MFA challenge |
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| TOTP Setup | `Engine.GenerateTOTPSetup`, `Engine.ProvisionTOTP` | `internal/flows/totp.go` |
+| TOTP Confirm Setup | `Engine.ConfirmTOTPSetup` | `internal/flows/totp.go` |
+| TOTP Disable | `Engine.DisableTOTP` | `internal/flows/totp.go` |
+| TOTP Verify (login) | `Engine.LoginWithTOTP` | `internal/flows/login.go` |
+| Backup Code Generate | `Engine.GenerateBackupCodes` | `internal/flows/backup_codes.go` |
+| Backup Code Consume | `Engine.VerifyBackupCode` | `internal/flows/backup_codes.go` |
+| Backup Code Regenerate | `Engine.RegenerateBackupCodes` | `internal/flows/backup_codes.go` |
+| MFA Challenge | `Engine.LoginWithResult` → `Engine.ConfirmLoginMFA` | `internal/flows/login.go` |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| TOTP Setup & Verify | `engine_totp_test.go` | Generate, confirm, disable, verify |
+| TOTP RFC Compliance | `totp_rfc_test.go` | RFC 6238 test vectors |
+| MFA Login Flow | `engine_mfa_login_test.go` | Challenge, confirm, timeout, attempts |
+| Backup Codes | `engine_backup_codes_test.go` | Generate, consume, regenerate, rate limit |
+| Security Invariants | `security_invariants_test.go` | MFA-related security properties |
+
+## Migration Notes
+
+- **Enabling TOTP**: Setting `Config.TOTP.Enabled = true` does not retroactively require MFA for existing users. Users must individually set up TOTP via `GenerateTOTPSetup` + `ConfirmTOTPSetup`.
+- **Skew changes**: Increasing `Skew` widens the acceptance window. Decreasing it may cause valid codes from slower users to be rejected.
+- **Backup code regeneration**: `RegenerateBackupCodes` replaces all existing codes. Users must save the new codes immediately.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Engine](engine.md)
+- [Security Model](security.md)
+- [Password](password.md)
+- [Password Reset](password_reset.md)

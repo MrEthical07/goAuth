@@ -36,7 +36,6 @@ func TestEngine_DelegateMethodComplexity(t *testing.T) {
 
 	// Known legacy methods that haven't been fully migrated to flows yet.
 	exceptions := map[string]delegateException{
-		"loginInternal":                    {400, "large legacy login path", "internal/flows/login.go", "v1.0.0"},
 		"LoginWithResult":                  {200, "MFA routing logic", "internal/flows/login.go", "v1.0.0"},
 		"LoginWithTOTP":                    {60, "MFA error mapping", "internal/flows/mfa_totp.go", "v1.0.0"},
 		"LoginWithBackupCode":              {60, "MFA error mapping", "internal/flows/backup_codes.go", "v1.0.0"},
@@ -44,7 +43,6 @@ func TestEngine_DelegateMethodComplexity(t *testing.T) {
 		"Validate":                         {60, "result building", "internal/flows/validate.go", "v1.0.0"},
 		"ChangePassword":                   {120, "not yet migrated", "internal/flows/account.go", "v1.0.0"},
 		"enforceSessionHardeningOnLogin":   {80, "helper with session state", "internal/flows/login.go", "v1.0.0"},
-		"enforceTOTPForLogin":              {100, "helper with TOTP state", "internal/flows/mfa_totp.go", "v1.0.0"},
 		"CreateAccount":                    {60, "delegate + error mapping", "internal/flows/account.go", "v1.0.0"},
 		"accountFlowDeps":                  {100, "wiring function", "internal/flows/deps.go", "v1.0.0"},
 		"accountSessionDeps":               {60, "wiring function", "internal/flows/deps.go", "v1.0.0"},

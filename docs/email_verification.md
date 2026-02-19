@@ -179,3 +179,57 @@ err = engine.ConfirmEmailVerification(ctx, challenge)
 - When `RequireForLogin` is true, `CreateAccount` sets status to `AccountPendingVerification`.
 - OTP mode limits are enforced more strictly in production mode.
 - UUID strategy: the verificationID *is* the code — do not log it.
+
+## Architecture
+
+Email verification follows a two-phase flow (request + confirm) similar to password reset, backed by a Redis verification store with Lua CAS for atomic consumption.
+
+```
+Engine.RequestEmailVerification(identifier)
+  ├─ EmailVerificationLimiter.CheckRequest
+  ├─ UserProvider.GetUserByIdentifier
+  │   ├─ Not found / already active → fake challenge (enumeration resistance)
+  │   └─ Pending verification → real challenge
+  ├─ Generate challenge (Token/OTP/UUID strategy)
+  ├─ EmailVerificationStore.Save (SHA-256 hashed)
+  └─ Return challenge string (tenant:verificationID:code)
+
+Engine.ConfirmEmailVerificationCode(verificationID, code)
+  ├─ EmailVerificationLimiter.CheckConfirm
+  ├─ EmailVerificationStore.Consume (Lua CAS)
+  ├─ Go-side constant-time compare (defense-in-depth)
+  └─ UserProvider.UpdateAccountStatus(PendingVerification → Active)
+```
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Request Verification | `Engine.RequestEmailVerification` | `internal/flows/email_verification.go` → `RunRequestEmailVerification` |
+| Confirm (legacy) | `Engine.ConfirmEmailVerification` | `internal/flows/email_verification.go` → `RunConfirmEmailVerification` |
+| Confirm (preferred) | `Engine.ConfirmEmailVerificationCode` | `internal/flows/email_verification.go` → `RunConfirmEmailVerificationCode` |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Email Verification | `engine_email_verification_test.go` | Request, confirm, strategies, rate limiting, enumeration resistance |
+| Config Validation | `config_test.go` | Email verification config validation |
+| Config Lint | `config_lint_test.go` | Verification-related warnings |
+| Security Invariants | `security_invariants_test.go` | Enumeration resistance, status transitions |
+| Store Consistency | `test/store_consistency_test.go` | Lua CAS atomicity |
+
+## Migration Notes
+
+- **Enabling verification**: Set `EmailVerification.Enabled = true`. When `RequireForLogin = true`, new accounts start in `PendingVerification` status and must verify before login.
+- **Changing strategy**: Switching between Token/OTP/UUID invalidates all pending verification records.
+- **`ConfirmEmailVerificationCode` vs `ConfirmEmailVerification`**: Prefer `ConfirmEmailVerificationCode` in new code. It avoids passing the secret inside an opaque challenge string that might be logged.
+- **UUID strategy caution**: The verificationID and code are identical in UUID mode. Treat the verificationID as sensitive data.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Engine](engine.md)
+- [Security Model](security.md)
+- [Password Reset](password_reset.md)

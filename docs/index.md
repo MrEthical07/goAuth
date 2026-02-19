@@ -2,6 +2,20 @@
 
 This directory contains the authoritative documentation for the goAuth authentication engine.
 
+## Quick Navigation
+
+| Goal | Start Here |
+|------|-----------|
+| **First integration** | [README](../README.md) → [usage.md](usage.md) → [examples/http-minimal](../examples/http-minimal/) |
+| **Choose validation mode** | [jwt.md § Validation Modes](jwt.md) → [config.md § Validation Mode](config.md#validation-mode-configvalidationmode) |
+| **Add MFA** | [mfa.md](mfa.md) → [flows.md § TOTP](flows.md#totp-setup) |
+| **Add password reset / email verification** | [password_reset.md](password_reset.md) · [email_verification.md](email_verification.md) |
+| **Understand all flows** | [flows.md](flows.md) (consolidated flow catalog) |
+| **Ops & scaling** | [ops.md](ops.md) → [performance.md](performance.md) → [capacity.md](capacity.md) |
+| **Security review** | [security.md](security.md) → [security-model.md](security-model.md) |
+| **Full API surface** | [api-reference.md](api-reference.md) |
+| **Config tuning** | [config.md](config.md) → [config-presets.md](config-presets.md) → [config_lint.md](config_lint.md) |
+
 ## Module Documentation
 
 Per-module guides covering primitives, usage examples, configuration, strategies, and gotchas.
@@ -22,8 +36,18 @@ Per-module guides covering primitives, usage examples, configuration, strategies
 | [metrics.md](metrics.md) | Metrics system: counters, histograms, exporters |
 | [introspection.md](introspection.md) | Session introspection: active sessions, health checks |
 | [device_binding.md](device_binding.md) | Device binding: IP/UA fingerprint enforcement |
-| [config_presets.md](config-presets.md) | Configuration presets: Default, HighSecurity, HighThroughput |
+| [config.md](config.md) | Full configuration reference (all fields, defaults, types) |
+| [config-presets.md](config-presets.md) | Configuration presets: Default, HighSecurity, HighThroughput |
 | [config_lint.md](config_lint.md) | Configuration lint: severity levels, AsError helper |
+
+## Cross-Cutting Guides
+
+| Document | Description |
+|----------|-------------|
+| [flows.md](flows.md) | **Consolidated flow catalog** — every operation step-by-step |
+| [performance.md](performance.md) | Benchmark methodology, Redis command budgets, sizing |
+| [security.md](security.md) | Threat model, mitigations, invariants, scanner tooling |
+| [roadmap.md](roadmap.md) | Future improvements and priorities |
 
 ## Architecture & Operations
 
@@ -32,7 +56,6 @@ Per-module guides covering primitives, usage examples, configuration, strategies
 | [architecture.md](architecture.md) | System architecture and module boundaries |
 | [concurrency-model.md](concurrency-model.md) | Concurrency safety guarantees |
 | [security-model.md](security-model.md) | Security model and threat analysis |
-| [config.md](config.md) | Full configuration reference |
 | [migrations.md](migrations.md) | Session schema versioning and migration |
 | [ops.md](ops.md) | Operations guide: deployment, monitoring, runbooks |
 | [perf-budgets.md](perf-budgets.md) | Performance budgets and regression gates |
@@ -41,9 +64,9 @@ Per-module guides covering primitives, usage examples, configuration, strategies
 | [api-reference.md](api-reference.md) | Full public API reference |
 | [usage.md](usage.md) | Getting started and integration guide |
 
-## Flow Documentation
+## Flow Documentation (detailed)
 
-Detailed flow documentation for each authentication/authorization workflow:
+Detailed per-flow documentation (supplementary to [flows.md](flows.md)):
 
 | Flow | Description |
 |------|-------------|
@@ -61,9 +84,11 @@ Detailed flow documentation for each authentication/authorization workflow:
 
 | Document | Location |
 |----------|----------|
+| [README.md](../README.md) | Quickstart, features, installation |
+| [CHANGELOG.md](../CHANGELOG.md) | Release changelog (SemVer) |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | Documentation and code conventions |
 | [THREAT_MODEL.md](../THREAT_MODEL.md) | Threat model |
 | [SECURITY.md](../SECURITY.md) | Security policy |
 | [SECURITY_REVIEW_CHECKLIST.md](../SECURITY_REVIEW_CHECKLIST.md) | Review checklist |
 | [SECURITY_FINDINGS.md](../SECURITY_FINDINGS.md) | Findings register |
 | [ARCHITECTURE_INVARIANTS.md](../ARCHITECTURE_INVARIANTS.md) | Architecture invariants |
-| [CHANGELOG.md](../CHANGELOG.md) | Release changelog |

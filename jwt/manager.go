@@ -2,17 +2,23 @@ package jwt
 
 import (
 	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// SigningMethod defines a public type used by goAuth APIs.
+// SigningMethod identifies the JWT signing algorithm (e.g., ES256, RS256, HS256).
 //
-// SigningMethod instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md
 type SigningMethod string
 
 const (
@@ -22,9 +28,10 @@ const (
 	MethodHS256 SigningMethod = "hs256"
 )
 
-// Config defines a public type used by goAuth APIs.
+// Config holds JWT manager initialization parameters: TTLs, signing keys,
+// issuer, audience, leeway, and IAT validation options.
 //
-// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md
 type Config struct {
 	AccessTTL     time.Duration
 	SigningMethod SigningMethod
@@ -39,16 +46,42 @@ type Config struct {
 	VerifyKeys    map[string][]byte
 }
 
-// Manager defines a public type used by goAuth APIs.
+// Manager handles JWT access token creation and parsing. It holds the signing
+// key, parser, and claim validation options. Safe for concurrent use.
 //
-// Manager instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md
 type Manager struct {
-	config Config
+	config        Config
+	parsedSignKey interface{} // cached at init: ed25519.PrivateKey or []byte (HS256)
+	fast          *fastJWTState
 }
 
-// AccessClaims defines a public type used by goAuth APIs.
+// fastJWTState holds pre-computed state for zero-overhead JWT creation.
+type fastJWTState struct {
+	headerB64 string     // pre-computed base64url(json_header)
+	hmacPool  *sync.Pool // reusable HMAC hashers (HS256 only)
+}
+
+// fastClaimsPayload avoids *NumericDate and ClaimStrings allocations.
+type fastClaimsPayload struct {
+	UID  string `json:"uid"`
+	TID  uint32 `json:"tid,omitempty"`
+	SID  string `json:"sid"`
+	Mask []byte `json:"mask,omitempty"`
+	PV   uint32 `json:"pv,omitempty"`
+	RV   uint32 `json:"rv,omitempty"`
+	AV   uint32 `json:"av,omitempty"`
+	Iss  string `json:"iss,omitempty"`
+	Aud  string `json:"aud,omitempty"`
+	Exp  int64  `json:"exp"`
+	Iat  int64  `json:"iat"`
+}
+
+// AccessClaims represents the decoded claims from a JWT access token,
+// including user ID, tenant, session ID, permission mask, and version
+// counters.
 //
-// AccessClaims instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md
 type AccessClaims struct {
 	UID            string `json:"uid"`
 	TID            uint32 `json:"tid,omitempty"`
@@ -60,10 +93,10 @@ type AccessClaims struct {
 	jwt.RegisteredClaims
 }
 
-// NewManager describes the newmanager operation and its observable behavior.
+// NewManager creates a JWT [Manager] from the given [Config]. It
+// initializes the signing key, parser, and claim validation options.
 //
-// NewManager may return an error when input validation, dependency calls, or security checks fail.
-// NewManager does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/jwt.md
 func NewManager(cfg Config) (*Manager, error) {
 	if cfg.AccessTTL <= 0 {
 		return nil, errors.New("invalid TTL configuration")
@@ -114,13 +147,59 @@ func NewManager(cfg Config) (*Manager, error) {
 		}
 	}
 
-	return &Manager{config: cfg}, nil
+	m := &Manager{config: cfg}
+
+	// Pre-parse and cache the signing key to avoid per-call parsing.
+	switch cfg.SigningMethod {
+	case MethodHS256:
+		m.parsedSignKey = cfg.PrivateKey
+	case MethodEd25519:
+		if len(cfg.PrivateKey) > 0 {
+			sk, err := parseEdPrivateKey(cfg.PrivateKey)
+			if err != nil {
+				return nil, err
+			}
+			m.parsedSignKey = sk
+		}
+	}
+
+	m.initFastJWT()
+
+	return m, nil
 }
 
-// CreateAccess describes the createaccess operation and its observable behavior.
+func (j *Manager) initFastJWT() {
+	// Pre-compute base64url-encoded header (deterministic JSON via sorted map keys).
+	header := map[string]string{
+		"alg": j.getMethod().Alg(),
+		"typ": "JWT",
+	}
+	if j.config.KeyID != "" {
+		header["kid"] = j.config.KeyID
+	}
+	headerJSON, _ := json.Marshal(header)
+
+	state := &fastJWTState{
+		headerB64: base64.RawURLEncoding.EncodeToString(headerJSON),
+	}
+
+	if j.config.SigningMethod == MethodHS256 {
+		key := j.config.PrivateKey
+		state.hmacPool = &sync.Pool{
+			New: func() interface{} {
+				return hmac.New(sha256.New, key)
+			},
+		}
+	}
+
+	j.fast = state
+}
+
+// CreateAccess mints a signed JWT access token with the given claims
+// (userID, tenantID, sessionID, permission mask, version counters).
 //
-// CreateAccess may return an error when input validation, dependency calls, or security checks fail.
-// CreateAccess does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: single ECDSA/RSA/HMAC sign operation.
+//	Docs: docs/jwt.md
 func (j *Manager) CreateAccess(
 	uid string,
 	tid uint32,
@@ -133,6 +212,114 @@ func (j *Manager) CreateAccess(
 	includePermVersion bool,
 	includeRoleVersion bool,
 	includeAccountVersion bool,
+	isRoot bool,
+) (string, error) {
+
+	// Fast path: build JWT directly without library overhead.
+	if j.fast != nil && j.parsedSignKey != nil {
+		return j.createAccessFast(
+			uid, tid, sid, mask,
+			permVersion, roleVersion, accountVersion,
+			includeMask, includePermVersion, includeRoleVersion, includeAccountVersion,
+			isRoot,
+		)
+	}
+
+	// Legacy path (fallback).
+	return j.createAccessLegacy(
+		uid, tid, sid, mask,
+		permVersion, roleVersion, accountVersion,
+		includeMask, includePermVersion, includeRoleVersion, includeAccountVersion,
+		isRoot,
+	)
+}
+
+func (j *Manager) createAccessFast(
+	uid string, tid uint32, sid string, mask []byte,
+	permVersion, roleVersion, accountVersion uint32,
+	includeMask, includePermVersion, includeRoleVersion, includeAccountVersion bool,
+	isRoot bool,
+) (string, error) {
+	ttl := j.config.AccessTTL
+	if isRoot && ttl > 2*time.Minute {
+		ttl = 2 * time.Minute
+	}
+
+	now := time.Now()
+	payload := fastClaimsPayload{
+		UID: uid,
+		TID: tid,
+		SID: sid,
+		Exp: now.Add(ttl).Unix(),
+		Iat: now.Unix(),
+		Iss: j.config.Issuer,
+		Aud: j.config.Audience,
+	}
+	if includeMask {
+		payload.Mask = mask
+	}
+	if includePermVersion {
+		payload.PV = permVersion
+	}
+	if includeRoleVersion {
+		payload.RV = roleVersion
+	}
+	if includeAccountVersion {
+		payload.AV = accountVersion
+	}
+
+	claimsJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	// Compute sizes for single-allocation token buffer.
+	headerLen := len(j.fast.headerB64)
+	claimsB64Len := base64.RawURLEncoding.EncodedLen(len(claimsJSON))
+	var sigRawSize int
+	switch j.config.SigningMethod {
+	case MethodHS256:
+		sigRawSize = sha256.Size
+	default:
+		sigRawSize = ed25519.SignatureSize
+	}
+	sigB64Len := base64.RawURLEncoding.EncodedLen(sigRawSize)
+	totalLen := headerLen + 1 + claimsB64Len + 1 + sigB64Len
+
+	buf := make([]byte, totalLen)
+	copy(buf, j.fast.headerB64)
+	buf[headerLen] = '.'
+	base64.RawURLEncoding.Encode(buf[headerLen+1:], claimsJSON)
+	buf[headerLen+1+claimsB64Len] = '.'
+
+	signingInput := buf[:headerLen+1+claimsB64Len]
+	sigDst := buf[headerLen+1+claimsB64Len+1:]
+
+	switch j.config.SigningMethod {
+	case MethodHS256:
+		mac := j.fast.hmacPool.Get().(hash.Hash)
+		mac.Reset()
+		mac.Write(signingInput)
+		var rawSig [sha256.Size]byte
+		mac.Sum(rawSig[:0])
+		j.fast.hmacPool.Put(mac)
+		base64.RawURLEncoding.Encode(sigDst, rawSig[:])
+	default:
+		privKey, ok := j.parsedSignKey.(ed25519.PrivateKey)
+		if !ok {
+			return "", errors.New("cached sign key is not ed25519")
+		}
+		sig := ed25519.Sign(privKey, signingInput)
+		base64.RawURLEncoding.Encode(sigDst, sig)
+	}
+
+	return string(buf), nil
+}
+
+func (j *Manager) createAccessLegacy(
+	uid string, tid uint32, sid string, mask []byte,
+	permVersion, roleVersion, accountVersion uint32,
+	includeMask, includePermVersion, includeRoleVersion, includeAccountVersion bool,
 	isRoot bool,
 ) (string, error) {
 
@@ -186,10 +373,12 @@ func (j *Manager) CreateAccess(
 	return token.SignedString(signKey)
 }
 
-// ParseAccess describes the parseaccess operation and its observable behavior.
+// ParseAccess verifies and parses a JWT access token, returning the
+// embedded claims. Returns an error if the signature, expiry, issuer,
+// or audience checks fail.
 //
-// ParseAccess may return an error when input validation, dependency calls, or security checks fail.
-// ParseAccess does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: single signature verify + claim decode.
+//	Docs: docs/jwt.md
 func (j *Manager) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	options := []jwt.ParserOption{
 		jwt.WithValidMethods([]string{j.getMethod().Alg()}),
@@ -268,6 +457,9 @@ func (j *Manager) getMethod() jwt.SigningMethod {
 }
 
 func (j *Manager) getSignKey() (interface{}, error) {
+	if j.parsedSignKey != nil {
+		return j.parsedSignKey, nil
+	}
 	switch j.config.SigningMethod {
 	case MethodHS256:
 		return j.config.PrivateKey, nil

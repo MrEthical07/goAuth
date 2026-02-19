@@ -104,3 +104,59 @@ cfg.PublicKey = newPubKey
 - `VerifyKeys` must include the current `KeyID` — validation fails if the signing kid is not in the verify set.
 - Root accounts get a forced 2-minute max TTL regardless of `AccessTTL` setting.
 - `ParseAccess` returns `ErrTokenInvalid` for expired tokens (check `token clock skew exceeded` for clock issues).
+
+## Architecture
+
+The `jwt` package is a self-contained module with no Redis dependency. It is instantiated by `Builder.Build()` and injected into the engine as the sole token issuer/verifier.
+
+```
+jwt.NewManager(cfg)
+  ├─ Config validation (key sizes, TTL, signing method)
+  ├─ Key parsing (Ed25519 or HS256)
+  ├─ VerifyKeys map initialization
+  └─ Return *Manager (immutable after construction)
+```
+
+`CreateAccess` is called by login and refresh flows. `ParseAccess` is the hot path for every validation request in all modes (JWT-Only, Hybrid, Strict).
+
+## Error Reference
+
+| Error | Condition |
+|-------|----------|
+| `ErrTokenInvalid` | Token expired, malformed, or signature invalid |
+| `ErrTokenClockSkew` | Token `iat` claim is too far in the future |
+| `ErrJWTConfig` | Invalid JWT configuration (bad keys, unsupported method) |
+| `ErrUnauthorized` | Generic authorization failure (wraps token errors) |
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Token Issuance | `jwt.Manager.CreateAccess` | Called by `internal/flows/login.go`, `internal/flows/refresh.go` |
+| Token Verification | `jwt.Manager.ParseAccess` | Called by `internal/flows/validate.go` |
+| Key Rotation | Config-driven (`VerifyKeys` map) | No dedicated flow — config change + restart |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Manager Hardening | `jwt/manager_hardening_test.go` | Key validation, TTL caps, edge cases |
+| Fuzz Testing | `jwt/fuzz_parse_test.go` | Random input parsing robustness |
+| Integration | `test/jwt_integration_test.go` | End-to-end token create/parse |
+| Validation Modes | `validation_mode_test.go` | JWT-Only mode exercises ParseAccess |
+| Benchmarks | `auth_bench_test.go` | Token creation and parsing latency |
+
+## Migration Notes
+
+- **Key rotation**: Add the new public key to `VerifyKeys` before switching `KeyID` and `PrivateKey`. Both keys will verify during the transition window.
+- **Ed25519 → HS256**: Not recommended. If switching signing methods, all existing tokens become invalid immediately.
+- **TTL changes**: Reducing `AccessTTL` only affects newly issued tokens. Existing tokens remain valid until their original expiry.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Security Model](security.md)
+- [Engine](engine.md)
+- [Middleware](middleware.md)
+- [Session](session.md)

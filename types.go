@@ -9,9 +9,9 @@ import (
 	internalmetrics "github.com/MrEthical07/goAuth/internal/metrics"
 )
 
-// AccountStatus defines a public type used by goAuth APIs.
+// AccountStatus represents the lifecycle state of a user account.
 //
-// AccountStatus instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/functionality-account-status.md
 type AccountStatus uint8
 
 const (
@@ -30,18 +30,19 @@ const (
 	StatusPendingVerification = AccountPendingVerification
 )
 
-// PermissionMask defines a public type used by goAuth APIs.
+// PermissionMask is the interface satisfied by all bitmask widths
+// ([permission.Mask64], [permission.Mask128], [permission.Mask256],
+// [permission.Mask512]).
 //
-// PermissionMask instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/permission.md
 type PermissionMask interface {
 	Has(bit int) bool
 	Set(bit int)
 	Raw() any
 }
 
-// User defines a public type used by goAuth APIs.
-//
-// User instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// User is a minimal user representation used by the legacy [UserStore]
+// interface. Prefer [UserRecord] for new integrations.
 type User struct {
 	ID             string
 	TenantID       string
@@ -52,9 +53,11 @@ type User struct {
 	RoleVersion    uint32
 }
 
-// AuthResult defines a public type used by goAuth APIs.
+// AuthResult is returned by [Engine.Validate] and [Engine.ValidateAccess].
+// It contains the authenticated user’s ID, tenant, role, decoded permission
+// mask, and optionally the permission name list.
 //
-// AuthResult instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md, docs/permission.md
 type AuthResult struct {
 	UserID   string
 	TenantID string
@@ -66,33 +69,31 @@ type AuthResult struct {
 	Permissions []string
 }
 
-// UserStore defines a public type used by goAuth APIs.
-//
-// UserStore instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// UserStore is a legacy credential-lookup interface. Prefer [UserProvider]
+// for full account lifecycle support.
 type UserStore interface {
 	GetByIdentifier(ctx context.Context, identifier string) (*User, error)
 	UpdatePermissionMask(ctx context.Context, userID string, mask PermissionMask) error
 }
 
-// RoleStore defines a public type used by goAuth APIs.
-//
-// RoleStore instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// RoleStore is a legacy role-lookup interface.
 type RoleStore interface {
 	GetRoleMask(ctx context.Context, tenantID, role string) (PermissionMask, uint32, error)
 }
 
-// KeyBuilder defines a public type used by goAuth APIs.
-//
-// KeyBuilder instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// KeyBuilder defines the Redis key layout for sessions and version counters.
 type KeyBuilder interface {
 	SessionKey(tenantID, sessionID string) string
 	UserVersionKey(tenantID, userID string) string
 	RoleVersionKey(tenantID, role string) string
 }
 
-// UserProvider defines a public type used by goAuth APIs.
+// UserProvider is the primary interface that callers must implement to
+// integrate goAuth with their user database. It covers credential lookup,
+// account creation, password updates, TOTP secret management, and backup
+// code storage.
 //
-// UserProvider instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/engine.md, docs/usage.md
 type UserProvider interface {
 	GetUserByIdentifier(identifier string) (UserRecord, error)
 	GetUserByID(userID string) (UserRecord, error)
@@ -109,9 +110,8 @@ type UserProvider interface {
 	ConsumeBackupCode(ctx context.Context, userID string, codeHash [32]byte) (bool, error)
 }
 
-// UserRecord defines a public type used by goAuth APIs.
-//
-// UserRecord instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// UserRecord is the full account record returned by [UserProvider].
+// It carries credential hashes, status, role, and versioning counters.
 type UserRecord struct {
 	UserID            string
 	Identifier        string
@@ -125,25 +125,23 @@ type UserRecord struct {
 	AccountVersion    uint32
 }
 
-// TOTPProvision defines a public type used by goAuth APIs.
-//
-// TOTPProvision instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// TOTPProvision holds the raw TOTP secret and otpauth:// URI returned by
+// [Engine.ProvisionTOTP].
 type TOTPProvision struct {
 	Secret string
 	URI    string
 }
 
-// TOTPSetup defines a public type used by goAuth APIs.
-//
-// TOTPSetup instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// TOTPSetup holds the base32-encoded TOTP secret and QR code URL returned
+// by [Engine.GenerateTOTPSetup].
 type TOTPSetup struct {
 	SecretBase32 string
 	QRCodeURL    string
 }
 
-// TOTPRecord defines a public type used by goAuth APIs.
-//
-// TOTPRecord instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// TOTPRecord is retrieved from [UserProvider.GetTOTPSecret]. It carries
+// the encrypted secret, enabled/verified flags, and the last-used HOTP
+// counter for replay protection.
 type TOTPRecord struct {
 	Secret          []byte
 	Enabled         bool
@@ -151,9 +149,9 @@ type TOTPRecord struct {
 	LastUsedCounter int64
 }
 
-// LoginResult defines a public type used by goAuth APIs.
-//
-// LoginResult instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// LoginResult is returned by [Engine.LoginWithResult] and
+// [Engine.ConfirmLoginMFA]. It includes tokens when authentication
+// succeeds, or MFA metadata when a second factor is required.
 type LoginResult struct {
 	AccessToken  string
 	RefreshToken string
@@ -163,16 +161,13 @@ type LoginResult struct {
 	MFASession  string
 }
 
-// BackupCodeRecord defines a public type used by goAuth APIs.
-//
-// BackupCodeRecord instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// BackupCodeRecord stores the SHA-256 hash of a single backup code.
+// The plaintext is never persisted.
 type BackupCodeRecord struct {
 	Hash [32]byte
 }
 
-// CreateUserInput defines a public type used by goAuth APIs.
-//
-// CreateUserInput instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// CreateUserInput is the input for [UserProvider.CreateUser].
 type CreateUserInput struct {
 	Identifier        string
 	PasswordHash      string
@@ -184,18 +179,17 @@ type CreateUserInput struct {
 	AccountVersion    uint32
 }
 
-// CreateAccountRequest defines a public type used by goAuth APIs.
-//
-// CreateAccountRequest instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// CreateAccountRequest is the input for [Engine.CreateAccount].
+// Identifier and Password are required; Role defaults to
+// [Config.Account.DefaultRole] when empty.
 type CreateAccountRequest struct {
 	Identifier string
 	Password   string
 	Role       string
 }
 
-// CreateAccountResult defines a public type used by goAuth APIs.
-//
-// CreateAccountResult instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// CreateAccountResult is returned by [Engine.CreateAccount]. It includes
+// the new UserID and, when AutoLogin is enabled, access+refresh tokens.
 type CreateAccountResult struct {
 	UserID       string
 	Role         string
@@ -203,7 +197,10 @@ type CreateAccountResult struct {
 	RefreshToken string
 }
 
-// SecurityReport defines a public type used by goAuth APIs.
+// SecurityReport is a read-only snapshot of the engine’s security posture,
+// returned by [Engine.SecurityReport].
+//
+//	Docs: docs/security.md
 type SecurityReport struct {
 	ProductionMode               bool
 	SigningAlgorithm             string
@@ -223,7 +220,7 @@ type SecurityReport struct {
 	PasswordResetActive          bool
 }
 
-// PasswordConfigReport defines a public type used by goAuth APIs.
+// PasswordConfigReport contains the Argon2 parameters active in the engine.
 type PasswordConfigReport struct {
 	Memory      uint32
 	Time        uint32
@@ -232,32 +229,48 @@ type PasswordConfigReport struct {
 	KeyLength   uint32
 }
 
-// AuditEvent defines a public type used by goAuth APIs.
+// AuditEvent is a structured audit record emitted by the engine.
+//
+//	Docs: docs/audit.md
 type AuditEvent = internalaudit.Event
 
-// AuditSink defines a public type used by goAuth APIs.
+// AuditSink receives [AuditEvent] values from the engine’s audit dispatcher.
+//
+//	Docs: docs/audit.md
 type AuditSink = internalaudit.Sink
 
-// NoOpSink defines a public type used by goAuth APIs.
+// NoOpSink is an [AuditSink] that silently discards all events.
 type NoOpSink = internalaudit.NoOpSink
 
-// ChannelSink defines a public type used by goAuth APIs.
+// ChannelSink is a buffered channel-based [AuditSink].
+//
+//	Docs: docs/audit.md
 type ChannelSink = internalaudit.ChannelSink
 
-// JSONWriterSink defines a public type used by goAuth APIs.
+// JSONWriterSink is an [AuditSink] that writes JSON-encoded events to an
+// [io.Writer].
+//
+//	Docs: docs/audit.md
 type JSONWriterSink = internalaudit.JSONWriterSink
 
-// NewChannelSink describes the newchannelsink operation and its observable behavior.
+// NewChannelSink creates a [ChannelSink] with the given buffer capacity.
+//
+//	Docs: docs/audit.md
 func NewChannelSink(buffer int) *ChannelSink {
 	return internalaudit.NewChannelSink(buffer)
 }
 
-// NewJSONWriterSink describes the newjsonwritersink operation and its observable behavior.
+// NewJSONWriterSink creates a [JSONWriterSink] that writes to w.
+//
+//	Docs: docs/audit.md
 func NewJSONWriterSink(w io.Writer) *JSONWriterSink {
 	return internalaudit.NewJSONWriterSink(w)
 }
 
-// MetricID defines a public type used by goAuth APIs.
+// MetricID identifies a specific counter or histogram bucket in the
+// in-process metrics system.
+//
+//	Docs: docs/metrics.md
 type MetricID = internalmetrics.MetricID
 
 const (
@@ -353,13 +366,20 @@ const (
 	metricIDCount = internalmetrics.MetricIDCount
 )
 
-// Metrics defines a public type used by goAuth APIs.
+// Metrics holds atomic counters and optional latency histograms.
+//
+//	Docs: docs/metrics.md
 type Metrics = internalmetrics.Metrics
 
-// MetricsSnapshot defines a public type used by goAuth APIs.
+// MetricsSnapshot is a point-in-time deep copy of all metrics.
+//
+//	Docs: docs/metrics.md
 type MetricsSnapshot = internalmetrics.Snapshot
 
-// NewMetrics describes the newmetrics operation and its observable behavior.
+// NewMetrics creates a new [Metrics] instance configured by the given
+// [MetricsConfig]. When Enabled is false, all operations are no-ops.
+//
+//	Docs: docs/metrics.md
 func NewMetrics(cfg MetricsConfig) *Metrics {
 	return internalmetrics.New(internalmetrics.Config{
 		Enabled:       cfg.Enabled,

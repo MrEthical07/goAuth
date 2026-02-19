@@ -107,3 +107,59 @@ rotated, err := store.RotateRefreshHash(ctx, "tenant-0", "sid-abc", oldHash, new
 - `Delete` is idempotent — deleting a non-existent session succeeds silently.
 - Counter can never go negative (Lua script clamps at 0).
 - Session schema migration happens transparently on `Decode` — v1–v4 sessions are read-compatible.
+
+## Architecture
+
+The session store is a Redis-backed persistence layer with no application-level caching. All operations go directly to Redis via single commands, pipelines, or Lua scripts.
+
+```
+session.NewStore(redis, prefix, sliding, jitter, jitterRange)
+  ├─ Key scheme: {prefix}:s:{tenantID}:{sessionID}  (session data)
+  │              {prefix}:u:{tenantID}:{userID}      (session ID set)
+  │              {prefix}:c:{tenantID}               (tenant counter)
+  ├─ Binary codec: Encode/Decode (v5 schema, backward-compatible v1–v4)
+  └─ Lua scripts: RotateRefreshHash (CAS), Delete (DEL+SREM+DECR)
+```
+
+The store is injected into the engine and consumed by login, refresh, validate, logout, and introspection flows.
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Session Save | `Store.Save` | Called by `internal/flows/login.go` |
+| Session Read | `Store.Get`, `Store.GetReadOnly` | Called by `internal/flows/validate.go`, `internal/flows/introspection.go` |
+| Refresh Rotation | `Store.RotateRefreshHash` | Called by `internal/flows/refresh.go` |
+| Session Delete | `Store.Delete`, `Store.DeleteAllForUser` | Called by `internal/flows/logout.go`, `internal/flows/account_status.go` |
+| Replay Tracking | `Store.TrackReplayAnomaly` | Called by `internal/flows/refresh.go` |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Schema Versioning | `session/schema_version_test.go` | Encode/decode v1–v5, migration |
+| Fuzz Testing | `session/fuzz_decode_test.go` | Random binary input decoding |
+| Delete Idempotency | `session/store_delete_idempotent_test.go` | Double-delete safety |
+| Counter Invariant | `session/store_counter_never_negative_test.go` | Counter floor at zero |
+| Session Hardening | `engine_session_hardening_test.go` | Version drift, strict validation |
+| Refresh Concurrency | `refresh_concurrency_test.go` | Concurrent rotation races |
+| Refresh Fuzz | `internal/fuzz_refresh_test.go` | Token encode/decode fuzzing |
+| Store Consistency | `test/store_consistency_test.go` | Save/Get round-trip |
+| Redis Budget | `test/redis_budget_test.go` | Command count verification |
+
+## Migration Notes
+
+- **Session schema v5**: New fields (`AccountVersion`, `Status`) are auto-populated with safe defaults when decoding older schemas. No manual migration needed.
+- **Sliding expiration**: Enabling sliding expiration on an existing deployment extends session lifetimes on next read. Disable and re-enable carefully if strict TTL enforcement is required.
+- **Prefix changes**: Changing the Redis key prefix creates a new namespace. Old sessions become orphaned and expire naturally.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Engine](engine.md)
+- [Security Model](security.md)
+- [Performance](performance.md)
+- [JWT](jwt.md)
+- [Introspection](introspection.md)
+- [Device Binding](device_binding.md)

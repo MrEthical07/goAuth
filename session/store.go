@@ -233,9 +233,10 @@ return {3, updated}
 
 var rotateRefreshLua = redis.NewScript(rotateRefreshScript)
 
-// Store defines a public type used by goAuth APIs.
+// Store is a Redis-backed session store that handles persistence, expiration,
+// sliding window renewal, and atomic refresh-token rotation.
 //
-// Store instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/session.md
 type Store struct {
 	redis         redis.UniversalClient
 	prefix        string
@@ -244,10 +245,11 @@ type Store struct {
 	jitterRange   time.Duration
 }
 
-// NewStore describes the newstore operation and its observable behavior.
+// NewStore creates a session [Store] backed by the given Redis client.
+// prefix sets the Redis key namespace; slidingExp, jitterEnabled, and
+// jitterRange control expiration behavior.
 //
-// NewStore may return an error when input validation, dependency calls, or security checks fail.
-// NewStore does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/session.md
 func NewStore(
 	redis redis.UniversalClient,
 	prefix string,
@@ -291,10 +293,10 @@ func normalizeTenantID(tenantID string) string {
 	return tenantID
 }
 
-// Save describes the save operation and its observable behavior.
+// Save persists a [Session] to Redis with the given TTL.
 //
-// Save may return an error when input validation, dependency calls, or security checks fail.
-// Save does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: 2–3 Redis commands (SET + counter increment).
+//	Docs: docs/session.md
 func (s *Store) Save(ctx context.Context, sess *Session, ttl time.Duration) error {
 	data, err := Encode(sess)
 	if err != nil {
@@ -318,10 +320,11 @@ func (s *Store) Save(ctx context.Context, sess *Session, ttl time.Duration) erro
 	return nil
 }
 
-// Get describes the get operation and its observable behavior.
+// Get retrieves a session by tenant and session ID. Returns the decoded
+// [Session] or an error if not found or Redis is unavailable.
 //
-// Get may return an error when input validation, dependency calls, or security checks fail.
-// Get does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: 1 Redis GET.
+//	Docs: docs/session.md
 func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Duration) (*Session, error) {
 	key := s.key(tenantID, sessionID)
 
@@ -366,10 +369,10 @@ func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Du
 	return sess, nil
 }
 
-// Delete describes the delete operation and its observable behavior.
+// Delete removes a session from Redis and decrements the session counter.
 //
-// Delete may return an error when input validation, dependency calls, or security checks fail.
-// Delete does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: 2–3 Redis commands (DEL + counter decrement).
+//	Docs: docs/session.md
 func (s *Store) Delete(ctx context.Context, tenantID, sessionID string) error {
 	key := s.key(tenantID, sessionID)
 
@@ -748,10 +751,13 @@ func randomJitter(jitterRange time.Duration) (time.Duration, error) {
 	return time.Duration(n.Int64() - max), nil
 }
 
-// RotateRefreshHash describes the rotaterefreshhash operation and its observable behavior.
+// RotateRefreshHash atomically replaces the refresh-token hash in the
+// session using a Lua CAS script. This is the core of the rotation
+// protocol that enables reuse detection.
 //
-// RotateRefreshHash may return an error when input validation, dependency calls, or security checks fail.
-// RotateRefreshHash does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: 1 Lua EVALSHA (atomic compare-and-swap).
+//	Docs: docs/session.md, docs/flows.md#refresh-token-rotation
+//	Security: CAS prevents lost updates under concurrency.
 func (s *Store) RotateRefreshHash(
 	ctx context.Context,
 	tenantID, sessionID string,

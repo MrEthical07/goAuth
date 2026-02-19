@@ -5,9 +5,10 @@ import (
 	"sync"
 )
 
-// RoleManager defines a public type used by goAuth APIs.
+// RoleManager maps role names to pre-computed permission bitmasks.
+// After [RoleManager.Freeze], masks are immutable and safe for concurrent reads.
 //
-// RoleManager instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/permission.md
 type RoleManager struct {
 	registry *Registry
 
@@ -16,10 +17,9 @@ type RoleManager struct {
 	frozen bool
 }
 
-// NewRoleManager describes the newrolemanager operation and its observable behavior.
+// NewRoleManager creates a [RoleManager] backed by the given [Registry].
 //
-// NewRoleManager may return an error when input validation, dependency calls, or security checks fail.
-// NewRoleManager does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/permission.md
 func NewRoleManager(registry *Registry) *RoleManager {
 	return &RoleManager{
 		registry: registry,
@@ -27,10 +27,10 @@ func NewRoleManager(registry *Registry) *RoleManager {
 	}
 }
 
-// RegisterRole describes the registerrole operation and its observable behavior.
+// RegisterRole creates a role with the given permissions and registers it.
+// Must be called before [RoleManager.Freeze].
 //
-// RegisterRole may return an error when input validation, dependency calls, or security checks fail.
-// RegisterRole does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/permission.md
 func (rm *RoleManager) RegisterRole(
 	roleName string,
 	permissionNames []string,
@@ -96,10 +96,8 @@ func (rm *RoleManager) RegisterRole(
 GET MASK FOR ROLE
 */
 
-// GetMask describes the getmask operation and its observable behavior.
-//
-// GetMask may return an error when input validation, dependency calls, or security checks fail.
-// GetMask does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// GetMask returns the pre-computed bitmask for the named role, or false
+// if the role is not registered.
 func (rm *RoleManager) GetMask(roleName string) (interface{}, bool) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
@@ -113,10 +111,7 @@ func (rm *RoleManager) GetMask(roleName string) (interface{}, bool) {
 FREEZE
 */
 
-// Freeze describes the freeze operation and its observable behavior.
-//
-// Freeze may return an error when input validation, dependency calls, or security checks fail.
-// Freeze does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// Freeze prevents further role registrations.
 func (rm *RoleManager) Freeze() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
@@ -128,10 +123,7 @@ func (rm *RoleManager) Freeze() {
 COUNT
 */
 
-// Count describes the count operation and its observable behavior.
-//
-// Count may return an error when input validation, dependency calls, or security checks fail.
-// Count does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// Count returns the number of registered roles.
 func (rm *RoleManager) Count() int {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()

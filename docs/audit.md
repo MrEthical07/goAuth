@@ -73,3 +73,61 @@ func (d *Dispatcher) Dropped() uint64
 
 - All `Emit()` calls are non-blocking under drop-if-full mode.
 - Single goroutine drain avoids contention on the sink.
+
+## Architecture
+
+The audit subsystem uses a single-goroutine drain pattern. `Emit()` writes to a buffered channel; the drain goroutine reads events and forwards them to the configured `Sink`. This decouples security event recording from the hot path.
+
+```
+Engine method
+  └─ dispatcher.Emit(event)
+       └─ chan Event (buffered)
+            └─ drain goroutine → Sink.Emit(event)
+```
+
+The dispatcher is created at `Build()` time and stopped by `Engine.Close()`. When `Enabled == false`, the dispatcher is nil and all audit calls are no-ops.
+
+## Error Reference
+
+| Error / Condition | Description |
+|-------------------|------------|
+| Dropped events | Channel full under `DropIfFull=true`; counter incremented via `atomic.AddUint64` |
+| Blocked caller | Channel full under `DropIfFull=false`; caller blocks until space or context cancellation |
+| Nil dispatcher | `Enabled=false` — no error, all calls are silently skipped |
+
+The audit system does not return errors to callers. Issues are observable via `Dropped()` counter and the `goauth_audit_dropped_total` Prometheus metric.
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Event Dispatch | `Dispatcher.Emit` | `internal/audit/dispatcher.go` |
+| Drain Loop | `Dispatcher` goroutine | `internal/audit/dispatcher.go` |
+| Graceful Shutdown | `Dispatcher.Close` | `internal/audit/dispatcher.go` |
+| Channel Sink | `NewChannelSink` | `internal/audit/sink.go` |
+| JSON Writer Sink | `NewJSONWriterSink` | `internal/audit/sink.go` |
+
+Audit events are emitted by every flow in `internal/flows/` (login, refresh, logout, password change/reset, email verification, MFA, account status, device binding).
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Audit Dispatch | `audit_test.go` | Emit, drain, close, drop-if-full |
+| Config Lint | `config_lint_test.go` | Audit-disabled warning |
+| Security Invariants | `security_invariants_test.go` | Audit event coverage |
+| Metrics Export | `metrics/export/prometheus/exporter_test.go` | `goauth_audit_dropped_total` |
+
+## Migration Notes
+
+- **Enabling audit**: Setting `Audit.Enabled = true` starts the drain goroutine. Ensure a `Sink` is configured via `WithAuditSink()` or events will be dropped.
+- **Buffer sizing**: `BufferSize` controls channel capacity. Under-sizing causes drops (if `DropIfFull`) or backpressure (if not). Monitor `Dropped()` after deployment.
+- **Custom sinks**: Implement the `Sink` interface for custom integrations (e.g., Kafka, database). The sink must be safe for concurrent use by the drain goroutine.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Metrics](metrics.md)
+- [Security Model](security.md)
+- [Engine](engine.md)

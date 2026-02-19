@@ -12,9 +12,11 @@ import (
 	"time"
 )
 
-// Config defines a public type used by goAuth APIs.
+// Config is the top-level configuration struct for the goAuth [Engine].
+// It embeds sub-configs for JWT, sessions, passwords, MFA, rate limiting,
+// audit, metrics, and more. Obtain defaults via [DefaultConfig].
 //
-// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/config.md
 type Config struct {
 	JWT               JWTConfig
 	Session           SessionConfig
@@ -43,9 +45,9 @@ JWT CONFIG
 ====================================
 */
 
-// JWTConfig defines a public type used by goAuth APIs.
+// JWTConfig controls JWT access token signing and validation parameters.
 //
-// JWTConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md, docs/config.md
 type JWTConfig struct {
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration
@@ -66,9 +68,9 @@ SESSION CONFIG
 ====================================
 */
 
-// SessionConfig defines a public type used by goAuth APIs.
+// SessionConfig controls Redis session storage, sliding expiration, and jitter.
 //
-// SessionConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/session.md, docs/config.md
 type SessionConfig struct {
 	RedisPrefix             string
 	SlidingExpiration       bool
@@ -85,9 +87,9 @@ PASSWORD CONFIG
 ====================================
 */
 
-// PasswordConfig defines a public type used by goAuth APIs.
+// PasswordConfig holds Argon2id hashing parameters.
 //
-// PasswordConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password.md, docs/config.md
 type PasswordConfig struct {
 	Memory         uint32 // in KB
 	Time           uint32
@@ -97,9 +99,10 @@ type PasswordConfig struct {
 	UpgradeOnLogin bool
 }
 
-// ResetStrategyType defines a public type used by goAuth APIs.
+// ResetStrategyType selects the password-reset challenge delivery strategy
+// (link-based or OTP-based).
 //
-// ResetStrategyType instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password_reset.md
 type ResetStrategyType int
 
 const (
@@ -111,9 +114,10 @@ const (
 	ResetUUID
 )
 
-// PasswordResetConfig defines a public type used by goAuth APIs.
+// PasswordResetConfig controls the password-reset flow: strategy, TTLs,
+// rate limits, and attempt caps.
 //
-// PasswordResetConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password_reset.md, docs/config.md
 type PasswordResetConfig struct {
 	Enabled                  bool
 	Strategy                 ResetStrategyType
@@ -124,9 +128,10 @@ type PasswordResetConfig struct {
 	OTPDigits                int
 }
 
-// VerificationStrategyType defines a public type used by goAuth APIs.
+// VerificationStrategyType selects the email verification challenge strategy
+// (link-based or OTP-based).
 //
-// VerificationStrategyType instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/email_verification.md
 type VerificationStrategyType int
 
 const (
@@ -138,9 +143,9 @@ const (
 	VerificationUUID
 )
 
-// EmailVerificationConfig defines a public type used by goAuth APIs.
+// EmailVerificationConfig controls the email verification flow.
 //
-// EmailVerificationConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/email_verification.md, docs/config.md
 type EmailVerificationConfig struct {
 	Enabled                  bool
 	Strategy                 VerificationStrategyType
@@ -152,9 +157,10 @@ type EmailVerificationConfig struct {
 	OTPDigits                int
 }
 
-// AccountConfig defines a public type used by goAuth APIs.
+// AccountConfig controls account creation, auto-login, default role, and
+// rate limiting.
 //
-// AccountConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/config.md
 type AccountConfig struct {
 	Enabled                               bool
 	AutoLogin                             bool
@@ -166,18 +172,20 @@ type AccountConfig struct {
 	AllowDuplicateIdentifierAcrossTenants bool
 }
 
-// AuditConfig defines a public type used by goAuth APIs.
+// AuditConfig controls the audit event dispatcher: enable/disable,
+// buffer size, and overflow policy.
 //
-// AuditConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/audit.md, docs/config.md
 type AuditConfig struct {
 	Enabled    bool
 	BufferSize int
 	DropIfFull bool
 }
 
-// MetricsConfig defines a public type used by goAuth APIs.
+// MetricsConfig controls in-process metrics: counters and optional latency
+// histograms.
 //
-// MetricsConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/metrics.md, docs/config.md
 type MetricsConfig struct {
 	Enabled                 bool
 	EnableLatencyHistograms bool
@@ -189,9 +197,10 @@ SECURITY CONFIG
 ====================================
 */
 
-// SecurityConfig defines a public type used by goAuth APIs.
+// SecurityConfig holds security-related settings: rate limits, lockout,
+// refresh rotation, version checking, and production mode flags.
 //
-// SecurityConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/security.md, docs/config.md
 type SecurityConfig struct {
 	ProductionMode               bool
 	EnableIPBinding              bool
@@ -216,9 +225,11 @@ type SecurityConfig struct {
 	AutoLockoutDuration          time.Duration // 0 = manual unlock only
 }
 
-// SessionHardeningConfig defines a public type used by goAuth APIs.
+// SessionHardeningConfig controls session limits: max per user/tenant,
+// single-session enforcement, concurrent login caps, replay tracking,
+// and clock-skew tolerance.
 //
-// SessionHardeningConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/session.md, docs/config.md
 type SessionHardeningConfig struct {
 	MaxSessionsPerUser   int
 	MaxSessionsPerTenant int
@@ -228,9 +239,10 @@ type SessionHardeningConfig struct {
 	MaxClockSkew         time.Duration
 }
 
-// DeviceBindingConfig defines a public type used by goAuth APIs.
+// DeviceBindingConfig controls IP and User-Agent binding checks on
+// session validation.
 //
-// DeviceBindingConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/device_binding.md, docs/config.md
 type DeviceBindingConfig struct {
 	Enabled                 bool
 	EnforceIPBinding        bool
@@ -239,9 +251,10 @@ type DeviceBindingConfig struct {
 	DetectUserAgentChange   bool
 }
 
-// TOTPConfig defines a public type used by goAuth APIs.
+// TOTPConfig controls TOTP-based two-factor authentication: issuer,
+// period, digits, algorithm, skew, backup codes, and enforcement flags.
 //
-// TOTPConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/mfa.md, docs/config.md
 type TOTPConfig struct {
 	Enabled                     bool
 	Issuer                      string
@@ -277,9 +290,9 @@ MULTI TENANT CONFIG
 ====================================
 */
 
-// MultiTenantConfig defines a public type used by goAuth APIs.
+// MultiTenantConfig enables tenant-scoped session isolation.
 //
-// MultiTenantConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/config.md
 type MultiTenantConfig struct {
 	Enabled          bool
 	TenantHeader     string
@@ -292,9 +305,8 @@ DATABASE CONFIG
 ====================================
 */
 
-// DatabaseConfig defines a public type used by goAuth APIs.
-//
-// DatabaseConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// DatabaseConfig holds Redis connection parameters (currently unused;
+// prefer [Builder.WithRedis]).
 type DatabaseConfig struct {
 	Address                   string
 	Password                  string
@@ -310,9 +322,10 @@ PERMISSION CONFIG
 ====================================
 */
 
-// PermissionConfig defines a public type used by goAuth APIs.
+// PermissionConfig controls the bitmask RBAC system: max bits, root-bit
+// reservation, and versioning.
 //
-// PermissionConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/permission.md, docs/config.md
 type PermissionConfig struct {
 	MaxBits         int  // 64, 128, 256, 512 (hard cap)
 	RootBitReserved bool // if true, highest bit is root/super admin
@@ -324,25 +337,23 @@ CACHE CONFIG
 ====================================
 */
 
-// CacheConfig defines a public type used by goAuth APIs.
-//
-// CacheConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// CacheConfig controls optional in-memory caching of session data.
 type CacheConfig struct {
 	LRUEnabled bool
 	Size       int
 }
 
-// ResultConfig defines a public type used by goAuth APIs.
-//
-// ResultConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// ResultConfig controls what data is included in [AuthResult] returned
+// by [Engine.Validate].
 type ResultConfig struct {
 	IncludeRole        bool
 	IncludePermissions bool
 }
 
-// ValidationMode defines a public type used by goAuth APIs.
+// ValidationMode determines how access tokens are validated: JWTOnly
+// (0 Redis), Hybrid, or Strict (1 Redis GET).
 //
-// ValidationMode instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md, docs/engine.md
 type ValidationMode int
 
 const (
@@ -626,10 +637,10 @@ VALIDATION
 ====================================
 */
 
-// Validate describes the validate operation and its observable behavior.
+// Validate checks the Config for invalid or contradictory settings.
+// It is called automatically by [Builder.Build].
 //
-// Validate may return an error when input validation, dependency calls, or security checks fail.
-// Validate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/config.md
 func (c *Config) Validate() error {
 	// JWT
 	if c.JWT.AccessTTL <= 0 {

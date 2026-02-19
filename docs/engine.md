@@ -111,3 +111,81 @@ if result.MFARequired {
 - `Refresh()` permanently invalidates the session if a replayed (old) refresh token is detected.
 - Context must carry tenant ID via `WithTenantID(ctx, id)` for multi-tenant deployments.
 - `ValidateAccess()` always uses the engine's global `ValidationMode`; use `Validate()` for per-route overrides.
+
+## Architecture
+
+The `Engine` is the top-level orchestrator. It holds references to all internal subsystems (JWT manager, session store, rate limiters, audit dispatcher, metrics collector, permission registry, role manager, TOTP manager, and flow functions). All subsystems are initialized and frozen at `Build()` time; the engine is immutable after construction.
+
+```
+Builder.Build()
+  ├─ Config validation + lint
+  ├─ Permission registry freeze
+  ├─ Role manager freeze
+  ├─ JWT manager construction
+  ├─ Session store construction
+  ├─ Rate limiter construction
+  ├─ Domain limiters (TOTP, backup, email, password-reset, account, lockout)
+  ├─ Audit dispatcher start
+  └─ Return *Engine (immutable)
+```
+
+All public `Engine` methods delegate to flow functions in `internal/flows/` which receive a dependency struct. This keeps the engine layer thin and the flow logic testable in isolation.
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Login (no MFA) | `Engine.Login`, `Engine.LoginWithResult` | `internal/flows/login.go` → `RunLoginWithResult` |
+| Login (with MFA) | `Engine.LoginWithTOTP`, `Engine.LoginWithBackupCode` | `internal/flows/login.go` |
+| Confirm MFA Login | `Engine.ConfirmLoginMFA` | `internal/flows/login.go` → `RunConfirmLoginMFAWithType` |
+| Refresh Rotation | `Engine.Refresh` | `internal/flows/refresh.go` → `RunRefresh` |
+| Validate | `Engine.ValidateAccess`, `Engine.Validate` | `internal/flows/validate.go` → `RunValidate` |
+| Logout | `Engine.Logout`, `Engine.LogoutAll` | `internal/flows/logout.go` |
+| Password Change | `Engine.ChangePassword` | `internal/flows/password.go` |
+| Password Reset | `Engine.RequestPasswordReset`, `Engine.ConfirmPasswordReset` | `internal/flows/password_reset.go` |
+| Email Verification | `Engine.RequestEmailVerification`, `Engine.ConfirmEmailVerification` | `internal/flows/email_verification.go` |
+| TOTP Management | `Engine.GenerateTOTPSetup`, `Engine.ConfirmTOTPSetup` | `internal/flows/totp.go` |
+| Account Status | `Engine.DisableAccount`, `Engine.EnableAccount` | `internal/flows/account_status.go` |
+| Introspection | `Engine.Health`, `Engine.ListActiveSessions` | `internal/flows/introspection.go` |
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Login & Auth | `engine_account_test.go` | Account creation, login, credential validation |
+| MFA Login | `engine_mfa_login_test.go` | Challenge flow, confirm, timeout, attempts |
+| TOTP | `engine_totp_test.go` | Setup, confirm, disable |
+| Backup Codes | `engine_backup_codes_test.go` | Generate, consume, regenerate |
+| Password Change | `engine_change_password_test.go` | Old password verify, reuse, policy |
+| Password Reset | `engine_password_reset_test.go` | Request, confirm, strategies, MFA |
+| Email Verification | `engine_email_verification_test.go` | Request, confirm, enumeration resistance |
+| Session Hardening | `engine_session_hardening_test.go` | Version drift, strict mode |
+| Device Binding | `engine_device_binding_test.go` | IP/UA detect and enforce |
+| Account Status | `engine_account_status_test.go` | Disable, lock, enable, delete |
+| Auto Lockout | `engine_auto_lockout_test.go` | Lockout threshold, reset |
+| Introspection | `engine_introspection_test.go` | Session counts, health |
+| Validation Modes | `validation_mode_test.go` | JWT-Only, Hybrid, Strict, per-route |
+| Refresh Concurrency | `refresh_concurrency_test.go` | Concurrent rotation, replay |
+| Security Invariants | `security_invariants_test.go` | Cross-cutting security properties |
+| Benchmarks | `auth_bench_test.go` | Login, refresh, validate latency |
+| Config | `config_test.go`, `config_lint_test.go`, `config_hardening_test.go` | Validation, lint, presets |
+| Integration | `test/public_api_test.go`, `test/engine_delegate_test.go` | Full-stack integration |
+
+## Migration Notes
+
+- **v1 → v2**: `Login()` now returns `ErrMFALoginRequired` instead of a partial token when TOTP is enabled. Callers must handle the MFA flow explicitly.
+- **Builder pattern**: All engine construction must go through `New().With*().Build()`. Direct struct initialization is not supported.
+- **`Close()` required**: Failing to call `Close()` may leak the audit dispatcher goroutine and lose buffered audit events.
+- **Session schema**: The session binary encoding auto-migrates v1–v5 on read. No manual migration is needed.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Architecture](architecture.md)
+- [Security Model](security.md)
+- [API Reference](api-reference.md)
+- [Performance](performance.md)
+- [JWT](jwt.md)
+- [Session](session.md)
+- [Middleware](middleware.md)

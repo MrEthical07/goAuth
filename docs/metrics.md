@@ -80,3 +80,69 @@ All counters are prefixed `goauth_*_total`. Histogram: `goauth_validate_latency_
 - Counters use `atomic.AddUint64` on cache-line-padded slots — no mutexes.
 - `Snapshot()` is the only allocation path (builds maps).
 - Exporters read snapshots on scrape — no locking on write path.
+
+## Architecture
+
+The metrics system uses a fixed-size array of cache-line-padded atomic counters indexed by `MetricID`. Each counter occupies its own cache line to prevent false sharing. Exporters (Prometheus, OTel) call `Snapshot()` on scrape to build a point-in-time view.
+
+```
+Engine method → metrics.Inc(MetricID)
+                  └─ atomic.AddUint64(&counters[id].value, 1)
+
+Prometheus scrape → Snapshot()
+                     └─ iterate counters[] → build map[MetricID]uint64
+```
+
+When `Enabled == false`, `New()` returns nil and all `Inc()`/`Observe()` calls on nil are no-ops.
+
+## Security Considerations
+
+- Metrics endpoints should be protected from public access (e.g., bind to internal interface or require auth).
+- Counter values may reveal operational patterns (login volume, failure rates). Treat the metrics endpoint as sensitive.
+- The `goauth_audit_dropped_total` metric signals potential audit data loss and should trigger alerts.
+
+## Error Reference
+
+The metrics system does not produce errors. All operations are infallible:
+
+| Condition | Behavior |
+|-----------|----------|
+| `Enabled = false` | Nil receiver — all calls are no-ops |
+| Invalid `MetricID` | Out-of-range IDs are silently ignored |
+| `EnableLatency = false` | `Observe()` calls are silently ignored |
+
+## Flow Ownership
+
+| Flow | Entry Point | Internal Module |
+|------|-------------|------------------|
+| Counter Increment | `Metrics.Inc(id)` | `internal/metrics/metrics.go` |
+| Latency Observation | `Metrics.Observe(id, d)` | `internal/metrics/metrics.go` |
+| Snapshot | `Metrics.Snapshot()` | `internal/metrics/metrics.go` |
+| Prometheus Export | `prometheus.NewPrometheusExporter` | `metrics/export/prometheus/` |
+| OTel Export | `otel.NewOTelExporter` | `metrics/export/otel/` |
+
+Metrics are incremented by every flow in `internal/flows/` at the end of each operation.
+
+## Testing Evidence
+
+| Category | File | Notes |
+|----------|------|-------|
+| Core Metrics | `metrics_test.go` | Inc, Observe, Snapshot, nil safety |
+| Benchmarks | `metrics_bench_test.go` | Concurrent Inc, Snapshot allocation |
+| Prometheus Exporter | `metrics/export/prometheus/exporter_test.go` | Output format, counter names |
+| OTel Exporter | `metrics/export/otel/exporter_test.go` | Callback registration, gauge values |
+| Config Lint | `config_lint_test.go` | Metrics-disabled warnings |
+
+## Migration Notes
+
+- **Enabling metrics**: Setting `Metrics.Enabled = true` activates counter tracking. There is no performance penalty when disabled (nil receiver).
+- **Adding exporters**: Prometheus and OTel exporters are additive — enabling one does not affect the other.
+- **Histogram buckets**: The 8 fixed latency buckets (≤5ms to +Inf) are not configurable. Custom bucketing requires a custom exporter.
+
+## See Also
+
+- [Flows](flows.md)
+- [Configuration](config.md)
+- [Audit](audit.md)
+- [Performance](performance.md)
+- [Engine](engine.md)

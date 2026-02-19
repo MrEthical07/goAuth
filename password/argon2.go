@@ -28,9 +28,9 @@ const (
 	DefaultMaxPasswordBytes = 1024
 )
 
-// Config defines a public type used by goAuth APIs.
+// Config holds Argon2id hashing parameters.
 //
-// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password.md
 type Config struct {
 	Memory      uint32
 	Time        uint32
@@ -44,9 +44,9 @@ type Config struct {
 	MaxPasswordBytes int
 }
 
-// Argon2 defines a public type used by goAuth APIs.
+// Argon2 is a password hasher using the Argon2id algorithm.
 //
-// Argon2 instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password.md
 type Argon2 struct {
 	config           Config
 	maxPasswordBytes int
@@ -61,10 +61,10 @@ type parsedPHC struct {
 	keyLength   uint32
 }
 
-// NewArgon2 describes the newargon2 operation and its observable behavior.
+// NewArgon2 creates an Argon2id password hasher with the given parameters.
 //
-// NewArgon2 may return an error when input validation, dependency calls, or security checks fail.
-// NewArgon2 does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/password.md
+//	Security: defaults follow OWASP recommendations.
 func NewArgon2(cfg Config) (*Argon2, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
@@ -78,10 +78,10 @@ func NewArgon2(cfg Config) (*Argon2, error) {
 	return &Argon2{config: cfg, maxPasswordBytes: maxPwd}, nil
 }
 
-// Hash describes the hash operation and its observable behavior.
+// Hash produces an Argon2id hash string from a plaintext password.
 //
-// Hash may return an error when input validation, dependency calls, or security checks fail.
-// Hash does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: ~100 ms with default parameters (64 MB memory).
+//	Docs: docs/password.md
 func (a *Argon2) Hash(password string) (string, error) {
 	// Password processing uses raw string bytes exactly as provided (no Unicode normalization).
 	if len(password) < minPassBytes {
@@ -120,10 +120,11 @@ func (a *Argon2) Hash(password string) (string, error) {
 	), nil
 }
 
-// Verify describes the verify operation and its observable behavior.
+// Verify checks a plaintext password against an Argon2id hash string.
+// Returns (true, nil) on match.
 //
-// Verify may return an error when input validation, dependency calls, or security checks fail.
-// Verify does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: ~100 ms, constant-time comparison.
+//	Docs: docs/password.md
 func (a *Argon2) Verify(password string, encodedHash string) (bool, error) {
 	if len(password) > a.maxPasswordBytes {
 		return false, fmt.Errorf("password exceeds maximum length of %d bytes", a.maxPasswordBytes)
@@ -146,10 +147,10 @@ func (a *Argon2) Verify(password string, encodedHash string) (bool, error) {
 	return subtle.ConstantTimeCompare(computed, parsed.hash) == 1, nil
 }
 
-// NeedsUpgrade describes the needsupgrade operation and its observable behavior.
+// NeedsUpgrade reports whether the given hash was produced with older
+// Argon2 parameters and should be re-hashed on next login.
 //
-// NeedsUpgrade may return an error when input validation, dependency calls, or security checks fail.
-// NeedsUpgrade does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/password.md
 func (a *Argon2) NeedsUpgrade(encodedHash string) (bool, error) {
 	parsed, err := parsePHC(encodedHash)
 	if err != nil {

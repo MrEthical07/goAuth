@@ -1,8 +1,6 @@
 package permission
 
-// Mask256 defines a public type used by goAuth APIs.
-//
-// Mask256 instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// Mask256 is a 256-bit permission bitmask supporting up to 256 permissions.
 type Mask256 struct {
 	A uint64
 	B uint64
@@ -10,10 +8,8 @@ type Mask256 struct {
 	D uint64
 }
 
-// Has describes the has operation and its observable behavior.
-//
-// Has may return an error when input validation, dependency calls, or security checks fail.
-// Has does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// Has reports whether the given bit is set. If rootBitReserved is true
+// and the root bit is set, Has returns true for all bits.
 func (m *Mask256) Has(bit int, rootReserved bool) bool {
 	if bit < 0 || bit >= 256 {
 		return false
@@ -38,10 +34,7 @@ func (m *Mask256) Has(bit int, rootReserved bool) bool {
 	}
 }
 
-// Set describes the set operation and its observable behavior.
-//
-// Set may return an error when input validation, dependency calls, or security checks fail.
-// Set does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// Set sets the given bit in the mask.
 func (m *Mask256) Set(bit int) {
 	if bit < 0 || bit >= 256 {
 		return
@@ -59,10 +52,7 @@ func (m *Mask256) Set(bit int) {
 	}
 }
 
-// Clear describes the clear operation and its observable behavior.
-//
-// Clear may return an error when input validation, dependency calls, or security checks fail.
-// Clear does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// Clear clears the given bit in the mask.
 func (m *Mask256) Clear(bit int) {
 	if bit < 0 || bit >= 256 {
 		return
