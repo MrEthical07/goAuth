@@ -1,6 +1,8 @@
 package goAuth
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
@@ -10,9 +12,11 @@ import (
 	"time"
 )
 
-// Config defines a public type used by goAuth APIs.
+// Config is the top-level configuration struct for the goAuth [Engine].
+// It embeds sub-configs for JWT, sessions, passwords, MFA, rate limiting,
+// audit, metrics, and more. Obtain defaults via [DefaultConfig].
 //
-// Config instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/config.md
 type Config struct {
 	JWT               JWTConfig
 	Session           SessionConfig
@@ -41,9 +45,9 @@ JWT CONFIG
 ====================================
 */
 
-// JWTConfig defines a public type used by goAuth APIs.
+// JWTConfig controls JWT access token signing and validation parameters.
 //
-// JWTConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md, docs/config.md
 type JWTConfig struct {
 	AccessTTL     time.Duration
 	RefreshTTL    time.Duration
@@ -53,6 +57,8 @@ type JWTConfig struct {
 	Issuer        string
 	Audience      string
 	Leeway        time.Duration
+	RequireIAT    bool
+	MaxFutureIAT  time.Duration
 	KeyID         string
 }
 
@@ -62,9 +68,9 @@ SESSION CONFIG
 ====================================
 */
 
-// SessionConfig defines a public type used by goAuth APIs.
+// SessionConfig controls Redis session storage, sliding expiration, and jitter.
 //
-// SessionConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/session.md, docs/config.md
 type SessionConfig struct {
 	RedisPrefix             string
 	SlidingExpiration       bool
@@ -81,9 +87,9 @@ PASSWORD CONFIG
 ====================================
 */
 
-// PasswordConfig defines a public type used by goAuth APIs.
+// PasswordConfig holds Argon2id hashing parameters.
 //
-// PasswordConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password.md, docs/config.md
 type PasswordConfig struct {
 	Memory         uint32 // in KB
 	Time           uint32
@@ -93,9 +99,10 @@ type PasswordConfig struct {
 	UpgradeOnLogin bool
 }
 
-// ResetStrategyType defines a public type used by goAuth APIs.
+// ResetStrategyType selects the password-reset challenge delivery strategy
+// (link-based or OTP-based).
 //
-// ResetStrategyType instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password_reset.md
 type ResetStrategyType int
 
 const (
@@ -107,9 +114,10 @@ const (
 	ResetUUID
 )
 
-// PasswordResetConfig defines a public type used by goAuth APIs.
+// PasswordResetConfig controls the password-reset flow: strategy, TTLs,
+// rate limits, and attempt caps.
 //
-// PasswordResetConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/password_reset.md, docs/config.md
 type PasswordResetConfig struct {
 	Enabled                  bool
 	Strategy                 ResetStrategyType
@@ -120,9 +128,10 @@ type PasswordResetConfig struct {
 	OTPDigits                int
 }
 
-// VerificationStrategyType defines a public type used by goAuth APIs.
+// VerificationStrategyType selects the email verification challenge strategy
+// (link-based or OTP-based).
 //
-// VerificationStrategyType instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/email_verification.md
 type VerificationStrategyType int
 
 const (
@@ -134,9 +143,9 @@ const (
 	VerificationUUID
 )
 
-// EmailVerificationConfig defines a public type used by goAuth APIs.
+// EmailVerificationConfig controls the email verification flow.
 //
-// EmailVerificationConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/email_verification.md, docs/config.md
 type EmailVerificationConfig struct {
 	Enabled                  bool
 	Strategy                 VerificationStrategyType
@@ -148,9 +157,10 @@ type EmailVerificationConfig struct {
 	OTPDigits                int
 }
 
-// AccountConfig defines a public type used by goAuth APIs.
+// AccountConfig controls account creation, auto-login, default role, and
+// rate limiting.
 //
-// AccountConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/config.md
 type AccountConfig struct {
 	Enabled                               bool
 	AutoLogin                             bool
@@ -162,18 +172,20 @@ type AccountConfig struct {
 	AllowDuplicateIdentifierAcrossTenants bool
 }
 
-// AuditConfig defines a public type used by goAuth APIs.
+// AuditConfig controls the audit event dispatcher: enable/disable,
+// buffer size, and overflow policy.
 //
-// AuditConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/audit.md, docs/config.md
 type AuditConfig struct {
 	Enabled    bool
 	BufferSize int
 	DropIfFull bool
 }
 
-// MetricsConfig defines a public type used by goAuth APIs.
+// MetricsConfig controls in-process metrics: counters and optional latency
+// histograms.
 //
-// MetricsConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/metrics.md, docs/config.md
 type MetricsConfig struct {
 	Enabled                 bool
 	EnableLatencyHistograms bool
@@ -185,9 +197,10 @@ SECURITY CONFIG
 ====================================
 */
 
-// SecurityConfig defines a public type used by goAuth APIs.
+// SecurityConfig holds security-related settings: rate limits, lockout,
+// refresh rotation, version checking, and production mode flags.
 //
-// SecurityConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/security.md, docs/config.md
 type SecurityConfig struct {
 	ProductionMode               bool
 	EnableIPBinding              bool
@@ -207,11 +220,16 @@ type SecurityConfig struct {
 	EnablePermissionVersionCheck bool
 	EnableRoleVersionCheck       bool
 	EnableAccountVersionCheck    bool
+	AutoLockoutEnabled           bool
+	AutoLockoutThreshold         int
+	AutoLockoutDuration          time.Duration // 0 = manual unlock only
 }
 
-// SessionHardeningConfig defines a public type used by goAuth APIs.
+// SessionHardeningConfig controls session limits: max per user/tenant,
+// single-session enforcement, concurrent login caps, replay tracking,
+// and clock-skew tolerance.
 //
-// SessionHardeningConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/session.md, docs/config.md
 type SessionHardeningConfig struct {
 	MaxSessionsPerUser   int
 	MaxSessionsPerTenant int
@@ -221,9 +239,10 @@ type SessionHardeningConfig struct {
 	MaxClockSkew         time.Duration
 }
 
-// DeviceBindingConfig defines a public type used by goAuth APIs.
+// DeviceBindingConfig controls IP and User-Agent binding checks on
+// session validation.
 //
-// DeviceBindingConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/device_binding.md, docs/config.md
 type DeviceBindingConfig struct {
 	Enabled                 bool
 	EnforceIPBinding        bool
@@ -232,9 +251,10 @@ type DeviceBindingConfig struct {
 	DetectUserAgentChange   bool
 }
 
-// TOTPConfig defines a public type used by goAuth APIs.
+// TOTPConfig controls TOTP-based two-factor authentication: issuer,
+// period, digits, algorithm, skew, backup codes, and enforcement flags.
 //
-// TOTPConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/mfa.md, docs/config.md
 type TOTPConfig struct {
 	Enabled                     bool
 	Issuer                      string
@@ -254,6 +274,14 @@ type TOTPConfig struct {
 	RequireForSensitive         bool
 	RequireForPasswordReset     bool
 	RequireTOTPForPasswordReset bool
+
+	// MaxVerifyAttempts is the maximum number of TOTP verification
+	// attempts before rate limiting kicks in. Default: 5.
+	MaxVerifyAttempts int
+
+	// VerifyAttemptCooldown is the window after the first failed attempt
+	// in which MaxVerifyAttempts are counted. Default: 1m.
+	VerifyAttemptCooldown time.Duration
 }
 
 /*
@@ -262,9 +290,9 @@ MULTI TENANT CONFIG
 ====================================
 */
 
-// MultiTenantConfig defines a public type used by goAuth APIs.
+// MultiTenantConfig enables tenant-scoped session isolation.
 //
-// MultiTenantConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/config.md
 type MultiTenantConfig struct {
 	Enabled          bool
 	TenantHeader     string
@@ -277,9 +305,8 @@ DATABASE CONFIG
 ====================================
 */
 
-// DatabaseConfig defines a public type used by goAuth APIs.
-//
-// DatabaseConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// DatabaseConfig holds Redis connection parameters (currently unused;
+// prefer [Builder.WithRedis]).
 type DatabaseConfig struct {
 	Address                   string
 	Password                  string
@@ -295,9 +322,10 @@ PERMISSION CONFIG
 ====================================
 */
 
-// PermissionConfig defines a public type used by goAuth APIs.
+// PermissionConfig controls the bitmask RBAC system: max bits, root-bit
+// reservation, and versioning.
 //
-// PermissionConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/permission.md, docs/config.md
 type PermissionConfig struct {
 	MaxBits         int  // 64, 128, 256, 512 (hard cap)
 	RootBitReserved bool // if true, highest bit is root/super admin
@@ -309,36 +337,34 @@ CACHE CONFIG
 ====================================
 */
 
-// CacheConfig defines a public type used by goAuth APIs.
-//
-// CacheConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// CacheConfig controls optional in-memory caching of session data.
 type CacheConfig struct {
 	LRUEnabled bool
 	Size       int
 }
 
-// ResultConfig defines a public type used by goAuth APIs.
-//
-// ResultConfig instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// ResultConfig controls what data is included in [AuthResult] returned
+// by [Engine.Validate].
 type ResultConfig struct {
 	IncludeRole        bool
 	IncludePermissions bool
 }
 
-// ValidationMode defines a public type used by goAuth APIs.
+// ValidationMode determines how access tokens are validated: JWTOnly
+// (0 Redis), Hybrid, or Strict (1 Redis GET).
 //
-// ValidationMode instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/jwt.md, docs/engine.md
 type ValidationMode int
 
 const (
 	// ModeInherit is an exported constant or variable used by the authentication engine.
 	ModeInherit ValidationMode = -1
 
-	// ModeJWTOnly is an exported constant or variable used by the authentication engine.
+	// ModeJWTOnly validates access tokens using JWT claims only (no Redis access in validation path).
 	ModeJWTOnly ValidationMode = iota
-	// ModeHybrid is an exported constant or variable used by the authentication engine.
+	// ModeHybrid validates by JWT by default; strict routes can still force Redis-backed checks.
 	ModeHybrid
-	// ModeStrict is an exported constant or variable used by the authentication engine.
+	// ModeStrict validates every request against Redis and fails closed on Redis/session errors.
 	ModeStrict
 )
 
@@ -359,6 +385,8 @@ func defaultConfig() Config {
 			RefreshTTL:    7 * 24 * time.Hour,
 			SigningMethod: "ed25519",
 			Leeway:        30 * time.Second,
+			RequireIAT:    false,
+			MaxFutureIAT:  10 * time.Minute,
 		},
 		Session: SessionConfig{
 			RedisPrefix:             "as",
@@ -434,6 +462,9 @@ func defaultConfig() Config {
 			EnablePermissionVersionCheck: true,
 			EnableRoleVersionCheck:       true,
 			EnableAccountVersionCheck:    true,
+			AutoLockoutEnabled:           false,
+			AutoLockoutThreshold:         10,
+			AutoLockoutDuration:          30 * time.Minute,
 		},
 		SessionHardening: SessionHardeningConfig{
 			MaxSessionsPerUser:   0,
@@ -466,6 +497,8 @@ func defaultConfig() Config {
 			BackupCodeCooldown:          10 * time.Minute,
 			RequireForLogin:             false,
 			RequireBackupForLogin:       false,
+			MaxVerifyAttempts:           5,
+			VerifyAttemptCooldown:       time.Minute,
 			RequireForSensitive:         false,
 			RequireForPasswordReset:     false,
 			RequireTOTPForPasswordReset: false,
@@ -498,6 +531,90 @@ func defaultConfig() Config {
 	}
 }
 
+// DefaultConfig returns a production-safe baseline preset.
+//
+// The preset keeps hybrid validation, refresh rotation/reuse enforcement, and
+// Ed25519 signing. It also generates an ephemeral signing keypair so the result
+// validates without additional key wiring.
+func DefaultConfig() Config {
+	cfg := defaultConfig()
+	applyPresetBase(&cfg)
+	return cfg
+}
+
+// HighSecurityConfig returns a strict preset for security-critical deployments.
+//
+// This preset enables strict validation mode and tighter token/rate-limiter
+// windows, and enforces iat presence.
+func HighSecurityConfig() Config {
+	cfg := DefaultConfig()
+
+	cfg.Security.ProductionMode = true
+	cfg.ValidationMode = ModeStrict
+	cfg.Security.StrictMode = true
+
+	cfg.JWT.RequireIAT = true
+	cfg.JWT.AccessTTL = 5 * time.Minute
+	cfg.JWT.RefreshTTL = 24 * time.Hour
+	cfg.Session.AbsoluteSessionLifetime = 24 * time.Hour
+
+	cfg.Security.EnableIPThrottle = true
+	cfg.Security.MaxLoginAttempts = 3
+	cfg.Security.LoginCooldownDuration = 15 * time.Minute
+	cfg.Security.MaxRefreshAttempts = 10
+	cfg.Security.RefreshCooldownDuration = 2 * time.Minute
+
+	cfg.DeviceBinding.Enabled = true
+	cfg.DeviceBinding.DetectIPChange = true
+	cfg.DeviceBinding.DetectUserAgentChange = true
+	cfg.DeviceBinding.EnforceUserAgentBinding = true
+
+	return cfg
+}
+
+// HighThroughputConfig returns a preset optimized for higher sustained request
+// volume while keeping security defaults intact.
+//
+// It keeps Hybrid validation as the global mode; callers can use per-route
+// `ModeJWTOnly` where immediate revocation is not required.
+func HighThroughputConfig() Config {
+	cfg := DefaultConfig()
+
+	cfg.Security.ProductionMode = true
+	cfg.ValidationMode = ModeHybrid
+
+	cfg.JWT.AccessTTL = 15 * time.Minute
+	cfg.JWT.RefreshTTL = 14 * 24 * time.Hour
+	cfg.Session.AbsoluteSessionLifetime = 14 * 24 * time.Hour
+
+	cfg.Security.EnableIPThrottle = false
+	cfg.Security.MaxRefreshAttempts = 60
+	cfg.Security.RefreshCooldownDuration = 1 * time.Minute
+
+	return cfg
+}
+
+func applyPresetBase(cfg *Config) {
+	cfg.Account.Enabled = false
+	cfg.Account.DefaultRole = ""
+	ensureEd25519Keys(cfg)
+}
+
+func ensureEd25519Keys(cfg *Config) {
+	if cfg.JWT.SigningMethod != "ed25519" {
+		return
+	}
+	if len(cfg.JWT.PrivateKey) > 0 && len(cfg.JWT.PublicKey) > 0 {
+		return
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return
+	}
+	cfg.JWT.PrivateKey = cloneBytes(privateKey)
+	cfg.JWT.PublicKey = cloneBytes(publicKey)
+}
+
 func cloneConfig(cfg Config) Config {
 	out := cfg
 	out.JWT.PrivateKey = cloneBytes(cfg.JWT.PrivateKey)
@@ -520,10 +637,10 @@ VALIDATION
 ====================================
 */
 
-// Validate describes the validate operation and its observable behavior.
+// Validate checks the Config for invalid or contradictory settings.
+// It is called automatically by [Builder.Build].
 //
-// Validate may return an error when input validation, dependency calls, or security checks fail.
-// Validate does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/config.md
 func (c *Config) Validate() error {
 	// JWT
 	if c.JWT.AccessTTL <= 0 {
@@ -551,6 +668,15 @@ func (c *Config) Validate() error {
 	}
 	if c.JWT.Leeway > 2*time.Minute {
 		return errors.New("JWT Leeway must be <= 2m")
+	}
+	if c.JWT.MaxFutureIAT < 0 {
+		return errors.New("JWT MaxFutureIAT must be >= 0")
+	}
+	if c.JWT.MaxFutureIAT > 24*time.Hour {
+		return errors.New("JWT MaxFutureIAT must be <= 24h")
+	}
+	if c.JWT.Audience != "" && strings.TrimSpace(c.JWT.Audience) == "" {
+		return errors.New("JWT Audience must not be empty when configured")
 	}
 
 	// Session
@@ -725,6 +851,14 @@ func (c *Config) Validate() error {
 	if c.SessionHardening.MaxClockSkew < 0 {
 		return errors.New("SessionHardening MaxClockSkew must be >= 0")
 	}
+	if c.Security.AutoLockoutEnabled {
+		if c.Security.AutoLockoutThreshold <= 0 {
+			return errors.New("AutoLockoutThreshold must be > 0 when AutoLockoutEnabled")
+		}
+		if c.Security.AutoLockoutDuration < 0 {
+			return errors.New("AutoLockoutDuration must be >= 0")
+		}
+	}
 	if !c.DeviceBinding.Enabled {
 		// disabled mode is valid regardless of per-signal toggles
 	} else if !c.DeviceBinding.EnforceIPBinding &&
@@ -885,4 +1019,194 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// LintSeverity classifies the importance of a lint warning.
+type LintSeverity int
+
+const (
+	// LintInfo is advisory only — no action required.
+	LintInfo LintSeverity = iota
+	// LintWarn indicates a configuration that may be sub-optimal in production.
+	LintWarn
+	// LintHigh indicates a configuration that is dangerous or contradictory.
+	LintHigh
+)
+
+// String returns a human-readable severity tag.
+func (s LintSeverity) String() string {
+	switch s {
+	case LintInfo:
+		return "INFO"
+	case LintWarn:
+		return "WARN"
+	case LintHigh:
+		return "HIGH"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// LintWarning represents a single advisory warning from Config.Lint().
+// It contains a short code for programmatic matching, a severity level,
+// and a human-readable message.
+type LintWarning struct {
+	Code     string       // e.g., "leeway_large", "access_ttl_long"
+	Severity LintSeverity // INFO, WARN, or HIGH
+	Message  string
+}
+
+// LintResult wraps a slice of LintWarning with helper methods for filtering
+// and promotion to errors.
+type LintResult []LintWarning
+
+// AsError returns an error if any warning meets or exceeds minSeverity.
+// Returns nil if no warnings meet the threshold. Useful for teams that want
+// to fail startup on high-severity configuration issues:
+//
+//	if err := cfg.Lint().AsError(goAuth.LintHigh); err != nil {
+//	    log.Fatalf("config lint: %v", err)
+//	}
+func (lr LintResult) AsError(minSeverity LintSeverity) error {
+	var msgs []string
+	for _, w := range lr {
+		if w.Severity >= minSeverity {
+			msgs = append(msgs, "["+w.Severity.String()+"] "+w.Code+": "+w.Message)
+		}
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return errors.New("config lint failures:\n" + strings.Join(msgs, "\n"))
+}
+
+// BySeverity returns only warnings at or above the given severity.
+func (lr LintResult) BySeverity(minSeverity LintSeverity) LintResult {
+	var filtered LintResult
+	for _, w := range lr {
+		if w.Severity >= minSeverity {
+			filtered = append(filtered, w)
+		}
+	}
+	return filtered
+}
+
+// Codes returns the warning codes as a string slice (for test assertions).
+func (lr LintResult) Codes() []string {
+	codes := make([]string, len(lr))
+	for i, w := range lr {
+		codes[i] = w.Code
+	}
+	return codes
+}
+
+// Lint returns advisory warnings for configurations that are technically valid
+// but potentially dangerous in production. Unlike Validate(), Lint() never
+// rejects a config — it only surfaces things worth reviewing.
+//
+// Each warning has a stable code and a severity level (INFO/WARN/HIGH).
+// Use the returned LintResult helpers to filter or promote to errors:
+//
+//	for _, w := range cfg.Lint() {
+//	    slog.Warn("config lint", "code", w.Code, "severity", w.Severity.String(), "msg", w.Message)
+//	}
+//
+//	// Fail startup on HIGH severity:
+//	if err := cfg.Lint().AsError(goAuth.LintHigh); err != nil {
+//	    log.Fatalf("config lint: %v", err)
+//	}
+func (c *Config) Lint() LintResult {
+	var ws LintResult
+	warn := func(sev LintSeverity, code, msg string) {
+		ws = append(ws, LintWarning{Code: code, Severity: sev, Message: msg})
+	}
+
+	// --- JWT ---
+	if c.JWT.Leeway > 1*time.Minute {
+		warn(LintWarn, "leeway_large",
+			"JWT Leeway > 1m widens the token acceptance window; consider ≤ 30s")
+	}
+
+	if c.JWT.AccessTTL > 10*time.Minute {
+		warn(LintWarn, "access_ttl_long",
+			"JWT AccessTTL > 10m increases the exposure window for stolen tokens")
+	}
+
+	if c.JWT.RefreshTTL > 14*24*time.Hour {
+		warn(LintInfo, "refresh_ttl_long",
+			"JWT RefreshTTL > 14d means long-lived sessions; consider ≤ 7–14d")
+	}
+
+	if !c.JWT.RequireIAT {
+		warn(LintInfo, "iat_not_required",
+			"JWT RequireIAT is false; pre-dated tokens will be accepted")
+	}
+
+	if c.JWT.SigningMethod == "hs256" {
+		warn(LintWarn, "signing_hs256",
+			"HS256 signing is supported but Ed25519 provides better security properties")
+	}
+
+	// --- Validation mode contradictions ---
+	if c.ValidationMode == ModeJWTOnly && c.DeviceBinding.Enabled {
+		warn(LintHigh, "jwtonly_device_binding",
+			"ValidationMode is JWTOnly but DeviceBinding is enabled; device checks require Redis session access and will not execute in JWTOnly mode")
+	}
+
+	if c.ValidationMode == ModeJWTOnly && c.SessionHardening.EnforceSingleSession {
+		warn(LintHigh, "jwtonly_single_session",
+			"ValidationMode is JWTOnly but EnforceSingleSession is enabled; session limits require Redis")
+	}
+
+	if c.ValidationMode == ModeJWTOnly && c.Security.EnablePermissionVersionCheck {
+		warn(LintWarn, "jwtonly_perm_version",
+			"ValidationMode is JWTOnly with PermissionVersionCheck; version checks use embedded claim values only and won't catch real-time revocations")
+	}
+
+	// --- Rate limiting ---
+	if !c.Security.EnableIPThrottle && !c.Security.EnableRefreshThrottle {
+		warn(LintHigh, "rate_limits_disabled",
+			"Both IP throttle and refresh throttle are disabled; public endpoints are unprotected from brute-force")
+	}
+
+	if !c.Security.EnableIPThrottle {
+		warn(LintWarn, "ip_throttle_disabled",
+			"IP throttle is disabled; login endpoints are vulnerable to distributed brute-force")
+	}
+
+	// --- Session ---
+	if c.Session.AbsoluteSessionLifetime > 30*24*time.Hour {
+		warn(LintWarn, "session_lifetime_long",
+			"AbsoluteSessionLifetime > 30d is unusually long; consider shorter sessions")
+	}
+
+	if c.Session.AbsoluteSessionLifetime < c.JWT.RefreshTTL {
+		warn(LintHigh, "session_shorter_than_refresh",
+			"AbsoluteSessionLifetime < RefreshTTL; sessions will expire before refresh tokens, causing unexpected refresh failures")
+	}
+
+	// --- Production readiness ---
+	if !c.Security.ProductionMode {
+		warn(LintInfo, "not_production_mode",
+			"ProductionMode is false; some security constraints are relaxed")
+	}
+
+	if !c.Audit.Enabled {
+		warn(LintWarn, "audit_disabled",
+			"Audit is disabled; security events will not be recorded")
+	}
+
+	// --- TOTP ---
+	if c.TOTP.Enabled && c.TOTP.Skew > 1 {
+		warn(LintWarn, "totp_skew_wide",
+			"TOTP Skew > 1 accepts codes from a wider time window; consider Skew=1 for tighter security")
+	}
+
+	// --- Password ---
+	if c.Password.Memory < 64*1024 {
+		warn(LintWarn, "argon2_memory_low",
+			"Argon2 Memory < 64 MB is below OWASP recommended minimum")
+	}
+
+	return ws
 }

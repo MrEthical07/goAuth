@@ -26,6 +26,20 @@ func TestConfigValidateEnums(t *testing.T) {
 			wantValid: false,
 		},
 		{
+			name: "jwt audience blank invalid",
+			mutate: func(c *Config) {
+				c.JWT.Audience = "   "
+			},
+			wantValid: false,
+		},
+		{
+			name: "jwt max future iat invalid negative",
+			mutate: func(c *Config) {
+				c.JWT.MaxFutureIAT = -time.Second
+			},
+			wantValid: false,
+		},
+		{
 			name: "jwt signing valid",
 			mutate: func(c *Config) {
 				c.JWT.SigningMethod = "hs256"

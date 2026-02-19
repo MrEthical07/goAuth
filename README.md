@@ -1,136 +1,163 @@
 # goAuth
 
-goAuth is a high-performance Go authentication guard for latency-sensitive APIs. It combines short-lived JWT access tokens with rotating opaque refresh tokens, Redis-backed session control, and fixed-size bitmask authorization.
+Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessions + rotating refresh tokens + bitmask RBAC.
 
-## What it is
+[![Go Tests](https://img.shields.io/badge/tests-266%20passing-brightgreen)]()
+[![Go Version](https://img.shields.io/badge/go-1.24%2B-blue)]()
+[![Race Detector](https://img.shields.io/badge/race%20detector-clean-brightgreen)]()
 
-- Authentication engine for login, refresh, validation, and session invalidation.
-- Authorization layer using precompiled role-permission bitmasks (up to 512 bits).
-- Security-focused flow controls including rate limiting, MFA, password reset, and email verification.
-- Middleware integrations for JWT-only, hybrid, and strict validation modes.
+---
 
-## Functionality Supported
+## Features
 
-Each item links to a dedicated implementation/flow document.
+- **Three validation modes** — JWT-only (0 Redis ops), Hybrid, Strict (instant revocation)
+- **Refresh token rotation** — atomic Lua CAS with replay detection
+- **MFA** — TOTP (RFC 6238) + backup codes with rate limiting
+- **Password management** — Argon2id hashing, reset (Token/OTP/UUID strategies), change with reuse detection
+- **Email verification** — enumeration-resistant with Lua CAS consumption
+- **Permission system** — 64/128/256/512-bit frozen bitmasks, O(1) checks
+- **Rate limiting** — 7-domain fixed-window limiters + auto-lockout
+- **Device binding** — IP/UA fingerprint enforcement or anomaly detection
+- **Audit + Metrics** — 44 counters, latency histogram, Prometheus + OpenTelemetry exporters
+- **Multi-tenancy** — tenant-scoped sessions, counters, and rate limits
 
-- [Login and session issuance](docs/functionality-login.md)
-- [Access token validation and authorization](docs/functionality-validation-and-rbac.md)
-- [Refresh token rotation and replay handling](docs/functionality-refresh-rotation.md)
-- [Logout and session invalidation](docs/functionality-logout-and-invalidation.md)
-- [MFA (TOTP + backup code) flows](docs/functionality-mfa.md)
-- [Password reset lifecycle](docs/functionality-password-reset.md)
-- [Email verification lifecycle](docs/functionality-email-verification.md)
-- [Account status controls (disable/lock/delete)](docs/functionality-account-status.md)
-- [Audit and metrics emission](docs/functionality-audit-and-metrics.md)
-
-## Exported Primitives (Core)
-
-For the full index, see [docs/api-reference.md](docs/api-reference.md).
-
-### Core engine primitives
-
-- `Builder` and `New()` for configuration and engine construction.
-- `Engine` as the runtime API (login, validate, refresh, logout, account/mfa operations).
-- `AuthResult`, `LoginResult`, `CreateAccountRequest`, `CreateAccountResult` for API payloads.
-
-### Identity and provider primitives
-
-- `UserProvider` for credential/account/MFA/back-code persistence integration.
-- `UserRecord`, `CreateUserInput`, `AccountStatus` for user state modeling.
-
-### Permission primitives
-
-- `PermissionMask` interface for permission checks.
-- Fixed-size masks in `permission`: `Mask64`, `Mask128`, `Mask256`, `Mask512`.
-- `permission.Registry` and `permission.RoleManager` for build-time freeze of permission topology.
-
-### Session and token primitives
-
-- `session.Store` and `session.Session` for Redis-backed session state.
-- `jwt.Manager` for JWT issue/verify behavior.
-
-## Configuration Parameters
-
-All fields are defined in [`Config`](config.go) and nested config structs. See [docs/config.md](docs/config.md) for detailed notes.
-
-### Top-level config groups
-
-- `JWT` (`JWTConfig`): signing method/key material, issuer/audience, TTL.
-- `Session` (`SessionConfig`): session TTL and sliding expiration behavior.
-- `Password` (`PasswordConfig`): hashing algorithm/cost tuning.
-- `PasswordReset` (`PasswordResetConfig`): reset strategy, token/OTP policy, TTL, attempt limits.
-- `EmailVerification` (`EmailVerificationConfig`): verification strategy, TTL, attempt limits.
-- `Account` (`AccountConfig`): account creation/status defaults.
-- `Audit` (`AuditConfig`): audit behavior/sink controls.
-- `Metrics` (`MetricsConfig`): metrics enablement/histograms.
-- `Security` (`SecurityConfig`): security hardening toggles and limits.
-- `SessionHardening` (`SessionHardeningConfig`): max sessions/single-session/concurrency constraints.
-- `DeviceBinding` (`DeviceBindingConfig`): device-level login binding checks.
-- `TOTP` (`TOTPConfig`): MFA code/window/attempt policy.
-- `MultiTenant` (`MultiTenantConfig`): tenant-isolation behavior.
-- `Database` (`DatabaseConfig`): optional backing data dependency settings.
-- `Permission` (`PermissionConfig`): max bits, root bit reservation.
-- `Cache` (`CacheConfig`): cache behavior.
-- `Result` (`ResultConfig`): result payload shaping.
-- `ValidationMode` (`ModeJWTOnly`, `ModeHybrid`, `ModeStrict`).
-
-## Quick Demo
+## Quickstart
 
 ```go
 package main
 
 import (
-	"context"
-	"log"
+    "context"
+    "fmt"
+    "log"
 
-	goAuth "github.com/MrEthical07/goAuth"
-	"github.com/redis/go-redis/v9"
+    goAuth "github.com/MrEthical07/goAuth"
+    "github.com/redis/go-redis/v9"
 )
 
 func main() {
-	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+    rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
 
-	engine, err := goAuth.New().
-		WithRedis(rdb).
-		WithPermissions([]string{"user.read", "user.write"}).
-		WithRoles(map[string][]string{"admin": {"user.read", "user.write"}}).
-		WithUserProvider(myUserProvider{}).
-		Build()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer engine.Close()
+    engine, err := goAuth.New().
+        WithRedis(rdb).
+        WithPermissions([]string{"user.read", "user.write"}).
+        WithRoles(map[string][]string{
+            "admin": {"user.read", "user.write"},
+        }).
+        WithUserProvider(myProvider{}).
+        Build()
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer engine.Close()
 
-	access, refresh, err := engine.Login(context.Background(), "alice@example.com", "correct horse battery staple")
-	if err != nil {
-		log.Fatal(err)
-	}
+    // Login
+    access, refresh, err := engine.Login(context.Background(), "alice@example.com", "password")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Access:", access[:20]+"...")
 
-	_, _, _ = access, refresh, err
+    // Validate
+    result, err := engine.ValidateAccess(context.Background(), access)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("UserID:", result.UserID)
+
+    // Refresh
+    newAccess, newRefresh, err := engine.Refresh(context.Background(), refresh)
+    _ = newAccess
+    _ = newRefresh
 }
-
-type myUserProvider struct{}
 ```
 
-## Documentation Map
+See [examples/http-minimal](examples/http-minimal) for a complete HTTP server with login, refresh, logout, and protected routes.
 
-### Core architecture docs
+## Installation
 
-- [Architecture](docs/architecture.md)
-- [Usage guide](docs/usage.md)
-- [API reference](docs/api-reference.md)
-- [Concurrency model](docs/concurrency-model.md)
-- [Security model](docs/security-model.md)
-- [Benchmarks summary](docs/benchmarks.md)
+```bash
+go get github.com/MrEthical07/goAuth
+```
 
-### Package/file-level technical docs
+**Requirements:** Go 1.24+, Redis 6+
 
-- [Engine internals](docs/engine.md)
-- [Builder internals](docs/builder.md)
-- [Configuration internals](docs/config.md)
-- [Session internals](docs/store.md)
-- [Permission internals](docs/registry.md)
-- [JWT manager internals](docs/manager.md)
-- [Middleware internals](docs/guard.md)
+## Validation Modes
 
-For exhaustive per-file documentation, browse the [`docs/`](docs) directory.
+| Mode | Redis Ops | Use Case |
+|------|-----------|----------|
+| `ModeJWTOnly` | 0 | Stateless microservices, dashboards |
+| `ModeHybrid` | 0–1 | Most applications (default) |
+| `ModeStrict` | 1 | Financial, healthcare, compliance |
+
+```go
+// Per-route mode with middleware
+mux.Handle("/api/read", middleware.RequireJWTOnly(engine)(readHandler))
+mux.Handle("/api/admin", middleware.RequireStrict(engine)(adminHandler))
+```
+
+## Configuration
+
+```go
+// Start from a preset
+cfg := goAuth.HighSecurityConfig()
+cfg.JWT.AccessTTL = 3 * time.Minute
+
+// Lint for misconfigurations
+if err := cfg.Lint().AsError(goAuth.LintHigh); err != nil {
+    log.Fatal(err)
+}
+```
+
+Three presets: `DefaultConfig()`, `HighSecurityConfig()`, `HighThroughputConfig()`. See [docs/config.md](docs/config.md).
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/index.md](docs/index.md) | Documentation hub |
+| [docs/flows.md](docs/flows.md) | All auth flows with step lists |
+| [docs/api-reference.md](docs/api-reference.md) | Full API reference |
+| [docs/architecture.md](docs/architecture.md) | System design |
+| [docs/security.md](docs/security.md) | Threat model and mitigations |
+| [docs/performance.md](docs/performance.md) | Benchmarks and budgets |
+| [docs/ops.md](docs/ops.md) | Deployment and monitoring |
+| [docs/config.md](docs/config.md) | Configuration reference |
+| [docs/roadmap.md](docs/roadmap.md) | Future plans |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+
+### Root-Level Documents
+
+| File | Purpose |
+|------|---------|
+| [CHANGELOG.md](CHANGELOG.md) | Release history — follows [Keep a Changelog](https://keepachangelog.com/) format with Semantic Versioning |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines — conventions for docs, code, testing, and changelog entries |
+| [docsAuditReport.md](docsAuditReport.md) | Documentation hardening audit — tracks doc coverage, accuracy, and consistency across all features |
+| [featureReport.md](featureReport.md) | Full feature verification report — all 21 features + 4 NFRs with test evidence and benchmarks |
+
+## Testing
+
+```bash
+# All tests
+go test ./...
+
+# With race detector
+go test -race ./...
+
+# Integration tests (requires Redis)
+docker compose -f docker-compose.test.yml up -d
+go test -tags=integration ./test/...
+
+# Benchmarks
+go test -run '^$' -bench . -benchmem ./...
+```
+
+266 tests, 4 fuzz targets, 13 benchmarks. Race-detector clean.
+
+## License
+
+See [LICENSE](LICENSE) for details.
+
+---
+
+> **Note:** AI agents were used for documentation and report generation in this project. Content has been verified against actual test outputs and code, but please exercise caution — review carefully and [report any issues](https://github.com/MrEthical07/goAuth/issues) in the Issues tab.

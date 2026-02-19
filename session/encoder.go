@@ -4,27 +4,42 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/MrEthical07/goAuth/permission"
 )
 
+var errSessionTruncated = io.ErrUnexpectedEOF
+
 const (
-	sessionFormatVersionCurrent = 5
+	// CurrentSchemaVersion is the currently encoded Redis session schema version.
+	CurrentSchemaVersion = 5
+
+	sessionFormatVersionCurrent = CurrentSchemaVersion
 	sessionFormatVersionV4      = 4
 	sessionFormatVersionV3      = 3
 	sessionFormatVersionV2      = 2
 	sessionFormatVersionV1      = 1
 )
 
-// Encode describes the encode operation and its observable behavior.
+// Encode serializes a [Session] into a compact binary format (v5 wire
+// protocol). The result is stored as the Redis value.
 //
-// Encode may return an error when input validation, dependency calls, or security checks fail.
-// Encode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: single allocation; ~200 bytes per session.
+//	Docs: docs/session.md
 func Encode(s *Session) ([]byte, error) {
 	var buf bytes.Buffer
 
-	buf.WriteByte(sessionFormatVersionCurrent)
+	schemaVersion := s.SchemaVersion
+	if schemaVersion == 0 {
+		schemaVersion = sessionFormatVersionCurrent
+	}
+	if schemaVersion != sessionFormatVersionCurrent {
+		return nil, fmt.Errorf("unsupported session schema version for encode: %d", schemaVersion)
+	}
+
+	buf.WriteByte(schemaVersion)
 
 	if len(s.UserID) > 255 {
 		return nil, errors.New("userID too long")
@@ -82,117 +97,137 @@ func Encode(s *Session) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Decode describes the decode operation and its observable behavior.
+// Decode deserializes the binary wire format back into a [Session].
+// Returns an error if the version byte is unsupported or the payload is
+// truncated.
 //
-// Decode may return an error when input validation, dependency calls, or security checks fail.
-// Decode does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/session.md
 func Decode(data []byte) (*Session, error) {
-	reader := bytes.NewReader(data)
-
-	version, err := reader.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	if version != sessionFormatVersionCurrent &&
-		version != sessionFormatVersionV4 &&
-		version != sessionFormatVersionV3 &&
-		version != sessionFormatVersionV2 &&
-		version != sessionFormatVersionV1 {
-		return nil, errors.New("invalid session version")
+	if len(data) < 1 {
+		return nil, io.EOF
 	}
 
-	s := &Session{}
+	version := data[0]
+	if version < sessionFormatVersionV1 || version > sessionFormatVersionCurrent {
+		return nil, fmt.Errorf("unsupported session schema version: %d", version)
+	}
 
-	userLen, err := reader.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	userID := make([]byte, userLen)
-	if _, err := io.ReadFull(reader, userID); err != nil {
-		return nil, err
-	}
-	s.UserID = string(userID)
+	s := &Session{SchemaVersion: version}
+	pos := 1
 
-	tenantLen, err := reader.ReadByte()
-	if err != nil {
-		return nil, err
-	}
-	tenantID := make([]byte, tenantLen)
-	if _, err := io.ReadFull(reader, tenantID); err != nil {
-		return nil, err
-	}
-	s.TenantID = string(tenantID)
+	// --- String fields (direct byte indexing, no intermediate allocations) ---
 
-	roleLen, err := reader.ReadByte()
-	if err != nil {
-		return nil, err
+	// UserID
+	if pos >= len(data) {
+		return nil, errSessionTruncated
 	}
-	role := make([]byte, roleLen)
-	if _, err := io.ReadFull(reader, role); err != nil {
-		return nil, err
+	n := int(data[pos])
+	pos++
+	if pos+n > len(data) {
+		return nil, errSessionTruncated
 	}
-	s.Role = string(role)
+	s.UserID = string(data[pos : pos+n])
+	pos += n
 
-	if err := binary.Read(reader, binary.BigEndian, &s.PermissionVersion); err != nil {
-		return nil, err
+	// TenantID
+	if pos >= len(data) {
+		return nil, errSessionTruncated
 	}
-	if version == sessionFormatVersionCurrent || version == sessionFormatVersionV4 || version == sessionFormatVersionV3 {
-		if err := binary.Read(reader, binary.BigEndian, &s.RoleVersion); err != nil {
-			return nil, err
+	n = int(data[pos])
+	pos++
+	if pos+n > len(data) {
+		return nil, errSessionTruncated
+	}
+	s.TenantID = string(data[pos : pos+n])
+	pos += n
+
+	// Role
+	if pos >= len(data) {
+		return nil, errSessionTruncated
+	}
+	n = int(data[pos])
+	pos++
+	if pos+n > len(data) {
+		return nil, errSessionTruncated
+	}
+	s.Role = string(data[pos : pos+n])
+	pos += n
+
+	// --- Versioned fixed fields ---
+
+	// PermissionVersion (all versions)
+	if pos+4 > len(data) {
+		return nil, errSessionTruncated
+	}
+	s.PermissionVersion = binary.BigEndian.Uint32(data[pos:])
+	pos += 4
+
+	// RoleVersion (v3+)
+	if version >= sessionFormatVersionV3 {
+		if pos+4 > len(data) {
+			return nil, errSessionTruncated
 		}
+		s.RoleVersion = binary.BigEndian.Uint32(data[pos:])
+		pos += 4
 	}
-	if version == sessionFormatVersionCurrent || version == sessionFormatVersionV4 {
-		if err := binary.Read(reader, binary.BigEndian, &s.AccountVersion); err != nil {
-			return nil, err
-		}
 
-		status, err := reader.ReadByte()
-		if err != nil {
-			return nil, err
+	// AccountVersion + Status (v4+)
+	if version >= sessionFormatVersionV4 {
+		if pos+5 > len(data) {
+			return nil, errSessionTruncated
 		}
-		s.Status = status
+		s.AccountVersion = binary.BigEndian.Uint32(data[pos:])
+		pos += 4
+		s.Status = data[pos]
+		pos++
 	} else {
 		s.AccountVersion = 1
 		s.Status = 0
 	}
 
-	maskSize, err := reader.ReadByte()
-	if err != nil {
-		return nil, err
+	// Mask (pass sub-slice directly to DecodeMask — no intermediate copy)
+	if pos >= len(data) {
+		return nil, errSessionTruncated
 	}
-
-	maskBytes := make([]byte, maskSize)
-	if _, err := io.ReadFull(reader, maskBytes); err != nil {
-		return nil, err
+	maskSize := int(data[pos])
+	pos++
+	if pos+maskSize > len(data) {
+		return nil, errSessionTruncated
 	}
-
-	mask, err := permission.DecodeMask(maskBytes)
+	mask, err := permission.DecodeMask(data[pos : pos+maskSize])
 	if err != nil {
 		return nil, err
 	}
 	s.Mask = mask
+	pos += maskSize
 
-	if version == sessionFormatVersionCurrent || version == sessionFormatVersionV4 || version == sessionFormatVersionV3 || version == sessionFormatVersionV2 {
-		if _, err := io.ReadFull(reader, s.RefreshHash[:]); err != nil {
-			return nil, err
+	// RefreshHash (v2+)
+	if version >= sessionFormatVersionV2 {
+		if pos+32 > len(data) {
+			return nil, errSessionTruncated
 		}
+		copy(s.RefreshHash[:], data[pos:pos+32])
+		pos += 32
 	}
+
+	// IPHash + UserAgentHash (v5)
 	if version == sessionFormatVersionCurrent {
-		if _, err := io.ReadFull(reader, s.IPHash[:]); err != nil {
-			return nil, err
+		if pos+64 > len(data) {
+			return nil, errSessionTruncated
 		}
-		if _, err := io.ReadFull(reader, s.UserAgentHash[:]); err != nil {
-			return nil, err
-		}
+		copy(s.IPHash[:], data[pos:pos+32])
+		pos += 32
+		copy(s.UserAgentHash[:], data[pos:pos+32])
+		pos += 32
 	}
 
-	if err := binary.Read(reader, binary.BigEndian, &s.CreatedAt); err != nil {
-		return nil, err
+	// Timestamps
+	if pos+16 > len(data) {
+		return nil, errSessionTruncated
 	}
-
-	if err := binary.Read(reader, binary.BigEndian, &s.ExpiresAt); err != nil {
-		return nil, err
-	}
+	s.CreatedAt = int64(binary.BigEndian.Uint64(data[pos:]))
+	pos += 8
+	s.ExpiresAt = int64(binary.BigEndian.Uint64(data[pos:]))
 
 	return s, nil
 }

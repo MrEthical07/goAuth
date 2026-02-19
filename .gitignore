@@ -1,0 +1,16 @@
+# Build artifacts
+*.exe
+*.test
+*.out
+cpu.out
+mem.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

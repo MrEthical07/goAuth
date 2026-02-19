@@ -10,6 +10,8 @@ jobs:
   check:
     name: fmt-and-test
     runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,18 +20,121 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
+
+      - name: Enforce root source whitelist
+        run: |
+          set -euo pipefail
+
+          expected="$(printf '%s\n' builder.go config.go context.go doc.go engine.go errors.go goAuth.go types.go | sort)"
+          actual="$(ls -1 *.go | grep -v '_test.go$' | sort)"
+
+          if [ "$actual" != "$expected" ]; then
+            echo "Root source file whitelist mismatch"
+            echo "Expected:"
+            echo "$expected"
+            echo "Actual:"
+            echo "$actual"
+            exit 1
+          fi
+
+          disallowed="$(ls -1 *.go | grep -v '_test.go$' | grep -E '(limiter|store|audit|metrics|engine_)' || true)"
+          if [ -n "$disallowed" ]; then
+            echo "Disallowed root source file names detected:"
+            echo "$disallowed"
+            exit 1
+          fi
+
+      - name: Require changelog entry for API/config changes
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          # Files that require a CHANGELOG.md entry when modified
+          API_PATTERNS="^(builder|config|context|engine|errors|goAuth|types)\.go$|^docs/api-reference\.md$|^docs/config\.md$"
+          CHANGED=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD || true)
+          NEEDS_CL=false
+          for f in $CHANGED; do
+            if echo "$f" | grep -qE "$API_PATTERNS"; then
+              NEEDS_CL=true
+              break
+            fi
+          done
+          if [ "$NEEDS_CL" = "true" ]; then
+            if ! echo "$CHANGED" | grep -q "^CHANGELOG.md$"; then
+              echo "::error::Public API or config docs changed but CHANGELOG.md was not updated."
+              echo "Add an entry under [Unreleased] in CHANGELOG.md."
+              exit 1
+            fi
+          fi
+
+      - name: Go environment summary
+        run: |
+          echo "=== Go version ==="
+          go version
+          echo "=== Go env (selected) ==="
+          go env GOVERSION GOTOOLCHAIN GOROOT GOPATH GOOS GOARCH CGO_ENABLED
+
+      - name: Install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
 
       - name: Check gofmt
         run: |
           files=$(find . -name '*.go' -not -path './vendor/*')
           test -z "$(gofmt -l $files)"
 
-      - name: Run unit tests
+      - name: Check goimports
+        run: |
+          files=$(find . -name '*.go' -not -path './vendor/*')
+          test -z "$($(go env GOPATH)/bin/goimports -l $files)"
+
+      - name: Run unit tests (includes vet)
         run: go test ./...
+
+      - name: Build example app
+        run: go build ./examples/http-minimal/...
+
+      - name: Check engine.go delegate complexity
+        run: go test -run TestEngine_DelegateMethodComplexity -v .
+
+      - name: Run integration tests (miniredis)
+        run: go test -tags=integration ./test/...
+
+      - name: Run integration tests (real Redis)
+        run: |
+          docker compose -f docker-compose.test.yml up -d --wait
+          REDIS_ADDR=127.0.0.1:6379 go test -tags=integration -v -run 'TestRedisCompat' ./test/...
+          docker compose -f docker-compose.test.yml down
+
+      - name: Run fuzz tests (short)
+        run: |
+          go test -fuzz=FuzzSessionDecode -fuzztime=30s ./session/
+          go test -fuzz=FuzzMaskCodecRoundTrip -fuzztime=30s ./permission/
+          go test -fuzz=FuzzDecodeRefreshToken -fuzztime=30s ./internal/
+          go test -fuzz=FuzzJWTParseAccess -fuzztime=30s ./jwt/
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Run perf sanity
+        run: bash security/run_perf_sanity.sh
+
+      - name: Install static analysis tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run staticcheck
+        run: $(go env GOPATH)/bin/staticcheck "-checks=all,-ST1000,-ST1003,-ST1005,-U1000" ./...
+
+      - name: Run security scanners with baseline
+        run: bash security/run_scanners.sh
 
   race:
     name: race-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      GOTOOLCHAIN: local
     strategy:
       fail-fast: false
       matrix:
@@ -44,6 +149,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
 
       - name: Run race tests
         run: go test -race ./...

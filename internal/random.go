@@ -10,9 +10,7 @@ import (
 	"strings"
 )
 
-// SessionID defines a public type used by goAuth APIs.
-//
-// SessionID instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// SessionID is a cryptographically random 128-bit session identifier.
 type SessionID [16]byte
 
 const (
@@ -22,37 +20,25 @@ const (
 	resetSecretSize     = 32
 )
 
-// NewSessionID describes the newsessionid operation and its observable behavior.
-//
-// NewSessionID may return an error when input validation, dependency calls, or security checks fail.
-// NewSessionID does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// NewSessionID generates a cryptographically random 128-bit session ID.
 func NewSessionID() (SessionID, error) {
 	var sid SessionID
 	_, err := rand.Read(sid[:])
 	return sid, err
 }
 
-// Bytes describes the bytes operation and its observable behavior.
-//
-// Bytes may return an error when input validation, dependency calls, or security checks fail.
-// Bytes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// Bytes generates n cryptographically random bytes.
 func (s SessionID) Bytes() []byte {
 	return s[:]
 }
 
-// String describes the string operation and its observable behavior.
-//
-// String may return an error when input validation, dependency calls, or security checks fail.
-// String does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// String generates a cryptographically random hex string of length n bytes.
 func (s SessionID) String() string {
 	// base64url, no padding, compact
 	return base64.RawURLEncoding.EncodeToString(s[:])
 }
 
-// ParseSessionID describes the parsesessionid operation and its observable behavior.
-//
-// ParseSessionID may return an error when input validation, dependency calls, or security checks fail.
-// ParseSessionID does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// ParseSessionID decodes a hex-encoded session ID string.
 func ParseSessionID(sessionID string) (SessionID, error) {
 	var sid SessionID
 
@@ -68,28 +54,20 @@ func ParseSessionID(sessionID string) (SessionID, error) {
 	return sid, nil
 }
 
-// NewRefreshSecret describes the newrefreshsecret operation and its observable behavior.
-//
-// NewRefreshSecret may return an error when input validation, dependency calls, or security checks fail.
-// NewRefreshSecret does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// NewRefreshSecret generates a 32-byte cryptographic random refresh secret.
 func NewRefreshSecret() ([refreshSecretSize]byte, error) {
 	var secret [refreshSecretSize]byte
 	_, err := rand.Read(secret[:])
 	return secret, err
 }
 
-// HashRefreshSecret describes the hashrefreshsecret operation and its observable behavior.
-//
-// HashRefreshSecret may return an error when input validation, dependency calls, or security checks fail.
-// HashRefreshSecret does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// HashRefreshSecret returns the SHA-256 hash of a refresh secret.
 func HashRefreshSecret(secret [refreshSecretSize]byte) [32]byte {
 	return sha256.Sum256(secret[:])
 }
 
-// EncodeRefreshToken describes the encoderefreshtoken operation and its observable behavior.
-//
-// EncodeRefreshToken may return an error when input validation, dependency calls, or security checks fail.
-// EncodeRefreshToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// EncodeRefreshToken encodes a session ID, tenant ID, and refresh secret
+// into an opaque base64url token string.
 func EncodeRefreshToken(sessionID string, secret [refreshSecretSize]byte) (string, error) {
 	sid, err := ParseSessionID(sessionID)
 	if err != nil {
@@ -103,10 +81,8 @@ func EncodeRefreshToken(sessionID string, secret [refreshSecretSize]byte) (strin
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
-// DecodeRefreshToken describes the decoderefreshtoken operation and its observable behavior.
-//
-// DecodeRefreshToken may return an error when input validation, dependency calls, or security checks fail.
-// DecodeRefreshToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// DecodeRefreshToken decodes an opaque refresh token into its constituent
+// session ID, tenant ID, and secret.
 func DecodeRefreshToken(token string) (string, [refreshSecretSize]byte, error) {
 	var secret [refreshSecretSize]byte
 
@@ -125,36 +101,25 @@ func DecodeRefreshToken(token string) (string, [refreshSecretSize]byte, error) {
 	return sid.String(), secret, nil
 }
 
-// NewResetSecret describes the newresetsecret operation and its observable behavior.
-//
-// NewResetSecret may return an error when input validation, dependency calls, or security checks fail.
-// NewResetSecret does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// NewResetSecret generates a cryptographic random secret for password reset.
 func NewResetSecret() ([resetSecretSize]byte, error) {
 	var secret [resetSecretSize]byte
 	_, err := rand.Read(secret[:])
 	return secret, err
 }
 
-// HashResetSecret describes the hashresetsecret operation and its observable behavior.
-//
-// HashResetSecret may return an error when input validation, dependency calls, or security checks fail.
-// HashResetSecret does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// HashResetSecret returns the SHA-256 hash of a reset secret string.
 func HashResetSecret(secret [resetSecretSize]byte) [32]byte {
 	return sha256.Sum256(secret[:])
 }
 
-// HashResetBytes describes the hashresetbytes operation and its observable behavior.
-//
-// HashResetBytes may return an error when input validation, dependency calls, or security checks fail.
-// HashResetBytes does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// HashResetBytes returns the SHA-256 hash of raw reset secret bytes.
 func HashResetBytes(secret []byte) [32]byte {
 	return sha256.Sum256(secret)
 }
 
-// EncodeResetToken describes the encoderesettoken operation and its observable behavior.
-//
-// EncodeResetToken may return an error when input validation, dependency calls, or security checks fail.
-// EncodeResetToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// EncodeResetToken encodes a reset ID, tenant ID, and secret into a
+// base64url token.
 func EncodeResetToken(resetID string, secret [resetSecretSize]byte) (string, error) {
 	rid, err := ParseSessionID(resetID)
 	if err != nil {
@@ -168,10 +133,7 @@ func EncodeResetToken(resetID string, secret [resetSecretSize]byte) (string, err
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
-// DecodeResetToken describes the decoderesettoken operation and its observable behavior.
-//
-// DecodeResetToken may return an error when input validation, dependency calls, or security checks fail.
-// DecodeResetToken does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// DecodeResetToken decodes a reset token into its constituent parts.
 func DecodeResetToken(token string) (string, [resetSecretSize]byte, error) {
 	var secret [resetSecretSize]byte
 
@@ -190,10 +152,7 @@ func DecodeResetToken(token string) (string, [resetSecretSize]byte, error) {
 	return rid.String(), secret, nil
 }
 
-// NewOTP describes the newotp operation and its observable behavior.
-//
-// NewOTP may return an error when input validation, dependency calls, or security checks fail.
-// NewOTP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// NewOTP generates a random numeric OTP of the given digit count.
 func NewOTP(digits int) (string, error) {
 	if digits < 6 || digits > 10 {
 		return "", errors.New("invalid otp digits")

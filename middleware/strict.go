@@ -6,10 +6,11 @@ import (
 	goAuth "github.com/MrEthical07/goAuth"
 )
 
-// RequireStrict describes the requirestrict operation and its observable behavior.
+// RequireStrict returns middleware that overrides the validation mode to
+// [goAuth.ModeStrict] for the wrapped handler, forcing a Redis session
+// lookup on every request.
 //
-// RequireStrict may return an error when input validation, dependency calls, or security checks fail.
-// RequireStrict does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/middleware.md, docs/jwt.md
 func RequireStrict(engine *goAuth.Engine) func(http.Handler) http.Handler {
 	return Guard(engine, goAuth.ModeStrict)
 }

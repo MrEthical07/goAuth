@@ -1,9 +1,12 @@
 package session
 
-// Session defines a public type used by goAuth APIs.
-//
-// Session instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+// Session is the in-memory representation of a user session. It is serialized
+// to Redis using the v5 binary wire format via [Encode]/[Decode].
 type Session struct {
+	// SchemaVersion is the on-wire session schema version decoded from Redis.
+	// New writes always encode with CurrentSchemaVersion.
+	SchemaVersion uint8
+
 	SessionID string
 	UserID    string
 	TenantID  string

@@ -1,0 +1,4 @@
+# fingerprint format: RULE_ID|path|line
+G404|cmd/goauth-loadtest/main.go|114
+G404|cmd/goauth-loadtest/main.go|152
+G505|internal/security/totp.go|6

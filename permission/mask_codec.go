@@ -1,49 +1,54 @@
 package permission
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 )
 
-// EncodeMask describes the encodemask operation and its observable behavior.
+// EncodeMask serializes a permission bitmask into a byte slice for JWT
+// embedding.
 //
-// EncodeMask may return an error when input validation, dependency calls, or security checks fail.
-// EncodeMask does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: O(1), single allocation.
+//	Docs: docs/permission.md, docs/jwt.md
 func EncodeMask(mask interface{}) ([]byte, error) {
-	buf := new(bytes.Buffer)
-
 	switch m := mask.(type) {
 	case *Mask64:
-		return uint64ToBytes(uint64(*m)), nil
+		b := make([]byte, 8)
+		binary.BigEndian.PutUint64(b, uint64(*m))
+		return b, nil
 	case *Mask128:
-		binary.Write(buf, binary.BigEndian, m.A)
-		binary.Write(buf, binary.BigEndian, m.B)
+		b := make([]byte, 16)
+		binary.BigEndian.PutUint64(b[0:], m.A)
+		binary.BigEndian.PutUint64(b[8:], m.B)
+		return b, nil
 	case *Mask256:
-		binary.Write(buf, binary.BigEndian, m.A)
-		binary.Write(buf, binary.BigEndian, m.B)
-		binary.Write(buf, binary.BigEndian, m.C)
-		binary.Write(buf, binary.BigEndian, m.D)
+		b := make([]byte, 32)
+		binary.BigEndian.PutUint64(b[0:], m.A)
+		binary.BigEndian.PutUint64(b[8:], m.B)
+		binary.BigEndian.PutUint64(b[16:], m.C)
+		binary.BigEndian.PutUint64(b[24:], m.D)
+		return b, nil
 	case *Mask512:
-		binary.Write(buf, binary.BigEndian, m.A)
-		binary.Write(buf, binary.BigEndian, m.B)
-		binary.Write(buf, binary.BigEndian, m.C)
-		binary.Write(buf, binary.BigEndian, m.D)
-		binary.Write(buf, binary.BigEndian, m.E)
-		binary.Write(buf, binary.BigEndian, m.F)
-		binary.Write(buf, binary.BigEndian, m.G)
-		binary.Write(buf, binary.BigEndian, m.H)
+		b := make([]byte, 64)
+		binary.BigEndian.PutUint64(b[0:], m.A)
+		binary.BigEndian.PutUint64(b[8:], m.B)
+		binary.BigEndian.PutUint64(b[16:], m.C)
+		binary.BigEndian.PutUint64(b[24:], m.D)
+		binary.BigEndian.PutUint64(b[32:], m.E)
+		binary.BigEndian.PutUint64(b[40:], m.F)
+		binary.BigEndian.PutUint64(b[48:], m.G)
+		binary.BigEndian.PutUint64(b[56:], m.H)
+		return b, nil
 	default:
 		return nil, errors.New("invalid mask type")
 	}
-
-	return buf.Bytes(), nil
 }
 
-// DecodeMask describes the decodemask operation and its observable behavior.
+// DecodeMask deserializes a byte slice back into a typed permission mask
+// ([Mask64], [Mask128], [Mask256], or [Mask512]).
 //
-// DecodeMask may return an error when input validation, dependency calls, or security checks fail.
-// DecodeMask does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: O(1).
+//	Docs: docs/permission.md, docs/jwt.md
 func DecodeMask(data []byte) (interface{}, error) {
 	switch len(data) {
 	case 8:
@@ -76,10 +81,4 @@ func DecodeMask(data []byte) (interface{}, error) {
 	default:
 		return nil, errors.New("invalid mask size")
 	}
-}
-
-func uint64ToBytes(v uint64) []byte {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, v)
-	return b
 }

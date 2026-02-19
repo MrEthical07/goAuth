@@ -14,33 +14,31 @@ type metricsSource interface {
 	AuditDropped() uint64
 }
 
-// PrometheusExporter defines a public type used by goAuth APIs.
+// PrometheusExporter renders goAuth metrics in Prometheus text exposition format.
 //
-// PrometheusExporter instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/metrics.md
 type PrometheusExporter struct {
 	source metricsSource
 }
 
-// NewPrometheusExporter describes the newprometheusexporter operation and its observable behavior.
+// NewPrometheusExporter creates a Prometheus exporter that reads from the given [goAuth.Engine].
 //
-// NewPrometheusExporter may return an error when input validation, dependency calls, or security checks fail.
-// NewPrometheusExporter does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/metrics.md
 func NewPrometheusExporter(engine *goAuth.Engine) *PrometheusExporter {
 	return &PrometheusExporter{source: engine}
 }
 
-// NewPrometheusExporterFromSource describes the newprometheusexporterfromsource operation and its observable behavior.
+// NewPrometheusExporterFromSource creates a Prometheus exporter from a
+// custom [MetricsSource].
 //
-// NewPrometheusExporterFromSource may return an error when input validation, dependency calls, or security checks fail.
-// NewPrometheusExporterFromSource does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/metrics.md
 func NewPrometheusExporterFromSource(source metricsSource) *PrometheusExporter {
 	return &PrometheusExporter{source: source}
 }
 
-// Handler describes the handler operation and its observable behavior.
+// Handler returns an http.Handler that serves Prometheus metrics.
 //
-// Handler may return an error when input validation, dependency calls, or security checks fail.
-// Handler does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/metrics.md
 func (p *PrometheusExporter) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -48,10 +46,9 @@ func (p *PrometheusExporter) Handler() http.Handler {
 	})
 }
 
-// Render describes the render operation and its observable behavior.
+// Render writes the current metrics in Prometheus text exposition format.
 //
-// Render may return an error when input validation, dependency calls, or security checks fail.
-// Render does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/metrics.md
 func (p *PrometheusExporter) Render() string {
 	if p == nil || p.source == nil {
 		return ""

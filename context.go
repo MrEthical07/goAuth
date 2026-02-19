@@ -6,26 +6,27 @@ type clientIPContextKey struct{}
 type tenantIDContextKey struct{}
 type userAgentContextKey struct{}
 
-// WithClientIP describes the withclientip operation and its observable behavior.
+// WithClientIP attaches the caller’s IP address to ctx. The Engine uses it
+// for per-IP rate limiting, audit logging, and device binding checks.
 //
-// WithClientIP may return an error when input validation, dependency calls, or security checks fail.
-// WithClientIP does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/rate_limiting.md, docs/device_binding.md
 func WithClientIP(ctx context.Context, ip string) context.Context {
 	return context.WithValue(ctx, clientIPContextKey{}, ip)
 }
 
-// WithTenantID describes the withtenantid operation and its observable behavior.
+// WithTenantID attaches a tenant identifier to ctx for multi-tenant
+// session isolation. When multi-tenancy is disabled, the default tenant
+// "0" is used.
 //
-// WithTenantID may return an error when input validation, dependency calls, or security checks fail.
-// WithTenantID does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/session.md, docs/engine.md
 func WithTenantID(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantIDContextKey{}, tenantID)
 }
 
-// WithUserAgent describes the withuseragent operation and its observable behavior.
+// WithUserAgent attaches the HTTP User-Agent string to ctx. Used by the
+// device binding subsystem to detect session hijacking.
 //
-// WithUserAgent may return an error when input validation, dependency calls, or security checks fail.
-// WithUserAgent does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/device_binding.md
 func WithUserAgent(ctx context.Context, userAgent string) context.Context {
 	return context.WithValue(ctx, userAgentContextKey{}, userAgent)
 }

@@ -3,7 +3,9 @@ package goAuth
 import (
 	"errors"
 
+	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/rate"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/jwt"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/MrEthical07/goAuth/permission"
@@ -11,12 +13,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Builder defines a public type used by goAuth APIs.
+// Builder constructs an [Engine] through a fluent API. Call [New] to start,
+// chain With* methods, then call [Builder.Build] to validate configuration
+// and produce an immutable Engine. A Builder can only be built once.
 //
-// Builder instances are intended to be configured during initialization and then treated as immutable unless documented otherwise.
+//	Docs: docs/engine.md, docs/usage.md
 type Builder struct {
 	config Config
-	redis  *redis.Client
+	redis  redis.UniversalClient
 
 	permissions []string
 	roles       map[string][]string
@@ -27,92 +31,95 @@ type Builder struct {
 	built bool
 }
 
-// New describes the new operation and its observable behavior.
+// New creates a fresh [Builder] initialized with [DefaultConfig].
 //
-// New may return an error when input validation, dependency calls, or security checks fail.
-// New does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/engine.md, docs/usage.md
 func New() *Builder {
 	return &Builder{
 		config: defaultConfig(),
 	}
 }
 
-// WithConfig describes the withconfig operation and its observable behavior.
+// WithConfig replaces the builder’s configuration. The provided Config is
+// deep-copied; later mutations to the caller’s copy have no effect.
 //
-// WithConfig may return an error when input validation, dependency calls, or security checks fail.
-// WithConfig does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/config.md
 func (b *Builder) WithConfig(cfg Config) *Builder {
 	b.config = cloneConfig(cfg)
 	return b
 }
 
-// WithRedis describes the withredis operation and its observable behavior.
+// WithRedis sets the Redis client used for sessions, rate limiting, and
+// all Redis-backed stores. Required for all validation modes.
 //
-// WithRedis may return an error when input validation, dependency calls, or security checks fail.
-// WithRedis does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
-func (b *Builder) WithRedis(client *redis.Client) *Builder {
+//	Docs: docs/config.md, docs/session.md
+func (b *Builder) WithRedis(client redis.UniversalClient) *Builder {
 	b.redis = client
 	return b
 }
 
-// WithPermissions describes the withpermissions operation and its observable behavior.
+// WithPermissions registers the permission names that will be mapped to
+// bitmask bits. Order determines bit assignment.
 //
-// WithPermissions may return an error when input validation, dependency calls, or security checks fail.
-// WithPermissions does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/permission.md
 func (b *Builder) WithPermissions(perms []string) *Builder {
 	b.permissions = perms
 	return b
 }
 
-// WithRoles describes the withroles operation and its observable behavior.
+// WithRoles registers role names and their associated permission lists.
+// Each role gets a pre-computed bitmask at build time.
 //
-// WithRoles may return an error when input validation, dependency calls, or security checks fail.
-// WithRoles does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/permission.md
 func (b *Builder) WithRoles(r map[string][]string) *Builder {
 	b.roles = r
 	return b
 }
 
-// WithUserProvider describes the withuserprovider operation and its observable behavior.
+// WithUserProvider sets the [UserProvider] implementation that the engine
+// uses for credential lookup, account creation, TOTP storage, etc.
 //
-// WithUserProvider may return an error when input validation, dependency calls, or security checks fail.
-// WithUserProvider does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/engine.md
 func (b *Builder) WithUserProvider(up UserProvider) *Builder {
 	b.userProvider = up
 	return b
 }
 
-// WithAuditSink describes the withauditsink operation and its observable behavior.
+// WithAuditSink sets the [AuditSink] that receives structured audit events.
+// Pass nil to disable audit dispatch.
 //
-// WithAuditSink may return an error when input validation, dependency calls, or security checks fail.
-// WithAuditSink does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/audit.md
 func (b *Builder) WithAuditSink(sink AuditSink) *Builder {
 	b.auditSink = sink
 	return b
 }
 
-// WithMetricsEnabled describes the withmetricsenabled operation and its observable behavior.
+// WithMetricsEnabled enables or disables the in-process metrics counters.
+// When disabled, MetricsSnapshot returns zero values.
 //
-// WithMetricsEnabled may return an error when input validation, dependency calls, or security checks fail.
-// WithMetricsEnabled does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/metrics.md
 func (b *Builder) WithMetricsEnabled(enabled bool) *Builder {
 	b.config.Metrics.Enabled = enabled
 	return b
 }
 
-// WithLatencyHistograms describes the withlatencyhistograms operation and its observable behavior.
+// WithLatencyHistograms enables per-operation latency histograms inside
+// the metrics subsystem. Adds a small allocation overhead per tracked op.
 //
-// WithLatencyHistograms may return an error when input validation, dependency calls, or security checks fail.
-// WithLatencyHistograms does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Docs: docs/metrics.md
 func (b *Builder) WithLatencyHistograms(enabled bool) *Builder {
 	b.config.Metrics.EnableLatencyHistograms = enabled
 	return b
 }
 
-// Build describes the build operation and its observable behavior.
+// Build validates the accumulated configuration, initializes every
+// subsystem (JWT manager, session store, rate limiters, TOTP manager,
+// password hasher, audit dispatcher, permission registry, role manager),
+// and returns an immutable [Engine] ready for concurrent use.
 //
-// Build may return an error when input validation, dependency calls, or security checks fail.
-// Build does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+// Build may only be called once per Builder instance.
+//
+//	Docs: docs/engine.md, docs/config.md, docs/usage.md
 func (b *Builder) Build() (*Engine, error) {
 	if b.built {
 		return nil, errors.New("builder already used")
@@ -216,14 +223,40 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxRefreshAttempts:      cfg.Security.MaxRefreshAttempts,
 		RefreshCooldownDuration: cfg.Security.RefreshCooldownDuration,
 	})
-	engine.resetStore = newPasswordResetStore(b.redis)
-	engine.resetLimiter = newPasswordResetLimiter(b.redis, cfg.PasswordReset)
-	engine.verificationStore = newEmailVerificationStore(b.redis)
-	engine.verificationLimiter = newEmailVerificationLimiter(b.redis, cfg.EmailVerification)
-	engine.accountLimiter = newAccountCreationLimiter(b.redis, cfg.Account)
-	engine.totpLimiter = newTOTPLimiter(b.redis)
-	engine.backupLimiter = newBackupCodeLimiter(b.redis, cfg.TOTP)
-	engine.mfaLoginStore = newMFALoginChallengeStore(b.redis)
+	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
+	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{
+		EnableIdentifierThrottle: cfg.PasswordReset.EnableIdentifierThrottle,
+		EnableIPThrottle:         cfg.PasswordReset.EnableIPThrottle,
+		ResetTTL:                 cfg.PasswordReset.ResetTTL,
+		MaxAttempts:              cfg.PasswordReset.MaxAttempts,
+	})
+	engine.verificationStore = stores.NewEmailVerificationStore(b.redis, "apv")
+	engine.verificationLimiter = limiters.NewEmailVerificationLimiter(b.redis, limiters.EmailVerificationConfig{
+		EnableIdentifierThrottle: cfg.EmailVerification.EnableIdentifierThrottle,
+		EnableIPThrottle:         cfg.EmailVerification.EnableIPThrottle,
+		VerificationTTL:          cfg.EmailVerification.VerificationTTL,
+		MaxAttempts:              cfg.EmailVerification.MaxAttempts,
+	})
+	engine.accountLimiter = limiters.NewAccountCreationLimiter(b.redis, limiters.AccountConfig{
+		EnableIdentifierThrottle: cfg.Account.EnableIdentifierThrottle,
+		EnableIPThrottle:         cfg.Account.EnableIPThrottle,
+		MaxAttempts:              cfg.Account.AccountCreationMaxAttempts,
+		Cooldown:                 cfg.Account.AccountCreationCooldown,
+	})
+	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis, limiters.TOTPLimiterConfig{
+		MaxAttempts: cfg.TOTP.MaxVerifyAttempts,
+		Cooldown:    cfg.TOTP.VerifyAttemptCooldown,
+	})
+	engine.backupLimiter = limiters.NewBackupCodeLimiter(b.redis, limiters.BackupCodeConfig{
+		MaxAttempts: cfg.TOTP.BackupCodeMaxAttempts,
+		Cooldown:    cfg.TOTP.BackupCodeCooldown,
+	})
+	engine.lockoutLimiter = limiters.NewLockoutLimiter(b.redis, limiters.LockoutConfig{
+		Enabled:   cfg.Security.AutoLockoutEnabled,
+		Threshold: cfg.Security.AutoLockoutThreshold,
+		Duration:  cfg.Security.AutoLockoutDuration,
+	})
+	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
 	engine.audit = newAuditDispatcher(cfg.Audit, b.auditSink)
 	engine.metrics = NewMetrics(cfg.Metrics)
 	engine.totp = newTOTPManager(cfg.TOTP)
@@ -249,12 +282,15 @@ func (b *Builder) Build() (*Engine, error) {
 		Issuer:        cfg.JWT.Issuer,
 		Audience:      cfg.JWT.Audience,
 		Leeway:        cfg.JWT.Leeway,
+		RequireIAT:    cfg.JWT.RequireIAT,
+		MaxFutureIAT:  cfg.JWT.MaxFutureIAT,
 		KeyID:         cfg.JWT.KeyID,
 	})
 	if err != nil {
 		return nil, err
 	}
 	engine.jwtManager = jm
+	engine.initFlowDeps()
 
 	b.built = true
 

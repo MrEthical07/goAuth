@@ -1,469 +1,446 @@
 # API Reference
 
-This index lists exported goAuth APIs by package.
+This index lists every exported symbol in the goAuth module, organised by package.
+Test and benchmark functions are excluded.
+For detailed behaviour, see the GoDoc comments in source or the linked module docs.
 
-## package `goAuth`
-- `AccountConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `AccountStatus` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ActiveSessionEstimate` (func) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `AuditConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `AuditDropped` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `AuditErrorCode` (type) — declared in `engine_audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `AuditEvent` (type) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `AuditSink` (type) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `AuthResult` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BackupCodeRecord` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsInc` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsIncDisabled` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsIncDisabledParallel` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsIncMixedParallelPackedPseudoRandom` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsIncMixedParallelPackedRoundRobin` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsIncMixedParallelPaddedPseudoRandom` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsIncMixedParallelPaddedRoundRobin` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsIncParallel` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkMetricsObserveLatencyParallel` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Build` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Builder` (type) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CacheConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ChangePassword` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ChannelSink` (type) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Check` (func) — declared in `backup_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Check` (func) — declared in `totp_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CheckConfirm` (func) — declared in `reset_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CheckConfirm` (func) — declared in `verification_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CheckRequest` (func) — declared in `reset_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CheckRequest` (func) — declared in `verification_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Close` (func) — declared in `audit_dispatcher.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Close` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Config` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmEmailVerification` (func) — declared in `engine_email_verification.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmLoginMFA` (func) — declared in `engine_login_mfa.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmLoginMFAWithType` (func) — declared in `engine_login_mfa.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmPasswordReset` (func) — declared in `engine_password_reset.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmPasswordResetWithBackupCode` (func) — declared in `engine_password_reset.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmPasswordResetWithMFA` (func) — declared in `engine_password_reset.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmPasswordResetWithTOTP` (func) — declared in `engine_password_reset.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConfirmTOTPSetup` (func) — declared in `engine_totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Consume` (func) — declared in `reset_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Consume` (func) — declared in `verification_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ConsumeBackupCode` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Contains` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Cooldown` (func) — declared in `reset_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Count` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CreateAccount` (func) — declared in `engine_account.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CreateAccountRequest` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CreateAccountResult` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CreateUser` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CreateUserInput` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DatabaseConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Delete` (func) — declared in `mfa_login_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DeleteAccount` (func) — declared in `engine_account_status.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DeviceBindingConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DisableAccount` (func) — declared in `engine_account_status.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DisableTOTP` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DisableTOTP` (func) — declared in `engine_totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Dropped` (func) — declared in `audit_dispatcher.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `EmailVerificationConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Emit` (func) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Emit` (func) — declared in `audit_dispatcher.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Emit` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `EnableAccount` (func) — declared in `engine_account_status.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `EnableTOTP` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Enabled` (func) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Enforce` (func) — declared in `account_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Engine` (type) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Events` (func) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GenerateBackupCodes` (func) — declared in `engine_backup_codes.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GenerateSecret` (func) — declared in `totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GenerateTOTPSetup` (func) — declared in `engine_totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Get` (func) — declared in `mfa_login_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Get` (func) — declared in `reset_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetActiveSessionCount` (func) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetBackupCodes` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetLoginAttempts` (func) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetSessionInfo` (func) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetTOTPSecret` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetUserByID` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetUserByIdentifier` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HasPermission` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Health` (func) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HealthStatus` (type) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Inc` (func) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Inc` (func) — declared in `metrics_bench_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `InvalidateUserSessions` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `JSONWriterSink` (type) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `JWTConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `KeyBuilder` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LatencyEnabled` (func) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ListActiveSessions` (func) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LockAccount` (func) — declared in `engine_account_status.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Login` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LoginResult` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LoginWithBackupCode` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LoginWithResult` (func) — declared in `engine_login_mfa.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LoginWithTOTP` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Logout` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LogoutAll` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LogoutAllInTenant` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LogoutByAccessToken` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `LogoutInTenant` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MarkTOTPVerified` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MetricID` (type) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Metrics` (type) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MetricsConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MetricsSnapshot` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MetricsSnapshot` (type) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MultiTenantConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `New` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewChannelSink` (func) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewJSONWriterSink` (func) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewMetrics` (func) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NoOpSink` (type) — declared in `audit.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Observe` (func) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `PasswordConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `PasswordConfigReport` (type) — declared in `security_report.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `PasswordResetConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `PermissionConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `PermissionMask` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ProvisionTOTP` (func) — declared in `engine_totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ProvisionURI` (func) — declared in `totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RecordFailure` (func) — declared in `backup_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RecordFailure` (func) — declared in `mfa_login_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RecordFailure` (func) — declared in `totp_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Refresh` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RegenerateBackupCodes` (func) — declared in `engine_backup_codes.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ReplaceBackupCodes` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RequestEmailVerification` (func) — declared in `engine_email_verification.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RequestPasswordReset` (func) — declared in `engine_password_reset.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Reset` (func) — declared in `backup_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Reset` (func) — declared in `totp_limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ResetStrategyType` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ResultConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RoleStore` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RouteMode` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Save` (func) — declared in `mfa_login_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Save` (func) — declared in `reset_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Save` (func) — declared in `verification_store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SecurityConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SecurityReport` (func) — declared in `security_report.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SecurityReport` (type) — declared in `security_report.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SessionConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SessionHardeningConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SessionInfo` (type) — declared in `engine_introspection.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Snapshot` (func) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TOTPConfig` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TOTPProvision` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TOTPRecord` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TOTPSetup` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAccountStatusDeletedCannotLogin` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAccountStatusDisabledCannotLogin` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAccountStatusLockedCannotLogin` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAccountStatusUpdateIncrementsAccountVersion` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAuditBufferFullDropIfFullFalseBlocksUntilSpace` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAuditBufferFullDropIfFullTrueDoesNotBlock` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAuditDisabledNoSinkCalls` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAuditDispatcherCloseIdempotentAndEmitAfterCloseSafe` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAuditEnabledSinkReceivesEventWithFields` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestAuditJSONWriterSinkWritesJSONLines` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodeConcurrentConsumeOnlyOneSucceeds` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodeConsumeOneTimeAndReplayFail` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodeHashIncludesUserIDSalt` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodeNotLeakedInAuditEvents` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodeRateLimitEnforced` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodesGenerateStoresOnlyHashes` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodesRegenerationReplacesOldSet` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupCodesSecondGenerateRequiresTOTPVerification` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBackupLimiterKeyTenantScoped` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBuildConfigImmutabilityAgainstExternalMutation` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBuilderSessionCapsRequireRedis` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestBuilderStrictModeRequiresRedis` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestChangePasswordKeepsUpdatedHashWhenInvalidationFails` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestChangePasswordRejectsReuse` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestChangePasswordRejectsShortNewPassword` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestChangePasswordSuccessInvalidatesSessionsAndResetsLimiter` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestChangePasswordUsesUserTenantForInvalidation` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestChangePasswordWrongOldPassword` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestConfigValidateDangerousJWTOnlyAccountVersionCheckRejected` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestConfigValidateDangerousJWTOnlyDeviceBindingEnforceRejected` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestConfigValidateDevModeAllowsRelaxedCrypto` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestConfigValidateProductionRejectsWeakArgon2` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestConfigValidateProductionRejectsWeakHS256Key` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestConfigValidateTOTPRequiredButDisabledRejected` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountAutoLoginFalseNoTokens` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountAutoLoginIssuesTokens` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountAutoLoginSessionFailureReturnsTypedError` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountDefaultRoleApplied` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountDuplicateRejected` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountExplicitRoleOverride` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountInvalidInputDoesNotConsumeLimiter` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountInvalidRoleRejected` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountMultiTenantSeparation` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountPasswordTooShortRejected` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountProviderErrorPropagation` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountRateLimitEnforced` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountRedisUnavailable` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestCreateAccountSuccess` (func) — declared in `engine_account_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingDetectOnlyAnomalyThrottled` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingDetectOnlyLogsButAllows` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingDisabledHasNoEffect` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingDisabledValidateNoProviderCallsRegression` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingEnforcementRejects` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingMissingContextDetectOnlyCountsAnomaly` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingMissingContextEnforceRejects` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDeviceBindingReplayStillHandled` (func) — declared in `engine_device_binding_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestDisableAccountInvalidatesExistingSessions` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationAttemptsExceeded` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationEnumerationSafeNoRecordWrite` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationJWTOnlyAllowsPendingUntilAccessTTL` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationOTPFlowSuccess` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationReplayRejected` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationRequestFailsWhenRedisUnavailable` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationStatusChangeIncrementsAccountVersion` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationStrictModeBlocksPendingAccessImmediately` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationSuccessEnablesLogin` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationTokenFlowSuccess` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestEmailVerificationUUIDFlowSuccess` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionActiveSessionEstimate` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionConcurrentCallsSafe` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionGetLoginAttemptsMissingReturnsZero` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionHealthRedisUnavailable` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionMetricsSnapshotUnaffected` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionNoPanicWhenRedisDown` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionReadOnlyDoesNotModifyState` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionSessionCountAndListAfterLoginLogout` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestIntrospectionTenantIsolationEnforced` (func) — declared in `engine_introspection_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestJWTOnlyModeAllowsUntilTTLAfterDisable` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestLockAccountInvalidatesExistingSessions` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginBackupFallbackWorks` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginChallengeAndConfirmSuccess` (func) — declared in `engine_mfa_login_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginChallengeExpired` (func) — declared in `engine_mfa_login_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginFailsIfTOTPDisabledAfterChallenge` (func) — declared in `engine_mfa_login_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginReplayRejected` (func) — declared in `engine_mfa_login_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginTenantMismatchFails` (func) — declared in `engine_mfa_login_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginWithoutTOTPReturnsTokens` (func) — declared in `engine_mfa_login_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMFALoginWrongCodeAndAttemptsExceeded` (func) — declared in `engine_mfa_login_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMetricsConcurrentIncrementSafe` (func) — declared in `metrics_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMetricsDisabledNoIncrement` (func) — declared in `metrics_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMetricsEnabledIncrement` (func) — declared in `metrics_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMetricsHistogramBucketCorrectness` (func) — declared in `metrics_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestMetricsSnapshotConsistency` (func) — declared in `metrics_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetCanUseBackupCodeWhenRequired` (func) — declared in `engine_backup_codes_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetConfigOTPValidation` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetConfirmFailsWhenRedisUnavailable` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetOTPAttemptsExceeded` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetReplayRaceSingleSuccess` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetRequestEnumerationSafe` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetRequestFailsWhenRedisUnavailable` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetTokenFlow` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestPasswordResetUUIDFlow` (func) — declared in `engine_password_reset_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestRefreshBlockedAfterDisable` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestRequireForLoginBlocksLoginForPendingAccount` (func) — declared in `engine_email_verification_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSecurityReportReflectsPosture` (func) — declared in `config_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningClockSkewAcceptsWithinTolerance` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningClockSkewRejectsFarFutureToken` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningConcurrentLoginLimitEnforced` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningMaxSessionsPerTenantEnforced` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningMaxSessionsPerUserEnforced` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningReplayMetricIncrements` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningSingleSessionModeReplacesPriorSession` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestSessionHardeningValidateNoProviderCallsRegression` (func) — declared in `engine_session_hardening_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestStatusChangeMustAdvanceAccountVersion` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestStrictModeBlocksImmediatelyAfterDisable` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPConfirmSetupEnablesAndInvalidatesSessions` (func) — declared in `engine_totp_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPConfirmSetupRejectsInvalidCode` (func) — declared in `engine_totp_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPDisableClearsAndInvalidatesSessions` (func) — declared in `engine_totp_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPDriftWindowAcceptsAdjacentStep` (func) — declared in `totp_rfc_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPLoginFlowRequiredInvalidValid` (func) — declared in `engine_totp_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPPasswordResetRequirementPreservesChallenge` (func) — declared in `engine_totp_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPProvisionReturnsSecretAndURI` (func) — declared in `engine_totp_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPValidatePathNoProviderCallsRegression` (func) — declared in `engine_totp_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPVerifyRFCVectorsSHA1` (func) — declared in `totp_rfc_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPVerifyRFCVectorsSHA256` (func) — declared in `totp_rfc_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPVerifyRFCVectorsSHA512` (func) — declared in `totp_rfc_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestTOTPWrongDigitsRejected` (func) — declared in `totp_rfc_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestValidateHotPathDoesNotCallProvider` (func) — declared in `engine_account_status_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestValidateWithMetricsStillAvoidsProviderCalls` (func) — declared in `metrics_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestVerifyTOTPRejectsDisabledRecord` (func) — declared in `totp_rfc_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestVerifyTOTPReplayRejected` (func) — declared in `totp_rfc_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `UpdateAccountStatus` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `UpdatePasswordHash` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `UpdateTOTPLastUsedCounter` (func) — declared in `engine_change_password_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `User` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `UserProvider` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `UserRecord` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `UserStore` (type) — declared in `types.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Validate` (func) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Validate` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ValidateAccess` (func) — declared in `engine.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ValidationMode` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Value` (func) — declared in `metrics.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `VerificationStrategyType` (type) — declared in `config.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `VerifyBackupCode` (func) — declared in `engine_backup_codes.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `VerifyBackupCodeInTenant` (func) — declared in `engine_backup_codes.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `VerifyCode` (func) — declared in `totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `VerifyTOTP` (func) — declared in `engine_totp.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithAuditSink` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithClientIP` (func) — declared in `context.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithConfig` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithLatencyHistograms` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithMetricsEnabled` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithPermissions` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithRedis` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithRoles` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithTenantID` (func) — declared in `context.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithUserAgent` (func) — declared in `context.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `WithUserProvider` (func) — declared in `builder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Write` (func) — declared in `audit_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+> **Tip:** In Go, run `go doc github.com/MrEthical07/goAuth/<pkg>` to browse any package locally.
 
-## package `internal`
-- `Bytes` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DecodeRefreshToken` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DecodeResetToken` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `EncodeRefreshToken` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `EncodeResetToken` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HashBindingValue` (func) — declared in `internal/device.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HashRefreshSecret` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HashResetBytes` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HashResetSecret` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewOTP` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewRefreshSecret` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewResetSecret` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewSessionID` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ParseSessionID` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SessionID` (type) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `String` (func) — declared in `internal/random.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+---
 
-## package `internaldefs`
-- `CounterDef` (type) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CounterDefs` (value) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CumulativeBuckets` (func) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HistogramBoundSuffix` (value) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HistogramBounds` (value) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HistogramDef` (type) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `HistogramDefs` (value) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NormalizeBuckets` (func) — declared in `metrics/export/internaldefs/defs.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+## Package `goAuth` (root)
 
-## package `jwt`
-- `AccessClaims` (type) — declared in `jwt/manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Config` (type) — declared in `jwt/manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CreateAccess` (func) — declared in `jwt/manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Manager` (type) — declared in `jwt/manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewManager` (func) — declared in `jwt/manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ParseAccess` (func) — declared in `jwt/manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SigningMethod` (type) — declared in `jwt/manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+The root package contains the authentication engine, builder, configuration, types, context helpers, audit primitives, and in-process metrics.
 
-## package `middleware`
-- `AuthResultFromContext` (func) — declared in `middleware/guard.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Guard` (func) — declared in `middleware/guard.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RequireJWTOnly` (func) — declared in `middleware/jwt_only.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RequireStrict` (func) — declared in `middleware/strict.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+**Module docs:** [engine.md](engine.md) · [config.md](config.md) · [audit.md](audit.md) · [metrics.md](metrics.md)
 
-## package `otel`
-- `AuditDropped` (func) — declared in `metrics/export/otel/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Close` (func) — declared in `metrics/export/otel/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MetricsSnapshot` (func) — declared in `metrics/export/otel/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewOTelExporter` (func) — declared in `metrics/export/otel/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewOTelExporterFromSource` (func) — declared in `metrics/export/otel/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `OTelExporter` (type) — declared in `metrics/export/otel/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestExporterConcurrentCollectNoPanic` (func) — declared in `metrics/export/otel/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestExporterRegistersAndCollects` (func) — declared in `metrics/export/otel/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestExporterRejectsNilSource` (func) — declared in `metrics/export/otel/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+### Engine
 
-## package `password`
-- `Argon2` (type) — declared in `password/argon2.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Config` (type) — declared in `password/argon2.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Hash` (func) — declared in `password/argon2.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NeedsUpgrade` (func) — declared in `password/argon2.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewArgon2` (func) — declared in `password/argon2.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestHashAndVerify` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestHashEmptyPassword` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestHashTooShortPassword` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestNeedsUpgrade` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestNeedsUpgradeSameConfig` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestVerifyMalformedHash` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestVerifyWrongPassword` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestVerifyWrongVersion` (func) — declared in `password/argon2_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Verify` (func) — declared in `password/argon2.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Engine` | type | Central authentication engine; thread-safe after construction. |
+| `Close` | method | Shuts down the audit dispatcher and releases resources. |
 
-## package `permission`
-- `Bit` (func) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Clear` (func) — declared in `permission/mask128.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Clear` (func) — declared in `permission/mask256.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Clear` (func) — declared in `permission/mask512.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Clear` (func) — declared in `permission/mask64.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Count` (func) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Count` (func) — declared in `permission/role_manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DecodeMask` (func) — declared in `permission/mask_codec.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `EncodeMask` (func) — declared in `permission/mask_codec.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Freeze` (func) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Freeze` (func) — declared in `permission/role_manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetMask` (func) — declared in `permission/role_manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Has` (func) — declared in `permission/mask128.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Has` (func) — declared in `permission/mask256.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Has` (func) — declared in `permission/mask512.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Has` (func) — declared in `permission/mask64.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Mask128` (type) — declared in `permission/mask128.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Mask256` (type) — declared in `permission/mask256.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Mask512` (type) — declared in `permission/mask512.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Mask64` (type) — declared in `permission/mask64.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Name` (func) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewRegistry` (func) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewRoleManager` (func) — declared in `permission/role_manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Raw` (func) — declared in `permission/mask64.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Register` (func) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RegisterRole` (func) — declared in `permission/role_manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Registry` (type) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RoleManager` (type) — declared in `permission/role_manager.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RootBit` (func) — declared in `permission/registry.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Set` (func) — declared in `permission/mask128.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Set` (func) — declared in `permission/mask256.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Set` (func) — declared in `permission/mask512.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Set` (func) — declared in `permission/mask64.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+### Builder
 
-## package `prometheus`
-- `AuditDropped` (func) — declared in `metrics/export/prometheus/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `BenchmarkRender` (func) — declared in `metrics/export/prometheus/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Handler` (func) — declared in `metrics/export/prometheus/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `MetricsSnapshot` (func) — declared in `metrics/export/prometheus/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewPrometheusExporter` (func) — declared in `metrics/export/prometheus/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewPrometheusExporterFromSource` (func) — declared in `metrics/export/prometheus/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `PrometheusExporter` (type) — declared in `metrics/export/prometheus/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Render` (func) — declared in `metrics/export/prometheus/exporter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestHandlerWritesPrometheusContentType` (func) — declared in `metrics/export/prometheus/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestRenderDeterministicIncludesCounterAndHistogram` (func) — declared in `metrics/export/prometheus/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TestRenderEmptyWhenMetricsDisabled` (func) — declared in `metrics/export/prometheus/exporter_test.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Builder` | type | Fluent builder for constructing an `Engine` with validated configuration. |
+| `New` | func | Creates a new `Builder` with `DefaultConfig()` and mandatory dependencies. |
+| `WithConfig` | method | Overrides the default configuration. |
+| `WithRedis` | method | Attaches a Redis client for session storage. |
+| `WithPermissions` | method | Attaches a `permission.Registry` for bitmask RBAC. |
+| `WithRoles` | method | Attaches a `permission.RoleManager` for named-role → bitmask lookup. |
+| `WithUserProvider` | method | Attaches a `UserProvider` for user lookup and mutation. |
+| `WithAuditSink` | method | Attaches an `AuditSink` for event dispatching. |
+| `WithMetricsEnabled` | method | Enables in-process counter metrics. |
+| `WithLatencyHistograms` | method | Enables latency histogram recording. |
+| `Build` | method | Validates config and returns a ready `*Engine`. |
 
-## package `rate`
-- `CheckLogin` (func) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `CheckRefresh` (func) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Config` (type) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetLoginAttempts` (func) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `IncrementLogin` (func) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `IncrementRefresh` (func) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Limiter` (type) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `New` (func) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ResetLogin` (func) — declared in `internal/rate/limiter.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+### Authentication
 
-## package `session`
-- `ActiveSessionCount` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ActiveSessionIDs` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Decode` (func) — declared in `session/encoder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Delete` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `DeleteAllForUser` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Encode` (func) — declared in `session/encoder.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ErrRedisUnavailable` (value) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ErrRefreshHashMismatch` (value) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `EstimateActiveSessions` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Get` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetManyReadOnly` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `GetReadOnly` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `NewStore` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Ping` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `RotateRefreshHash` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Save` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Session` (type) — declared in `session/model.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `SetTenantSessionCount` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `ShouldEmitDeviceAnomaly` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `Store` (type) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TenantSessionCount` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
-- `TrackReplayAnomaly` (func) — declared in `session/store.go` and documented in source comments for behavior, errors, concurrency, performance, and security notes.
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Login` | method | Authenticates by identifier+password; returns access + refresh tokens. |
+| `LoginWithTOTP` | method | Authenticates with password + TOTP code in a single call. |
+| `LoginWithBackupCode` | method | Authenticates with password + backup code in a single call. |
+| `LoginWithResult` | method | Authenticates and returns a `LoginResult` indicating MFA challenge status. |
+| `ConfirmLoginMFA` | method | Completes a pending MFA challenge with a TOTP code. |
+| `ConfirmLoginMFAWithType` | method | Completes a pending MFA challenge with a specified code type (TOTP or backup). |
+
+### Token Lifecycle
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Refresh` | method | Rotates a refresh token, returning a new access + refresh pair. |
+| `ValidateAccess` | method | Validates an access token (JWT-only, no Redis). |
+| `Validate` | method | Validates an access token with session verification (may hit Redis). |
+| `HasPermission` | method | Checks whether a token carries a specific permission bit. |
+
+### Logout & Session Invalidation
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Logout` | method | Destroys a single session by refresh token. |
+| `LogoutByAccessToken` | method | Destroys a session using the access token's session ID. |
+| `LogoutAll` | method | Destroys all sessions for a user. |
+| `LogoutInTenant` | method | Destroys a single session scoped to a tenant. |
+| `LogoutAllInTenant` | method | Destroys all sessions for a user within a tenant. |
+| `InvalidateUserSessions` | method | Destroys all sessions for a user (called internally on password/status changes). |
+
+### Account Management
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `CreateAccount` | method | Creates a user account with optional auto-login and role assignment. |
+| `ChangePassword` | method | Changes a user's password after verifying the old password. |
+| `DisableAccount` | method | Disables an account, preventing new logins. |
+| `EnableAccount` | method | Re-enables a previously disabled account. |
+| `LockAccount` | method | Locks an account (e.g. after brute-force detection). |
+| `DeleteAccount` | method | Soft-deletes an account, invalidating all sessions. |
+
+### TOTP (Time-based One-Time Password)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `GenerateTOTPSetup` | method | Generates a TOTP secret and provisioning URI for QR display. |
+| `ProvisionTOTP` | method | Provisions TOTP for a user (stores unverified record). |
+| `ConfirmTOTPSetup` | method | Confirms TOTP setup by verifying a code, then enables MFA. |
+| `VerifyTOTP` | method | Verifies a TOTP code against a user's stored secret. |
+| `DisableTOTP` | method | Disables TOTP for a user and invalidates sessions. |
+
+### Backup Codes
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `GenerateBackupCodes` | method | Generates a set of single-use backup codes (stores only hashes). |
+| `RegenerateBackupCodes` | method | Replaces the existing backup code set with a fresh one. |
+| `VerifyBackupCode` | method | Verifies and consumes a backup code. |
+| `VerifyBackupCodeInTenant` | method | Verifies a backup code scoped to a specific tenant. |
+
+### Password Reset
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `RequestPasswordReset` | method | Initiates a password reset; returns a token/OTP/UUID depending on strategy. |
+| `ConfirmPasswordReset` | method | Completes a password reset using the issued credential. |
+| `ConfirmPasswordResetWithTOTP` | method | Completes a reset with additional TOTP verification. |
+| `ConfirmPasswordResetWithBackupCode` | method | Completes a reset with a backup code as second factor. |
+| `ConfirmPasswordResetWithMFA` | method | Completes a reset with a generic MFA code type. |
+
+### Email Verification
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `RequestEmailVerification` | method | Sends a verification credential (token/OTP/UUID) for the user's email. |
+| `ConfirmEmailVerification` | method | Confirms email verification using the issued credential. |
+
+### Introspection & Health
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `GetActiveSessionCount` | method | Returns the number of active sessions for a user. |
+| `ListActiveSessions` | method | Returns metadata for all active sessions of a user. |
+| `GetSessionInfo` | method | Returns metadata for a single session by ID. |
+| `ActiveSessionEstimate` | method | Returns a probabilistic estimate of total active sessions (HyperLogLog). |
+| `Health` | method | Pings Redis and returns a `HealthStatus`. |
+| `GetLoginAttempts` | method | Returns the current failed-login count for a user+IP key. |
+| `MetricsSnapshot` | method | Returns a point-in-time copy of all in-process metrics. |
+| `AuditDropped` | method | Returns the number of audit events dropped due to buffer overflow. |
+| `SecurityReport` | method | Returns a `SecurityReport` reflecting the engine's security posture. |
+
+### Configuration
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Config` | type | Top-level configuration struct for the engine. |
+| `DefaultConfig` | func | Returns a production-safe default configuration. |
+| `HighSecurityConfig` | func | Returns a hardened configuration preset. |
+| `HighThroughputConfig` | func | Returns a performance-optimised preset with relaxed security. |
+| `Validate` | method | Validates a `Config`, returning an error if any field is invalid. |
+| `Lint` | method | Returns non-fatal warnings about suboptimal settings. |
+| `JWTConfig` | type | JWT signing/verification settings. |
+| `SessionConfig` | type | Session TTL and storage settings. |
+| `PasswordConfig` | type | Argon2id parameter settings. |
+| `SecurityConfig` | type | Rate-limit thresholds and lockout durations. |
+| `SessionHardeningConfig` | type | Concurrent session limits and replay detection. |
+| `DeviceBindingConfig` | type | IP/UA fingerprint binding mode (off / detect / enforce). |
+| `TOTPConfig` | type | TOTP algorithm, digits, period, drift window. |
+| `PasswordResetConfig` | type | Reset strategy, TTL, MFA requirement, OTP settings. |
+| `EmailVerificationConfig` | type | Verification strategy, TTL, login-gate behaviour. |
+| `AccountConfig` | type | Account creation rate-limits and default role. |
+| `AuditConfig` | type | Audit buffer size, drop-on-full policy. |
+| `MetricsConfig` | type | Counter/histogram enable flags. |
+| `PermissionConfig` | type | Bitmask width selection (64/128/256/512). |
+| `MultiTenantConfig` | type | Tenant isolation and session caps. |
+| `ValidationMode` | type | Enum: `JWTOnly`, `Hybrid`, `Strict`. |
+| `RouteMode` | type | Per-route validation override. |
+| `ResetStrategyType` | type | Enum: `token`, `otp`, `uuid`. |
+| `VerificationStrategyType` | type | Enum: `token`, `otp`, `uuid`. |
+| `ResultConfig` | type | Controls what `CreateAccountResult` includes. |
+| `DatabaseConfig` | type | Placeholder for future SQL backing store. |
+| `CacheConfig` | type | Placeholder for future local cache layer. |
+
+### Types
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `AccountStatus` | type | Enum (active / disabled / locked / deleted). |
+| `PermissionMask` | type | Interface for bitmask permission checking. |
+| `User` | type | Minimal user identity (ID, roles, permissions). |
+| `AuthResult` | type | Validated-token result: user ID, session ID, claims, permissions. |
+| `UserStore` | type | Interface for user CRUD operations. |
+| `RoleStore` | type | Interface for role → permission lookups. |
+| `KeyBuilder` | type | Interface for generating Redis key prefixes. |
+| `UserProvider` | type | Unified user-store adapter used by the engine. |
+| `UserRecord` | type | Full user record including password hash and status. |
+| `TOTPProvision` | type | Provisioning result: secret + URI. |
+| `TOTPSetup` | type | Alias for `TOTPProvision`. |
+| `TOTPRecord` | type | Stored TOTP state: secret, verified flag, counters. |
+| `LoginResult` | type | Login outcome: tokens or MFA challenge ID. |
+| `BackupCodeRecord` | type | Stored backup code: hash, used flag, timestamps. |
+| `CreateUserInput` | type | Input struct for `CreateAccount`. |
+| `CreateAccountRequest` | type | Public request struct for account creation. |
+| `CreateAccountResult` | type | Result struct: user ID + optional tokens. |
+| `SecurityReport` | type | Engine security posture report. |
+| `PasswordConfigReport` | type | Argon2 parameter snapshot within `SecurityReport`. |
+| `HealthStatus` | type | Redis health status returned by `Health()`. |
+| `SessionInfo` | type | Session metadata returned by introspection. |
+
+### Audit
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `AuditEvent` | type | Structured audit event (action, user, IP, tenant, metadata). |
+| `AuditSink` | type | Interface for receiving audit events. |
+| `NoOpSink` | type | Sink that discards all events. |
+| `ChannelSink` | type | Sink backed by a Go channel for testing/buffering. |
+| `JSONWriterSink` | type | Sink that writes JSON-line events to an `io.Writer`. |
+| `NewChannelSink` | func | Creates a `ChannelSink` with the given buffer size. |
+| `NewJSONWriterSink` | func | Creates a `JSONWriterSink` writing to the given writer. |
+
+### Metrics
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `MetricID` | type | Enum identifying a specific counter or histogram. |
+| `Metrics` | type | Thread-safe in-process metric store (counters + histograms). |
+| `MetricsSnapshot` | type | Point-in-time copy of all metric values. |
+| `NewMetrics` | func | Creates a `Metrics` instance with the given enable flags. |
+
+### Context Helpers
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `WithClientIP` | func | Attaches a client IP address to a `context.Context`. |
+| `WithTenantID` | func | Attaches a tenant ID to a `context.Context`. |
+| `WithUserAgent` | func | Attaches a User-Agent string to a `context.Context`. |
+
+---
+
+## Package `jwt`
+
+JWT token creation and parsing.
+
+**Module doc:** [jwt.md](jwt.md)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `SigningMethod` | type | Enum: `HS256`, `RS256`, `EdDSA`. |
+| `Config` | type | Signing key, method, issuer, audience. |
+| `Manager` | type | Stateless JWT issuer/verifier; safe for concurrent use. |
+| `NewManager` | func | Creates a `Manager` from a `Config`. |
+| `CreateAccess` | method | Signs a new access token with the given claims. |
+| `ParseAccess` | method | Parses and validates an access token string. |
+| `AccessClaims` | type | JWT claims struct embedded in access tokens. |
+
+---
+
+## Package `session`
+
+Redis-backed session storage with binary encoding.
+
+**Module doc:** [session.md](session.md)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Store` | type | Redis-backed session store; all methods are concurrency-safe. |
+| `NewStore` | func | Creates a `Store` connected to the given Redis client. |
+| `Session` | type | In-memory session record (user, tenant, device hash, version, timestamps). |
+| `Save` | method | Persists a session to Redis with the configured TTL. |
+| `Get` | method | Fetches a session by ID, verifying the refresh hash atomically. |
+| `GetReadOnly` | method | Fetches a session without refresh-hash verification. |
+| `GetManyReadOnly` | method | Batch-fetches multiple sessions by ID. |
+| `Delete` | method | Removes a single session from Redis. |
+| `DeleteAllForUser` | method | Removes all sessions for a user (and optional tenant). |
+| `RotateRefreshHash` | method | Atomically replaces the refresh hash on an existing session. |
+| `ActiveSessionCount` | method | Returns the number of active sessions for a user. |
+| `ActiveSessionIDs` | method | Returns all session IDs for a user. |
+| `EstimateActiveSessions` | method | HyperLogLog-based estimate of total active sessions. |
+| `SetTenantSessionCount` | method | Increments/decrements the per-tenant session gauge. |
+| `TenantSessionCount` | method | Returns the current tenant session count. |
+| `ShouldEmitDeviceAnomaly` | method | Rate-limits device-anomaly audit events. |
+| `TrackReplayAnomaly` | method | Records a refresh-token replay for anomaly detection. |
+| `Ping` | method | Checks Redis connectivity. |
+| `Encode` | func | Serialises a `Session` to binary format. |
+| `Decode` | func | Deserialises binary data into a `Session`. |
+| `ErrRedisUnavailable` | var | Sentinel error for Redis connection failures. |
+| `ErrRefreshHashMismatch` | var | Sentinel error for refresh token replay detection. |
+
+---
+
+## Package `permission`
+
+Bitmask-based RBAC: registries, role managers, and fixed-width mask types.
+
+**Module doc:** [permission.md](permission.md)
+
+### Registry
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Registry` | type | Maps permission names to bit positions; freeze-once semantics. |
+| `NewRegistry` | func | Creates an empty registry with the given bitmask width. |
+| `Register` | method | Assigns the next available bit to a named permission. |
+| `Bit` | method | Returns the bit position for a named permission. |
+| `Name` | method | Returns the name for a bit position. |
+| `RootBit` | method | Returns the superuser bit position. |
+| `Count` | method | Returns the number of registered permissions. |
+| `Freeze` | method | Locks the registry against further registration. |
+
+### RoleManager
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `RoleManager` | type | Maps named roles to aggregated permission bitmasks. |
+| `NewRoleManager` | func | Creates a `RoleManager` backed by the given `Registry`. |
+| `RegisterRole` | method | Defines a role with a list of permission names. |
+| `GetMask` | method | Returns the bitmask for a named role. |
+| `Count` | method | Returns the number of registered roles. |
+| `Freeze` | method | Locks the role manager against further registration. |
+
+### Mask Types
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Mask64` | type | 64-bit permission bitmask. |
+| `Mask128` | type | 128-bit permission bitmask. |
+| `Mask256` | type | 256-bit permission bitmask. |
+| `Mask512` | type | 512-bit permission bitmask. |
+| `Has` | method | Tests whether a specific bit is set. |
+| `Set` | method | Sets a specific bit. |
+| `Clear` | method | Clears a specific bit. |
+| `Raw` | method | Returns the underlying integer(s) (Mask64 only; others use Has/Set/Clear). |
+
+### Codec
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `EncodeMask` | func | Serialises any mask to a width-prefixed byte slice. |
+| `DecodeMask` | func | Deserialises a byte slice into the appropriate mask type. |
+
+---
+
+## Package `password`
+
+Argon2id password hashing.
+
+**Module doc:** [password.md](password.md)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Config` | type | Argon2id parameters: time, memory, threads, key/salt lengths. |
+| `Argon2` | type | Stateless hasher/verifier; safe for concurrent use. |
+| `NewArgon2` | func | Creates an `Argon2` instance with the given config. |
+| `Hash` | method | Hashes a plaintext password, returning a PHC-format string. |
+| `Verify` | method | Verifies a plaintext password against a stored hash. |
+| `NeedsUpgrade` | method | Reports whether a hash was produced with older parameters. |
+
+---
+
+## Package `middleware`
+
+HTTP middleware for token validation.
+
+**Module doc:** [middleware.md](middleware.md)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Guard` | func | Returns middleware that validates via the engine's configured validation mode. |
+| `RequireJWTOnly` | func | Returns middleware that validates using JWT-only (0 Redis calls). |
+| `RequireStrict` | func | Returns middleware that validates with full session verification (1 Redis GET). |
+| `AuthResultFromContext` | func | Extracts the `AuthResult` set by any guard middleware. |
+
+---
+
+## Package `metrics/export/prometheus`
+
+Prometheus text-format exporter.
+
+**Module doc:** [metrics.md](metrics.md)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `PrometheusExporter` | type | Renders engine metrics in Prometheus exposition format. |
+| `NewPrometheusExporter` | func | Creates an exporter from an `*Engine`. |
+| `NewPrometheusExporterFromSource` | func | Creates an exporter from any `MetricsSnapshot` + `AuditDropped` source. |
+| `Render` | method | Returns the Prometheus text body as a byte slice. |
+| `Handler` | method | Returns an `http.Handler` for `/metrics`. |
+
+---
+
+## Package `metrics/export/otel`
+
+OpenTelemetry metric bridge.
+
+**Module doc:** [metrics.md](metrics.md)
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `OTelExporter` | type | Pushes engine metrics into an OTel `metric.Meter`. |
+| `NewOTelExporter` | func | Creates an exporter from an `*Engine` and a `metric.Meter`. |
+| `NewOTelExporterFromSource` | func | Creates an exporter from any snapshot source and meter. |
+| `Close` | method | Stops the background collection goroutine. |
+
+---
+
+## Package `metrics/export/internaldefs`
+
+Shared counter/histogram definitions used by exporters.
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `CounterDef` | type | Metadata for a single counter (name, help text, metric ID). |
+| `HistogramDef` | type | Metadata for a single histogram (name, help text, metric ID). |
+| `CounterDefs` | var | Ordered slice of all counter definitions. |
+| `HistogramDefs` | var | Ordered slice of all histogram definitions. |
+| `HistogramBounds` | var | Default histogram bucket boundaries. |
+| `HistogramBoundSuffix` | var | Prometheus-style boundary suffixes. |
+| `CumulativeBuckets` | func | Converts differential histogram buckets to cumulative form. |
+| `NormalizeBuckets` | func | Pads a bucket slice to match the expected length. |
+
+---
+
+## Internal Packages
+
+These packages are not importable by external Go code but are documented here for contributor reference.
+
+### Package `internal`
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `SessionID` | type | 128-bit cryptographic session identifier. |
+| `NewSessionID` | func | Generates a new random `SessionID`. |
+| `ParseSessionID` | func | Parses a hex-encoded session ID string. |
+| `String` | method | Returns the hex representation of a `SessionID`. |
+| `Bytes` | method | Returns the raw 16-byte slice. |
+| `NewRefreshSecret` | func | Generates a 32-byte cryptographic refresh secret. |
+| `EncodeRefreshToken` | func | Base64url-encodes a refresh secret for transport. |
+| `DecodeRefreshToken` | func | Decodes a base64url refresh token. |
+| `HashRefreshSecret` | func | SHA-256 hashes a refresh secret for storage. |
+| `NewResetSecret` | func | Generates a 32-byte password-reset secret. |
+| `EncodeResetToken` | func | Base64url-encodes a reset secret. |
+| `DecodeResetToken` | func | Decodes a base64url reset token. |
+| `HashResetSecret` | func | SHA-256 hashes a reset secret. |
+| `HashResetBytes` | func | SHA-256 hashes raw reset bytes. |
+| `NewOTP` | func | Generates a numeric OTP of the configured length. |
+| `HashBindingValue` | func | SHA-256 hashes a device-binding value (IP or UA). |
+
+### Package `internal/rate`
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `Config` | type | Rate-limiter configuration (max attempts, window, lockout). |
+| `Limiter` | type | Redis-backed sliding-window rate limiter. |
+| `New` | func | Creates a `Limiter` from a `Config` and Redis client. |
+| `CheckLogin` | method | Returns whether a login attempt is allowed for the given key. |
+| `IncrementLogin` | method | Records a failed login attempt. |
+| `ResetLogin` | method | Clears the failure counter after a successful login. |
+| `CheckRefresh` | method | Returns whether a refresh attempt is allowed. |
+| `IncrementRefresh` | method | Records a failed refresh attempt. |
+| `GetLoginAttempts` | method | Returns the current failure count for an identifier. |
+
+---
+
+*Auto-generated descriptions have been replaced with source-derived summaries.
+For full signatures and behaviour details, see the GoDoc comments in source.*
