@@ -156,8 +156,9 @@ go test -run '^$' -bench . -benchmem ./...
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+Licensed under the Apache License, Version 2.0. See `LICENSE` and `NOTICE`.
 
 ---
 
 > **Note:** AI agents were used for documentation and report generation in this project. Content has been verified against actual test outputs and code, but please exercise caution — review carefully and [report any issues](https://github.com/MrEthical07/goAuth/issues) in the Issues tab.
+
