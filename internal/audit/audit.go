@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -60,6 +62,8 @@ func (s *ChannelSink) Events() <-chan Event {
 type JSONWriterSink struct {
 	writer io.Writer
 	mu     sync.Mutex
+
+	writeErrors atomic.Uint64
 }
 
 func NewJSONWriterSink(w io.Writer) *JSONWriterSink {
@@ -74,12 +78,74 @@ func (s *JSONWriterSink) Emit(ctx context.Context, event Event) {
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
+		s.writeErrors.Add(1)
 		return
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, _ = s.writer.Write(data)
-	_, _ = s.writer.Write([]byte("\n"))
+	if _, err := s.writer.Write(data); err != nil {
+		s.writeErrors.Add(1)
+		return
+	}
+	if _, err := s.writer.Write([]byte("\n")); err != nil {
+		s.writeErrors.Add(1)
+	}
+}
+
+// ErrorCount returns the number of JSON encoding or write failures observed
+// by this sink.
+func (s *JSONWriterSink) ErrorCount() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.writeErrors.Load()
+}
+
+// SlogSink writes audit events through a slog.Logger for easy integration with
+// structured log backends.
+type SlogSink struct {
+	logger *slog.Logger
+	level  slog.Level
+}
+
+// NewSlogSink creates a [SlogSink] that writes audit events at info level.
+func NewSlogSink(logger *slog.Logger) *SlogSink {
+	return &SlogSink{
+		logger: logger,
+		level:  slog.LevelInfo,
+	}
+}
+
+func (s *SlogSink) Emit(ctx context.Context, event Event) {
+	if s == nil || s.logger == nil {
+		return
+	}
+
+	attrs := []slog.Attr{
+		slog.String("event_type", event.EventType),
+		slog.Time("event_timestamp", event.Timestamp),
+		slog.Bool("success", event.Success),
+	}
+	if event.UserID != "" {
+		attrs = append(attrs, slog.String("user_id", event.UserID))
+	}
+	if event.TenantID != "" {
+		attrs = append(attrs, slog.String("tenant_id", event.TenantID))
+	}
+	if event.SessionID != "" {
+		attrs = append(attrs, slog.String("session_id", event.SessionID))
+	}
+	if event.IP != "" {
+		attrs = append(attrs, slog.String("ip", event.IP))
+	}
+	if event.Error != "" {
+		attrs = append(attrs, slog.String("error", event.Error))
+	}
+	if len(event.Metadata) > 0 {
+		attrs = append(attrs, slog.Any("metadata", event.Metadata))
+	}
+
+	s.logger.LogAttrs(ctx, s.level, "goauth.audit", attrs...)
 }

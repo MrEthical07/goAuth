@@ -154,6 +154,9 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		deps.VerifyCode == nil ||
 		deps.MarkTOTPVerified == nil ||
 		deps.EnableTOTP == nil ||
+		deps.CheckTOTPLimiter == nil ||
+		deps.RecordTOTPLimiterFailure == nil ||
+		deps.ResetTOTPLimiter == nil ||
 		deps.UpdateTOTPLastUsedCounter == nil ||
 		deps.LogoutAllInTenant == nil {
 		return deps.Errors.EngineNotReady
@@ -172,6 +175,15 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		return deps.Errors.TOTPNotConfigured
 	}
 
+	if err := deps.CheckTOTPLimiter(ctx, userID); err != nil {
+		deps.MetricInc(deps.Metrics.TOTPFailure)
+		if deps.IsTOTPRateLimited(err) {
+			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPRateLimited, nil)
+			return deps.Errors.TOTPRateLimited
+		}
+		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
+		return deps.Errors.TOTPUnavailable
+	}
 	if code == "" {
 		deps.MetricInc(deps.Metrics.TOTPRequired)
 		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPRequired, nil)
@@ -179,13 +191,17 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 	}
 
 	ok, counter, err := deps.VerifyCode(record.Secret, code, deps.Now())
-	if err != nil {
+	if err != nil || !ok {
 		deps.MetricInc(deps.Metrics.TOTPFailure)
-		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
-		return deps.Errors.TOTPUnavailable
-	}
-	if !ok {
-		deps.MetricInc(deps.Metrics.TOTPFailure)
+		recErr := deps.RecordTOTPLimiterFailure(ctx, userID)
+		if recErr != nil && deps.IsTOTPRateLimited(recErr) {
+			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPRateLimited, nil)
+			return deps.Errors.TOTPRateLimited
+		}
+		if err != nil {
+			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
+			return deps.Errors.TOTPUnavailable
+		}
 		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPInvalid, nil)
 		return deps.Errors.TOTPInvalid
 	}
@@ -203,6 +219,7 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		}
 	}
 
+	_ = deps.ResetTOTPLimiter(ctx, userID)
 	if err := deps.MarkTOTPVerified(ctx, userID); err != nil {
 		return deps.Errors.TOTPUnavailable
 	}
@@ -237,7 +254,13 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 	if !deps.Enabled {
 		return deps.Errors.TOTPFeatureDisabled
 	}
-	if deps.GetUserByID == nil || deps.GetTOTPSecret == nil || deps.VerifyCode == nil || deps.UpdateTOTPLastUsedCounter == nil {
+	if deps.GetUserByID == nil ||
+		deps.GetTOTPSecret == nil ||
+		deps.VerifyCode == nil ||
+		deps.UpdateTOTPLastUsedCounter == nil ||
+		deps.CheckTOTPLimiter == nil ||
+		deps.RecordTOTPLimiterFailure == nil ||
+		deps.ResetTOTPLimiter == nil {
 		return deps.Errors.EngineNotReady
 	}
 	if userID == "" {
@@ -254,18 +277,27 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 		return deps.Errors.TOTPNotConfigured
 	}
 
+	if err := deps.CheckTOTPLimiter(ctx, userID); err != nil {
+		if deps.IsTOTPRateLimited(err) {
+			return deps.Errors.TOTPRateLimited
+		}
+		return deps.Errors.TOTPUnavailable
+	}
 	if code == "" {
 		return deps.Errors.TOTPRequired
 	}
 
 	ok, counter, err := deps.VerifyCode(record.Secret, code, deps.Now())
-	if err != nil {
-		return deps.Errors.TOTPUnavailable
-	}
-	if !ok {
+	if err != nil || !ok {
+		recErr := deps.RecordTOTPLimiterFailure(ctx, userID)
+		if recErr != nil && deps.IsTOTPRateLimited(recErr) {
+			return deps.Errors.TOTPRateLimited
+		}
+		if err != nil {
+			return deps.Errors.TOTPUnavailable
+		}
 		return deps.Errors.TOTPInvalid
 	}
-
 	if deps.EnforceReplayProtection {
 		if counter <= record.LastUsedCounter {
 			return deps.Errors.TOTPInvalid
@@ -275,6 +307,7 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 		}
 	}
 
+	_ = deps.ResetTOTPLimiter(ctx, userID)
 	deps.MetricInc(deps.Metrics.TOTPSuccess)
 	deps.EmitAudit(ctx, deps.Events.TOTPSuccess, true, user.UserID, user.TenantID, "", nil, nil)
 	return nil

@@ -288,3 +288,120 @@ func TestBackupCodeNotLeakedInAuditEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestBackupCodeInvalidFormatAudited(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.Audit.Enabled = true
+	cfg.Audit.BufferSize = 32
+	cfg.Audit.DropIfFull = true
+
+	up := newHardeningUserProvider(t)
+	sink := newCaptureSink(32)
+	engine, done := buildAuditTestEngine(t, cfg, sink, up)
+	defer done()
+
+	if err := engine.VerifyBackupCode(context.Background(), "u1", "   "); !errors.Is(err, ErrBackupCodeInvalid) {
+		t.Fatalf("expected ErrBackupCodeInvalid, got %v", err)
+	}
+
+	ev := waitForAuditEvent(t, sink, auditEventBackupCodeFailed)
+	if ev.Error != string(auditErrBackupCodeInvalid) {
+		t.Fatalf("expected backup_code_invalid audit error, got %q", ev.Error)
+	}
+	if ev.Metadata["reason"] != "invalid_format" {
+		t.Fatalf("expected invalid_format reason, got %#v", ev.Metadata)
+	}
+}
+
+func TestBackupCodeRateLimitedAudited(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.Audit.Enabled = true
+	cfg.Audit.BufferSize = 32
+	cfg.Audit.DropIfFull = true
+	cfg.TOTP.BackupCodeMaxAttempts = 2
+
+	up := newHardeningUserProvider(t)
+	sink := newCaptureSink(32)
+	engine, done := buildAuditTestEngine(t, cfg, sink, up)
+	defer done()
+
+	if err := engine.VerifyBackupCode(context.Background(), "u1", "BAD-CODE-1"); !errors.Is(err, ErrBackupCodeInvalid) {
+		t.Fatalf("expected invalid on first attempt, got %v", err)
+	}
+	if err := engine.VerifyBackupCode(context.Background(), "u1", "BAD-CODE-2"); !errors.Is(err, ErrBackupCodeRateLimited) {
+		t.Fatalf("expected rate limited on second attempt, got %v", err)
+	}
+
+	var got AuditEvent
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-sink.events:
+			if ev.EventType == auditEventBackupCodeFailed && ev.Error == string(auditErrBackupCodeRateLimited) {
+				got = ev
+				goto found
+			}
+		case <-deadline:
+			t.Fatal("expected a rate-limited backup code audit event")
+		}
+	}
+
+found:
+	if got.Metadata["reason"] != "invalid_code" {
+		t.Fatalf("expected invalid_code reason, got %#v", got.Metadata)
+	}
+}
+
+func TestBackupCodesSecondGenerateFailureAudited(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.Audit.Enabled = true
+	cfg.Audit.BufferSize = 32
+	cfg.Audit.DropIfFull = true
+
+	up := newHardeningUserProvider(t)
+	sink := newCaptureSink(32)
+	engine, done := buildAuditTestEngine(t, cfg, sink, up)
+	defer done()
+
+	if _, err := engine.GenerateBackupCodes(context.Background(), "u1"); err != nil {
+		t.Fatalf("first GenerateBackupCodes failed: %v", err)
+	}
+	if _, err := engine.GenerateBackupCodes(context.Background(), "u1"); !errors.Is(err, ErrBackupCodeRegenerationRequiresTOTP) {
+		t.Fatalf("expected ErrBackupCodeRegenerationRequiresTOTP, got %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-sink.events:
+			if ev.EventType != auditEventBackupCodeFailed {
+				continue
+			}
+			if ev.Metadata["action"] != "generate" {
+				continue
+			}
+			if ev.Error != string(auditErrBackupCodeInvalid) {
+				t.Fatalf("expected backup_code_invalid audit error, got %q", ev.Error)
+			}
+			return
+		case <-deadline:
+			t.Fatal("expected backup code generate failure audit event")
+		}
+	}
+}
+
+func waitForAuditEvent(t *testing.T, sink *captureSink, eventType string) AuditEvent {
+	t.Helper()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-sink.events:
+			if ev.EventType == eventType {
+				return ev
+			}
+		case <-deadline:
+			t.Fatalf("expected audit event %q", eventType)
+		}
+	}
+}

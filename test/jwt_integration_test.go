@@ -33,7 +33,7 @@ func TestJWTIntegrationHardeningChecks(t *testing.T) {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 
-	access, err := manager.CreateAccess("u1", 0, "s1", nil, 0, 0, 0, false, false, false, false, false)
+	access, err := manager.CreateAccess("u1", "0", "s1", nil, 0, 0, 0, false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("CreateAccess failed: %v", err)
 	}

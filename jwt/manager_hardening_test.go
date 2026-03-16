@@ -52,7 +52,7 @@ func TestParseAccessIssuerAudienceAndLeeway(t *testing.T) {
 		t.Fatalf("new manager: %v", err)
 	}
 
-	access, err := m.CreateAccess("u", 1, "s1", nil, 0, 0, 0, false, false, false, false, false)
+	access, err := m.CreateAccess("u", "tenant-1", "s1", nil, 0, 0, 0, false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("create access: %v", err)
 	}
@@ -131,6 +131,39 @@ func TestParseAccessIssuerAudienceAndLeeway(t *testing.T) {
 	mapClaimsSigned, _ := mapClaimsTok.SignedString(priv)
 	if _, err := m.ParseAccess(mapClaimsSigned); err != nil {
 		t.Fatalf("expected scalar audience token to pass: %v", err)
+	}
+}
+
+func TestParseAccessAcceptsLegacyNumericTenantClaim(t *testing.T) {
+	pub, priv := newEdKeys(t)
+	m, err := NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodEd25519,
+		PrivateKey:    priv,
+		PublicKey:     pub,
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+
+	legacy := gjwt.NewWithClaims(gjwt.SigningMethodEdDSA, gjwt.MapClaims{
+		"uid": "u",
+		"tid": 42,
+		"sid": "s1",
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"iat": time.Now().Unix(),
+	})
+	token, err := legacy.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign legacy token: %v", err)
+	}
+
+	claims, err := m.ParseAccess(token)
+	if err != nil {
+		t.Fatalf("expected legacy token to parse: %v", err)
+	}
+	if claims.TID != "42" {
+		t.Fatalf("expected legacy numeric tenant to normalize to string, got %q", claims.TID)
 	}
 }
 

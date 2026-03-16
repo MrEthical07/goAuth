@@ -1,7 +1,10 @@
 package goAuth
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,6 +118,31 @@ func TestAuditDisabledNoSinkCalls(t *testing.T) {
 
 	if sink.Count() != 0 {
 		t.Fatalf("expected no audit sink calls when disabled, got %d", sink.Count())
+	}
+}
+
+func TestAuditEnabledWithoutSinkBuildFails(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.Audit.Enabled = true
+	cfg.Audit.BufferSize = 16
+
+	mr, rdb := newTestRedis(t)
+	defer mr.Close()
+
+	_, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{
+			"member": {"perm.read"},
+		}).
+		WithUserProvider(&mockUserProvider{}).
+		Build()
+	if err == nil {
+		t.Fatal("expected Build to fail when audit is enabled without a sink")
+	}
+	if !stringContains(err.Error(), "audit sink required") {
+		t.Fatalf("expected audit sink error, got %v", err)
 	}
 }
 
@@ -261,6 +289,52 @@ func TestAuditJSONWriterSinkWritesJSONLines(t *testing.T) {
 	}
 }
 
+func TestAuditJSONWriterSinkCountsWriteErrors(t *testing.T) {
+	sink := NewJSONWriterSink(failingWriter{})
+	sink.Emit(context.Background(), AuditEvent{
+		Timestamp: time.Now().UTC(),
+		EventType: auditEventLoginFailure,
+		Success:   false,
+	})
+
+	if got := sink.ErrorCount(); got != 1 {
+		t.Fatalf("expected one sink write error, got %d", got)
+	}
+}
+
+func TestSlogAuditSinkWritesStructuredFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	sink := NewSlogAuditSink(logger)
+
+	sink.Emit(context.Background(), AuditEvent{
+		Timestamp: time.Now().UTC(),
+		EventType: auditEventLoginSuccess,
+		UserID:    "u1",
+		TenantID:  "tenant-a",
+		SessionID: "sess-1",
+		IP:        "203.0.113.8",
+		Success:   true,
+		Metadata: map[string]string{
+			"scope": "login",
+		},
+	})
+
+	out := buf.String()
+	if !stringContains(out, "\"msg\":\"goauth.audit\"") {
+		t.Fatalf("expected slog output to include audit message, got %q", out)
+	}
+	if !stringContains(out, "\"event_type\":\"login_success\"") {
+		t.Fatalf("expected slog output to include event type, got %q", out)
+	}
+	if !stringContains(out, "\"tenant_id\":\"tenant-a\"") {
+		t.Fatalf("expected slog output to include tenant id, got %q", out)
+	}
+	if !stringContains(out, "\"scope\":\"login\"") {
+		t.Fatalf("expected slog output to include metadata, got %q", out)
+	}
+}
+
 func TestAuditDispatcherCloseIdempotentAndEmitAfterCloseSafe(t *testing.T) {
 	dispatcher := newAuditDispatcher(AuditConfig{
 		Enabled:    true,
@@ -339,6 +413,12 @@ collectLoop:
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf []byte
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {

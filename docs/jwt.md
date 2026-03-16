@@ -9,7 +9,7 @@ The `jwt` package manages access-token issuance and verification using configure
 | Primitive | Signature | Description |
 |-----------|-----------|-------------|
 | `NewManager` | `func NewManager(cfg Config) (*Manager, error)` | Create a validated JWT manager |
-| `CreateAccess` | `(uid, tid, sid, mask, permV, roleV, acctV string, flags...) (string, error)` | Issue a signed access token |
+| `CreateAccess` | `(uid string, tid string, sid string, mask []byte, permV uint32, roleV uint32, acctV uint32, flags...) (string, error)` | Issue a signed access token |
 | `ParseAccess` | `(tokenStr string) (*AccessClaims, error)` | Verify and parse an access token |
 
 ### Config
@@ -35,7 +35,7 @@ type Config struct {
 ```go
 type AccessClaims struct {
     UID            string `json:"uid"`
-    TID            uint32 `json:"tid,omitempty"`
+    TID            string `json:"tid,omitempty"`
     SID            string `json:"sid"`
     Mask           []byte `json:"mask,omitempty"`
     PermVersion    uint32 `json:"pv,omitempty"`
@@ -68,7 +68,7 @@ mgr, err := jwt.NewManager(jwt.Config{
     VerifyKeys:   map[string][]byte{"k1": pubKey},
 })
 
-token, err := mgr.CreateAccess("user-123", 1, "session-abc", maskBytes, 1, 1, 1, true, true, true, true, false)
+token, err := mgr.CreateAccess("user-123", "tenant-acme", "session-abc", maskBytes, 1, 1, 1, true, true, true, true, false)
 claims, err := mgr.ParseAccess(token)
 ```
 

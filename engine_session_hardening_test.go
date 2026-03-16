@@ -247,7 +247,7 @@ func TestSessionHardeningValidateNoProviderCallsRegression(t *testing.T) {
 func signManualAccessTokenHS256(secret []byte, issuedAt time.Time, exp time.Time) (string, error) {
 	claims := authjwt.AccessClaims{
 		UID: "u1",
-		TID: 0,
+		TID: "0",
 		SID: "manual-session",
 		RegisteredClaims: gjwt.RegisteredClaims{
 			ExpiresAt: gjwt.NewNumericDate(exp),

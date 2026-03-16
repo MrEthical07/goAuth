@@ -63,7 +63,6 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Helm chart / Docker Compose production template | P1 | maintainer | planned | Ops: faster production deployment |
 | Grafana dashboard JSON export | P1 | maintainer | planned | Ops: out-of-box monitoring |
 | Redis Sentinel / Cluster topology documentation | P2 | maintainer | planned | Ops: HA deployment guidance |
-| Structured logging adapter (slog integration) | P2 | maintainer | planned | Ops: better observability integration |
 
 ---
 
@@ -81,6 +80,7 @@ Items previously on the roadmap that have been resolved:
 | Fixed-window boundary burst documentation | P2 | v0.1.0 | Docs |
 | `DeleteAllForUser` atomicity documentation | P2 | v0.1.0 | Docs |
 | Configurable TOTP rate limiter thresholds | P2 | v0.1.0 | Security |
+| Structured logging adapter (slog integration) | P2 | v0.1.0 | Ops |
 
 ---
 

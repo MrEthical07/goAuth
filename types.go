@@ -3,6 +3,7 @@ package goAuth
 import (
 	"context"
 	"io"
+	"log/slog"
 	"time"
 
 	internalaudit "github.com/MrEthical07/goAuth/internal/audit"
@@ -253,6 +254,12 @@ type ChannelSink = internalaudit.ChannelSink
 //	Docs: docs/audit.md
 type JSONWriterSink = internalaudit.JSONWriterSink
 
+// SlogAuditSink is an [AuditSink] that writes structured audit records
+// through a [slog.Logger].
+//
+//	Docs: docs/audit.md
+type SlogAuditSink = internalaudit.SlogSink
+
 // NewChannelSink creates a [ChannelSink] with the given buffer capacity.
 //
 //	Docs: docs/audit.md
@@ -265,6 +272,13 @@ func NewChannelSink(buffer int) *ChannelSink {
 //	Docs: docs/audit.md
 func NewJSONWriterSink(w io.Writer) *JSONWriterSink {
 	return internalaudit.NewJSONWriterSink(w)
+}
+
+// NewSlogAuditSink creates a [SlogAuditSink] backed by logger.
+//
+//	Docs: docs/audit.md
+func NewSlogAuditSink(logger *slog.Logger) *SlogAuditSink {
+	return internalaudit.NewSlogSink(logger)
 }
 
 // MetricID identifies a specific counter or histogram bucket in the

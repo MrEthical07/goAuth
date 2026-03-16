@@ -12,6 +12,7 @@ import (
 type metricsSource interface {
 	MetricsSnapshot() goAuth.MetricsSnapshot
 	AuditDropped() uint64
+	AuditSinkErrors() uint64
 }
 
 // PrometheusExporter renders goAuth metrics in Prometheus text exposition format.
@@ -56,7 +57,8 @@ func (p *PrometheusExporter) Render() string {
 
 	snapshot := p.source.MetricsSnapshot()
 	dropped := p.source.AuditDropped()
-	if len(snapshot.Counters) == 0 && len(snapshot.Histograms) == 0 && dropped == 0 {
+	sinkErrors := p.source.AuditSinkErrors()
+	if len(snapshot.Counters) == 0 && len(snapshot.Histograms) == 0 && dropped == 0 && sinkErrors == 0 {
 		return ""
 	}
 
@@ -74,6 +76,7 @@ func (p *PrometheusExporter) Render() string {
 	}
 
 	writeCounter(&b, "goauth_audit_dropped_total", "Dropped audit events due to dispatcher backpressure.", dropped)
+	writeCounter(&b, "goauth_audit_sink_errors_total", "Audit sink write or encoding errors reported by the configured sink.", sinkErrors)
 
 	return b.String()
 }

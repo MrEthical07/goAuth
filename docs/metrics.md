@@ -68,12 +68,13 @@ Both exporters implement the same `metricsSource` interface:
 type metricsSource interface {
     MetricsSnapshot() goAuth.MetricsSnapshot
     AuditDropped() uint64
+    AuditSinkErrors() uint64
 }
 ```
 
 ### Prometheus Names
 
-All counters are prefixed `goauth_*_total`. Histogram: `goauth_validate_latency_seconds`. Extra: `goauth_audit_dropped_total`.
+All counters are prefixed `goauth_*_total`. Histogram: `goauth_validate_latency_seconds`. Extra: `goauth_audit_dropped_total` and `goauth_audit_sink_errors_total`.
 
 ## Performance Notes
 
@@ -100,6 +101,7 @@ When `Enabled == false`, `New()` returns nil and all `Inc()`/`Observe()` calls o
 - Metrics endpoints should be protected from public access (e.g., bind to internal interface or require auth).
 - Counter values may reveal operational patterns (login volume, failure rates). Treat the metrics endpoint as sensitive.
 - The `goauth_audit_dropped_total` metric signals potential audit data loss and should trigger alerts.
+- The `goauth_audit_sink_errors_total` metric signals sink-side write failures and should also trigger alerts.
 
 ## Error Reference
 

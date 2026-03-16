@@ -15,7 +15,7 @@ type LogoutSessionStore interface {
 type LogoutDeps struct {
 	ParseAccess         func(string) (*jwt.AccessClaims, error)
 	TenantIDFromContext func(context.Context) string
-	TenantIDFromToken   func(uint32) string
+	TenantIDFromToken   func(string) string
 	SessionStore        LogoutSessionStore
 }
 

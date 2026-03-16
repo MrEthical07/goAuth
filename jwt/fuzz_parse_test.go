@@ -32,7 +32,7 @@ func FuzzJWTParseAccess(f *testing.F) {
 	}
 
 	// Generate a valid token as seed.
-	validToken, err := mgr.CreateAccess("uid1", 1, "sid1", []byte{0xFF}, 1, 1, 1, true, true, true, true, false)
+	validToken, err := mgr.CreateAccess("uid1", "tenant-fuzz", "sid1", []byte{0xFF}, 1, 1, 1, true, true, true, true, false)
 	if err != nil {
 		f.Fatal(err)
 	}

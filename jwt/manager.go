@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,7 +67,7 @@ type fastJWTState struct {
 // fastClaimsPayload avoids *NumericDate and ClaimStrings allocations.
 type fastClaimsPayload struct {
 	UID  string `json:"uid"`
-	TID  uint32 `json:"tid,omitempty"`
+	TID  string `json:"tid,omitempty"`
 	SID  string `json:"sid"`
 	Mask []byte `json:"mask,omitempty"`
 	PV   uint32 `json:"pv,omitempty"`
@@ -84,13 +86,49 @@ type fastClaimsPayload struct {
 //	Docs: docs/jwt.md
 type AccessClaims struct {
 	UID            string `json:"uid"`
-	TID            uint32 `json:"tid,omitempty"`
+	TID            string `json:"tid,omitempty"`
 	SID            string `json:"sid"`
 	Mask           []byte `json:"mask,omitempty"`
 	PermVersion    uint32 `json:"pv,omitempty"`
 	RoleVersion    uint32 `json:"rv,omitempty"`
 	AccountVersion uint32 `json:"av,omitempty"`
 	jwt.RegisteredClaims
+}
+
+type accessClaimsJSON struct {
+	UID            string          `json:"uid"`
+	TID            json.RawMessage `json:"tid,omitempty"`
+	SID            string          `json:"sid"`
+	Mask           []byte          `json:"mask,omitempty"`
+	PermVersion    uint32          `json:"pv,omitempty"`
+	RoleVersion    uint32          `json:"rv,omitempty"`
+	AccountVersion uint32          `json:"av,omitempty"`
+	jwt.RegisteredClaims
+}
+
+// UnmarshalJSON accepts both the current string tenant claim and legacy
+// numeric tenant claims so access tokens minted before the migration remain
+// parseable during rollout.
+func (c *AccessClaims) UnmarshalJSON(data []byte) error {
+	var aux accessClaimsJSON
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	tid, err := parseTenantClaim(aux.TID)
+	if err != nil {
+		return err
+	}
+
+	c.UID = aux.UID
+	c.TID = tid
+	c.SID = aux.SID
+	c.Mask = aux.Mask
+	c.PermVersion = aux.PermVersion
+	c.RoleVersion = aux.RoleVersion
+	c.AccountVersion = aux.AccountVersion
+	c.RegisteredClaims = aux.RegisteredClaims
+	return nil
 }
 
 // NewManager creates a JWT [Manager] from the given [Config]. It
@@ -202,7 +240,7 @@ func (j *Manager) initFastJWT() {
 //	Docs: docs/jwt.md
 func (j *Manager) CreateAccess(
 	uid string,
-	tid uint32,
+	tid string,
 	sid string,
 	mask []byte,
 	permVersion uint32,
@@ -235,7 +273,7 @@ func (j *Manager) CreateAccess(
 }
 
 func (j *Manager) createAccessFast(
-	uid string, tid uint32, sid string, mask []byte,
+	uid string, tid string, sid string, mask []byte,
 	permVersion, roleVersion, accountVersion uint32,
 	includeMask, includePermVersion, includeRoleVersion, includeAccountVersion bool,
 	isRoot bool,
@@ -317,7 +355,7 @@ func (j *Manager) createAccessFast(
 }
 
 func (j *Manager) createAccessLegacy(
-	uid string, tid uint32, sid string, mask []byte,
+	uid string, tid string, sid string, mask []byte,
 	permVersion, roleVersion, accountVersion uint32,
 	includeMask, includePermVersion, includeRoleVersion, includeAccountVersion bool,
 	isRoot bool,
@@ -514,4 +552,23 @@ func parseEdPublicKey(key []byte) (ed25519.PublicKey, error) {
 		return nil, errors.New("invalid ed25519 public key type")
 	}
 	return edKey, nil
+}
+
+func parseTenantClaim(raw json.RawMessage) (string, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "", nil
+	}
+
+	var tid string
+	if err := json.Unmarshal(raw, &tid); err == nil {
+		return tid, nil
+	}
+
+	var legacy uint64
+	if err := json.Unmarshal(raw, &legacy); err == nil {
+		return strconv.FormatUint(legacy, 10), nil
+	}
+
+	return "", errors.New("invalid tid claim")
 }

@@ -86,7 +86,7 @@ func (b *Builder) WithUserProvider(up UserProvider) *Builder {
 }
 
 // WithAuditSink sets the [AuditSink] that receives structured audit events.
-// Pass nil to disable audit dispatch.
+// Pass nil only when audit is disabled in config.
 //
 //	Docs: docs/audit.md
 func (b *Builder) WithAuditSink(sink AuditSink) *Builder {
@@ -154,6 +154,9 @@ func (b *Builder) Build() (*Engine, error) {
 
 	if b.userProvider == nil {
 		return nil, errors.New("user provider required")
+	}
+	if cfg.Audit.Enabled && b.auditSink == nil {
+		return nil, errors.New("audit sink required when audit is enabled")
 	}
 
 	// -------- PERMISSION REGISTRY --------
@@ -244,7 +247,8 @@ func (b *Builder) Build() (*Engine, error) {
 		Cooldown:                 cfg.Account.AccountCreationCooldown,
 	})
 	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis, limiters.TOTPLimiterConfig{
-		MaxAttempts: cfg.TOTP.MaxVerifyAttempts,
+		// Direct TOTP verification paths share the MFA attempt budget.
+		MaxAttempts: cfg.TOTP.MFALoginMaxAttempts,
 		Cooldown:    cfg.TOTP.VerifyAttemptCooldown,
 	})
 	engine.backupLimiter = limiters.NewBackupCodeLimiter(b.redis, limiters.BackupCodeConfig{

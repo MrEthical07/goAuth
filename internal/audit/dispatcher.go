@@ -6,6 +6,10 @@ import (
 	"sync/atomic"
 )
 
+type errorCountingSink interface {
+	ErrorCount() uint64
+}
+
 // Config controls dispatcher buffering behavior.
 type Config struct {
 	Enabled    bool
@@ -110,4 +114,17 @@ func (d *Dispatcher) Dropped() uint64 {
 		return 0
 	}
 	return d.dropped.Load()
+}
+
+// SinkErrors returns the number of sink-level write errors reported by the
+// configured sink. Sinks that do not expose error counts return 0.
+func (d *Dispatcher) SinkErrors() uint64 {
+	if d == nil {
+		return 0
+	}
+	reporter, ok := d.sink.(errorCountingSink)
+	if !ok {
+		return 0
+	}
+	return reporter.ErrorCount()
 }

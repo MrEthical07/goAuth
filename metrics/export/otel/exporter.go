@@ -20,6 +20,7 @@ var (
 type metricsSource interface {
 	MetricsSnapshot() goAuth.MetricsSnapshot
 	AuditDropped() uint64
+	AuditSinkErrors() uint64
 }
 
 type observedCounter struct {
@@ -42,6 +43,7 @@ type OTelExporter struct {
 	counters     []observedCounter
 	histograms   []observedHistogram
 	auditDropped metric.Int64ObservableCounter
+	auditSinkErr metric.Int64ObservableCounter
 }
 
 // NewOTelExporter creates an OpenTelemetry exporter that reads from the
@@ -70,7 +72,7 @@ func NewOTelExporterFromSource(meter metric.Meter, source metricsSource) (*OTelE
 		histograms: make([]observedHistogram, 0, len(internaldefs.HistogramDefs)),
 	}
 
-	observables := make([]metric.Observable, 0, len(internaldefs.CounterDefs)+len(internaldefs.HistogramDefs)*9+1)
+	observables := make([]metric.Observable, 0, len(internaldefs.CounterDefs)+len(internaldefs.HistogramDefs)*9+2)
 
 	for _, def := range internaldefs.CounterDefs {
 		ins, err := meter.Int64ObservableCounter(def.Name, metric.WithDescription(def.Help))
@@ -112,6 +114,16 @@ func NewOTelExporterFromSource(meter metric.Meter, source metricsSource) (*OTelE
 	exporter.auditDropped = auditDropped
 	observables = append(observables, auditDropped)
 
+	auditSinkErr, err := meter.Int64ObservableCounter(
+		"goauth_audit_sink_errors_total",
+		metric.WithDescription("Audit sink write or encoding errors reported by the configured sink."),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create audit sink errors counter: %w", err)
+	}
+	exporter.auditSinkErr = auditSinkErr
+	observables = append(observables, auditSinkErr)
+
 	registration, err := meter.RegisterCallback(func(_ context.Context, observer metric.Observer) error {
 		snapshot := exporter.source.MetricsSnapshot()
 		for _, c := range exporter.counters {
@@ -126,6 +138,7 @@ func NewOTelExporterFromSource(meter metric.Meter, source metricsSource) (*OTelE
 			observer.ObserveInt64(h.count, int64(cumulative[len(cumulative)-1]))
 		}
 		observer.ObserveInt64(exporter.auditDropped, int64(exporter.source.AuditDropped()))
+		observer.ObserveInt64(exporter.auditSinkErr, int64(exporter.source.AuditSinkErrors()))
 		return nil
 	}, observables...)
 	if err != nil {

@@ -12,10 +12,12 @@ import (
 type fakeSource struct {
 	snapshot goAuth.MetricsSnapshot
 	dropped  uint64
+	sinkErrs uint64
 }
 
 func (f fakeSource) MetricsSnapshot() goAuth.MetricsSnapshot { return f.snapshot }
 func (f fakeSource) AuditDropped() uint64                    { return f.dropped }
+func (f fakeSource) AuditSinkErrors() uint64                 { return f.sinkErrs }
 
 func TestRenderEmptyWhenMetricsDisabled(t *testing.T) {
 	exp := NewPrometheusExporterFromSource(fakeSource{
@@ -41,7 +43,8 @@ func TestRenderDeterministicIncludesCounterAndHistogram(t *testing.T) {
 				goAuth.MetricValidateLatency: {1, 2, 3, 4, 5, 6, 7, 8},
 			},
 		},
-		dropped: 2,
+		dropped:  2,
+		sinkErrs: 3,
 	})
 
 	out := exp.Render()
@@ -56,6 +59,9 @@ func TestRenderDeterministicIncludesCounterAndHistogram(t *testing.T) {
 	}
 	if !strings.Contains(out, "goauth_audit_dropped_total 2") {
 		t.Fatalf("expected audit dropped counter in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "goauth_audit_sink_errors_total 3") {
+		t.Fatalf("expected audit sink errors counter in output, got:\n%s", out)
 	}
 }
 

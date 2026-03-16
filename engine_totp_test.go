@@ -142,6 +142,36 @@ func TestTOTPConfirmSetupRejectsInvalidCode(t *testing.T) {
 	}
 }
 
+func TestTOTPConfirmSetupRateLimitedUsesMFALoginMaxAttempts(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.TOTP.MFALoginMaxAttempts = 2
+	cfg.TOTP.MaxVerifyAttempts = 99
+	up := newHardeningUserProvider(t)
+
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	provision, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ProvisionTOTP failed: %v", err)
+	}
+
+	valid := codeForNow(t, provision.Secret, cfg.TOTP)
+	invalid := valid
+	if invalid[0] != '0' {
+		invalid = "0" + invalid[1:]
+	} else {
+		invalid = "1" + invalid[1:]
+	}
+
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", invalid); !errors.Is(err, ErrTOTPInvalid) {
+		t.Fatalf("expected first invalid setup attempt to return ErrTOTPInvalid, got %v", err)
+	}
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", invalid); !errors.Is(err, ErrTOTPRateLimited) {
+		t.Fatalf("expected second invalid setup attempt to return ErrTOTPRateLimited, got %v", err)
+	}
+}
+
 func TestTOTPLoginFlowRequiredInvalidValid(t *testing.T) {
 	cfg := totpTestConfig()
 	cfg.TOTP.RequireForLogin = true
@@ -209,6 +239,32 @@ func TestTOTPDisableClearsAndInvalidatesSessions(t *testing.T) {
 	}
 	if _, err := engine.sessionStore.Get(context.Background(), "0", sid, engine.sessionLifetime()); err == nil {
 		t.Fatal("expected sessions invalidated after disabling TOTP")
+	}
+}
+
+func TestTOTPVerifyRateLimitedUsesMFALoginMaxAttempts(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.TOTP.MFALoginMaxAttempts = 2
+	cfg.TOTP.MaxVerifyAttempts = 99
+	up := newHardeningUserProvider(t)
+
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	provision, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ProvisionTOTP failed: %v", err)
+	}
+	code := codeForNow(t, provision.Secret, cfg.TOTP)
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", code); err != nil {
+		t.Fatalf("ConfirmTOTPSetup failed: %v", err)
+	}
+
+	if err := engine.VerifyTOTP(context.Background(), "u1", "000000"); !errors.Is(err, ErrTOTPInvalid) {
+		t.Fatalf("expected first invalid verify attempt to return ErrTOTPInvalid, got %v", err)
+	}
+	if err := engine.VerifyTOTP(context.Background(), "u1", "000000"); !errors.Is(err, ErrTOTPRateLimited) {
+		t.Fatalf("expected second invalid verify attempt to return ErrTOTPRateLimited, got %v", err)
 	}
 }
 

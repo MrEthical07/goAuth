@@ -127,6 +127,7 @@ The root package contains the authentication engine, builder, configuration, typ
 | `GetLoginAttempts` | method | Returns the current failed-login count for a user+IP key. |
 | `MetricsSnapshot` | method | Returns a point-in-time copy of all in-process metrics. |
 | `AuditDropped` | method | Returns the number of audit events dropped due to buffer overflow. |
+| `AuditSinkErrors` | method | Returns the number of audit sink write errors reported by the configured sink. |
 | `SecurityReport` | method | Returns a `SecurityReport` reflecting the engine's security posture. |
 
 ### Configuration
@@ -196,8 +197,10 @@ The root package contains the authentication engine, builder, configuration, typ
 | `NoOpSink` | type | Sink that discards all events. |
 | `ChannelSink` | type | Sink backed by a Go channel for testing/buffering. |
 | `JSONWriterSink` | type | Sink that writes JSON-line events to an `io.Writer`. |
+| `SlogAuditSink` | type | Sink that forwards audit events into a `slog.Logger`. |
 | `NewChannelSink` | func | Creates a `ChannelSink` with the given buffer size. |
 | `NewJSONWriterSink` | func | Creates a `JSONWriterSink` writing to the given writer. |
+| `NewSlogAuditSink` | func | Creates a `SlogAuditSink` writing to the given logger. |
 
 ### Metrics
 

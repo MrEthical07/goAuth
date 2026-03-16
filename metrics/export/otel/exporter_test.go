@@ -14,6 +14,7 @@ type fakeSource struct {
 	mu       sync.RWMutex
 	snapshot goAuth.MetricsSnapshot
 	dropped  uint64
+	sinkErrs uint64
 }
 
 func (f *fakeSource) MetricsSnapshot() goAuth.MetricsSnapshot {
@@ -40,6 +41,12 @@ func (f *fakeSource) AuditDropped() uint64 {
 	return f.dropped
 }
 
+func (f *fakeSource) AuditSinkErrors() uint64 {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.sinkErrs
+}
+
 func TestExporterRegistersAndCollects(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -54,7 +61,8 @@ func TestExporterRegistersAndCollects(t *testing.T) {
 				goAuth.MetricValidateLatency: {1, 1, 1, 1, 1, 1, 1, 1},
 			},
 		},
-		dropped: 1,
+		dropped:  1,
+		sinkErrs: 2,
 	}
 
 	exp, err := NewOTelExporterFromSource(meter, src)

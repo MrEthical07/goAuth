@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"strconv"
 	"strings"
 	"time"
 
@@ -110,6 +109,19 @@ func (e *Engine) AuditDropped() uint64 {
 		return 0
 	}
 	return e.audit.Dropped()
+}
+
+// AuditSinkErrors returns the total number of audit sink write errors
+// reported by the configured sink. Sinks that do not expose error counts
+// return 0.
+//
+//	Docs: docs/audit.md, docs/metrics.md
+//	Performance: O(1), no Redis.
+func (e *Engine) AuditSinkErrors() uint64 {
+	if e == nil || e.audit == nil {
+		return 0
+	}
+	return e.audit.SinkErrors()
 }
 
 // MetricsSnapshot returns a point-in-time copy of all counters and latency
@@ -494,8 +506,9 @@ func (e *Engine) buildResultFromClaims(claims *jwt.AccessClaims) *AuthResult {
 	}
 
 	res := &AuthResult{
-		UserID: claims.UID,
-		Mask:   mask,
+		UserID:   claims.UID,
+		TenantID: tenantIDFromToken(claims.TID),
+		Mask:     mask,
 	}
 
 	if e.config.Result.IncludePermissions && mask != nil {
@@ -553,7 +566,7 @@ func (e *Engine) issueAccessToken(sess *session.Session) (string, error) {
 
 	return e.jwtManager.CreateAccess(
 		sess.UserID,
-		parseTenantIDToUint32(sess.TenantID),
+		sess.TenantID,
 		sess.SessionID,
 		maskBytes,
 		sess.PermissionVersion,
@@ -894,18 +907,6 @@ func (e *Engine) resolveRouteMode(routeMode RouteMode) (ValidationMode, error) {
 	return ValidationMode(mode), nil
 }
 
-func parseTenantIDToUint32(tenantID string) uint32 {
-	if tenantID == "" || tenantID == "0" {
-		return 0
-	}
-
-	v, err := strconv.ParseUint(tenantID, 10, 32)
-	if err != nil {
-		return 0
-	}
-	return uint32(v)
-}
-
 func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, userID string) error {
 	h := e.config.SessionHardening
 	if e.sessionStore == nil {
@@ -956,8 +957,11 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	return nil
 }
 
-func tenantIDFromToken(tid uint32) string {
-	return strconv.FormatUint(uint64(tid), 10)
+func tenantIDFromToken(tid string) string {
+	if tid == "" {
+		return "0"
+	}
+	return tid
 }
 
 // CreateAccount creates a new user account. The password is hashed with

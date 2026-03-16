@@ -75,58 +75,98 @@ func RunGenerateBackupCodes(ctx context.Context, userID string, deps BackupCodeD
 	normalizeBackupCodeDeps(&deps)
 
 	if !deps.Enabled {
+		emitBackupCodeFailure(ctx, deps, "", "", deps.Errors.TOTPFeatureDisabled, map[string]string{
+			"action": "generate",
+		})
 		return nil, deps.Errors.TOTPFeatureDisabled
 	}
 	if deps.GetUserByID == nil || deps.GetBackupCodes == nil || deps.ReplaceBackupCodes == nil {
+		emitBackupCodeFailure(ctx, deps, userID, "", deps.Errors.EngineNotReady, map[string]string{
+			"action": "generate",
+		})
 		return nil, deps.Errors.EngineNotReady
 	}
 	if userID == "" {
+		emitBackupCodeFailure(ctx, deps, "", "", deps.Errors.UserNotFound, map[string]string{
+			"action": "generate",
+		})
 		return nil, deps.Errors.UserNotFound
 	}
 
 	user, err := deps.GetUserByID(userID)
 	if err != nil {
+		emitBackupCodeFailure(ctx, deps, userID, "", deps.Errors.UserNotFound, map[string]string{
+			"action": "generate",
+		})
 		return nil, deps.Errors.UserNotFound
 	}
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, statusErr, map[string]string{
+			"action": "generate",
+		})
 		return nil, statusErr
 	}
 	existing, err := deps.GetBackupCodes(ctx, userID)
 	if err != nil {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+			"action": "generate",
+			"reason": "load_existing_failed",
+		})
 		return nil, deps.Errors.BackupCodeUnavailable
 	}
 	if len(existing) > 0 {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.BackupCodeRegenerationRequiresTOTP, map[string]string{
+			"action": "generate",
+		})
 		return nil, deps.Errors.BackupCodeRegenerationRequiresTOTP
 	}
 
-	return runGenerateAndReplaceBackupCodes(ctx, user.UserID, user.TenantID, deps)
+	return runGenerateAndReplaceBackupCodes(ctx, user.UserID, user.TenantID, "generate", deps)
 }
 
 func RunRegenerateBackupCodes(ctx context.Context, userID, totpCode string, deps BackupCodeDeps) ([]string, error) {
 	normalizeBackupCodeDeps(&deps)
 
 	if !deps.Enabled {
+		emitBackupCodeFailure(ctx, deps, "", "", deps.Errors.TOTPFeatureDisabled, map[string]string{
+			"action": "regenerate",
+		})
 		return nil, deps.Errors.TOTPFeatureDisabled
 	}
 	if deps.GetUserByID == nil || deps.VerifyTOTPForUser == nil || deps.ReplaceBackupCodes == nil {
+		emitBackupCodeFailure(ctx, deps, userID, "", deps.Errors.EngineNotReady, map[string]string{
+			"action": "regenerate",
+		})
 		return nil, deps.Errors.EngineNotReady
 	}
 	if userID == "" {
+		emitBackupCodeFailure(ctx, deps, "", "", deps.Errors.UserNotFound, map[string]string{
+			"action": "regenerate",
+		})
 		return nil, deps.Errors.UserNotFound
 	}
 
 	user, err := deps.GetUserByID(userID)
 	if err != nil {
+		emitBackupCodeFailure(ctx, deps, userID, "", deps.Errors.UserNotFound, map[string]string{
+			"action": "regenerate",
+		})
 		return nil, deps.Errors.UserNotFound
 	}
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, statusErr, map[string]string{
+			"action": "regenerate",
+		})
 		return nil, statusErr
 	}
 	if err := deps.VerifyTOTPForUser(ctx, user, totpCode); err != nil {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, err, map[string]string{
+			"action": "regenerate",
+		})
 		return nil, err
 	}
 
-	return runGenerateAndReplaceBackupCodes(ctx, user.UserID, user.TenantID, deps)
+	return runGenerateAndReplaceBackupCodes(ctx, user.UserID, user.TenantID, "regenerate", deps)
 }
 
 func RunVerifyBackupCode(ctx context.Context, userID, code string, deps BackupCodeDeps) error {
@@ -137,9 +177,11 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 	normalizeBackupCodeDeps(&deps)
 
 	if deps.ConsumeBackupCode == nil || deps.CheckLimiter == nil || deps.RecordLimiterFailure == nil || deps.ResetLimiter == nil {
+		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.EngineNotReady, nil)
 		return deps.Errors.EngineNotReady
 	}
 	if userID == "" {
+		emitBackupCodeFailure(ctx, deps, "", tenantID, deps.Errors.UserNotFound, nil)
 		return deps.Errors.UserNotFound
 	}
 	if tenantID == "" {
@@ -148,8 +190,12 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 
 	if err := deps.CheckLimiter(ctx, tenantID, userID); err != nil {
 		if deps.IsRateLimited(err) {
+			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, nil)
 			return deps.Errors.BackupCodeRateLimited
 		}
+		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+			"reason": "limiter_check_failed",
+		})
 		return deps.Errors.BackupCodeUnavailable
 	}
 
@@ -158,26 +204,46 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 		deps.MetricInc(deps.Metrics.BackupCodeFailed)
 		if err := deps.RecordLimiterFailure(ctx, tenantID, userID); err != nil {
 			if deps.IsRateLimited(err) {
+				emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, map[string]string{
+					"reason": "invalid_format",
+				})
 				return deps.Errors.BackupCodeRateLimited
 			}
+			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+				"reason": "invalid_format",
+			})
 			return deps.Errors.BackupCodeUnavailable
 		}
+		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeInvalid, map[string]string{
+			"reason": "invalid_format",
+		})
 		return deps.Errors.BackupCodeInvalid
 	}
 
 	ok, err := deps.ConsumeBackupCode(ctx, userID, BackupCodeHash(userID, canonical))
 	if err != nil {
+		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+			"reason": "consume_failed",
+		})
 		return deps.Errors.BackupCodeUnavailable
 	}
 	if !ok {
 		deps.MetricInc(deps.Metrics.BackupCodeFailed)
-		deps.EmitAudit(ctx, deps.Events.BackupCodeFailed, false, userID, tenantID, "", deps.Errors.BackupCodeInvalid, nil)
 		if err := deps.RecordLimiterFailure(ctx, tenantID, userID); err != nil {
 			if deps.IsRateLimited(err) {
+				emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, map[string]string{
+					"reason": "invalid_code",
+				})
 				return deps.Errors.BackupCodeRateLimited
 			}
+			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+				"reason": "invalid_code",
+			})
 			return deps.Errors.BackupCodeUnavailable
 		}
+		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeInvalid, map[string]string{
+			"reason": "invalid_code",
+		})
 		return deps.Errors.BackupCodeInvalid
 	}
 
@@ -187,10 +253,14 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 	return nil
 }
 
-func runGenerateAndReplaceBackupCodes(ctx context.Context, userID, tenantID string, deps BackupCodeDeps) ([]string, error) {
+func runGenerateAndReplaceBackupCodes(ctx context.Context, userID, tenantID, action string, deps BackupCodeDeps) ([]string, error) {
 	count := deps.BackupCodeCount
 	length := deps.BackupCodeLength
 	if count <= 0 || length <= 0 {
+		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+			"action": action,
+			"reason": "invalid_config",
+		})
 		return nil, deps.Errors.BackupCodeUnavailable
 	}
 
@@ -199,6 +269,10 @@ func runGenerateAndReplaceBackupCodes(ctx context.Context, userID, tenantID stri
 	for i := 0; i < count; i++ {
 		raw, err := NewBackupCode(length, deps.RandomIndex)
 		if err != nil {
+			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+				"action": action,
+				"reason": "generation_failed",
+			})
 			return nil, deps.Errors.BackupCodeUnavailable
 		}
 		canonical := CanonicalizeBackupCode(raw)
@@ -207,11 +281,19 @@ func runGenerateAndReplaceBackupCodes(ctx context.Context, userID, tenantID stri
 	}
 
 	if err := deps.ReplaceBackupCodes(ctx, userID, records); err != nil {
+		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+			"action": action,
+			"reason": "store_replace_failed",
+		})
 		return nil, deps.Errors.BackupCodeUnavailable
 	}
 
 	deps.MetricInc(deps.Metrics.BackupCodeRegenerated)
-	deps.EmitAudit(ctx, deps.Events.BackupCodesGenerated, true, userID, tenantID, "", nil, nil)
+	deps.EmitAudit(ctx, deps.Events.BackupCodesGenerated, true, userID, tenantID, "", nil, func() map[string]string {
+		return map[string]string{
+			"action": action,
+		}
+	})
 	return codes, nil
 }
 
@@ -282,4 +364,23 @@ func normalizeBackupCodeDeps(deps *BackupCodeDeps) {
 	if deps.RandomIndex == nil {
 		deps.RandomIndex = cryptoRandomIndex
 	}
+}
+
+func emitBackupCodeFailure(ctx context.Context, deps BackupCodeDeps, userID, tenantID string, err error, metadata map[string]string) {
+	if tenantID == "" {
+		tenantID = deps.TenantIDFromContext(ctx)
+	}
+	if tenantID == "" {
+		tenantID = "0"
+	}
+	deps.EmitAudit(ctx, deps.Events.BackupCodeFailed, false, userID, tenantID, "", err, func() map[string]string {
+		if len(metadata) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(metadata))
+		for k, v := range metadata {
+			out[k] = v
+		}
+		return out
+	})
 }

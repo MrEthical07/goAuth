@@ -79,7 +79,7 @@ type ValidateDeps struct {
 	PendingVerificationStatus uint8
 	AccountStatusError        func(uint8) error
 	ValidateDeviceBinding     func(context.Context, *session.Session) error
-	TenantIDFromToken         func(uint32) string
+	TenantIDFromToken         func(string) string
 	SessionLifetime           func() time.Duration
 	SessionStore              ValidateSessionStore
 	RedisUnavailable          error
