@@ -33,6 +33,8 @@ Set `REDIS_ADDR` to your Redis instance. This exercises real network latency and
 | `BenchmarkValidateJWTOnly` | `auth_bench_test.go` | JWT parse + claims extraction (0 Redis) |
 | `BenchmarkValidateStrict` | `auth_bench_test.go` | JWT parse + Redis session GET |
 | `BenchmarkRefresh` | `auth_bench_test.go` | Refresh rotation (Lua CAS + JWT issue) |
+| `BenchmarkPermissionRegistryBitLookup` | `permission_lookup_bench_test.go` | Permission name -> bit lookup in frozen registry |
+| `BenchmarkPermissionEngineHasPermission` | `permission_lookup_bench_test.go` | End-to-end permission helper lookup + bit check |
 | `BenchmarkMetricsInc` | `metrics_bench_test.go` | Single counter increment (serial) |
 | `BenchmarkMetricsIncParallel` | `metrics_bench_test.go` | Counter increment (parallel, cache-line padded) |
 | `BenchmarkMetricsObserveLatencyParallel` | `metrics_bench_test.go` | Histogram observation (parallel) |
@@ -42,7 +44,7 @@ Set `REDIS_ADDR` to your Redis instance. This exercises real network latency and
 
 ```bash
 # Correctness benchmarks (miniredis)
-go test -run '^$' -bench 'Benchmark(Validate|Refresh)' -benchmem -count=5 .
+go test -run '^$' -bench 'Benchmark(Validate|Refresh|Permission)' -benchmem -count=5 .
 
 # Real Redis benchmarks
 REDIS_ADDR=localhost:6379 go test -run '^$' -bench 'Benchmark(Validate|Refresh)' \
@@ -200,6 +202,7 @@ mux.Handle("/api/transfer", middleware.RequireStrict(engine)(transferHandler))
 | `ListActiveSessions` | O(n) in user sessions | Use `ActiveSessionEstimate` for dashboards |
 | Prometheus render | ~5.6 µs per scrape | Acceptable for scrape intervals ≥ 10s |
 | `DeleteAllForUser` | Non-atomic O(n) | Call twice for stronger guarantee |
+| Permission read-lock contention | Elevated CPU in high-QPS RBAC checks | Lock-free frozen lookups in permission registry/role manager |
 
 ---
 

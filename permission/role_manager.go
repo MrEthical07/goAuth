@@ -3,6 +3,7 @@ package permission
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // RoleManager maps role names to pre-computed permission bitmasks.
@@ -14,7 +15,7 @@ type RoleManager struct {
 
 	mu     sync.RWMutex
 	roles  map[string]interface{}
-	frozen bool
+	frozen atomic.Bool
 }
 
 // NewRoleManager creates a [RoleManager] backed by the given [Registry].
@@ -41,7 +42,7 @@ func (rm *RoleManager) RegisterRole(
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
-	if rm.frozen {
+	if rm.frozen.Load() {
 		return errors.New("role manager frozen")
 	}
 
@@ -99,6 +100,12 @@ GET MASK FOR ROLE
 // GetMask returns the pre-computed bitmask for the named role, or false
 // if the role is not registered.
 func (rm *RoleManager) GetMask(roleName string) (interface{}, bool) {
+	// Post-freeze lookups are lock-free: role masks are immutable after Build().
+	if rm.frozen.Load() {
+		mask, ok := rm.roles[roleName]
+		return mask, ok
+	}
+
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
@@ -115,7 +122,7 @@ FREEZE
 func (rm *RoleManager) Freeze() {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	rm.frozen = true
+	rm.frozen.Store(true)
 }
 
 /*
@@ -125,6 +132,10 @@ COUNT
 
 // Count returns the number of registered roles.
 func (rm *RoleManager) Count() int {
+	if rm.frozen.Load() {
+		return len(rm.roles)
+	}
+
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 	return len(rm.roles)

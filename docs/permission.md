@@ -92,6 +92,7 @@ decoded, _ := permission.DecodeMask(encoded)
 ## Security Notes
 
 - Registry is frozen at `Build()` time — no runtime mutation.
+- Runtime lookups assume post-freeze immutability; registration/role compilation are build-time only.
 - Root bit (bit 0 when `rootReserved=true`) grants all permissions.
 - Masks are embedded in JWT claims — changing permissions requires re-login.
 
@@ -100,6 +101,7 @@ decoded, _ := permission.DecodeMask(encoded)
 - `Has(bit)` is a single bitwise AND — zero allocations.
 - Masks are fixed-size: no heap allocation for permission checks.
 - Binary codec avoids reflection.
+- `Engine.HasPermission` resolves permission name → bit with a lock-free map lookup after freeze, then performs an O(1) bit test.
 
 ## Edge Cases & Gotchas
 
@@ -121,7 +123,7 @@ Builder.Build()
   └─ Masks embedded in JWT claims + session binary encoding
 ```
 
-Permission checks at runtime are a single bitwise AND on fixed-size masks — no map lookups, no allocations.
+Permission checks at runtime are fixed-cost: a lock-free permission index lookup plus a single bitwise AND on fixed-size masks (no allocations).
 
 ## Error Reference
 

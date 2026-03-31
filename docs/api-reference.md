@@ -55,7 +55,7 @@ The root package contains the authentication engine, builder, configuration, typ
 | `Refresh` | method | Rotates a refresh token, returning a new access + refresh pair. |
 | `ValidateAccess` | method | Validates an access token (JWT-only, no Redis). |
 | `Validate` | method | Validates an access token with session verification (may hit Redis). |
-| `HasPermission` | method | Checks whether a token carries a specific permission bit. |
+| `HasPermission` | method | Checks whether a token carries a specific permission bit (post-build: lock-free permission-index lookup + O(1) mask check). |
 
 ### Logout & Session Invalidation
 

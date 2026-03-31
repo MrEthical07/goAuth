@@ -3,6 +3,7 @@ package permission
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // Registry maps permission names to bit positions within a bitmask.
@@ -17,7 +18,7 @@ type Registry struct {
 	mu        sync.RWMutex
 	nameToBit map[string]int
 	bitToName map[int]string
-	frozen    bool
+	frozen    atomic.Bool
 }
 
 // NewRegistry creates a permission [Registry] that maps permission names
@@ -52,7 +53,7 @@ func (r *Registry) Register(name string) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.frozen {
+	if r.frozen.Load() {
 		return -1, errors.New("registry frozen")
 	}
 
@@ -82,6 +83,12 @@ func (r *Registry) Register(name string) (int, error) {
 
 // Bit returns the bit index for the named permission, or false if not registered.
 func (r *Registry) Bit(name string) (int, bool) {
+	// Post-freeze lookups are lock-free: the registry is immutable after Build().
+	if r.frozen.Load() {
+		bit, ok := r.nameToBit[name]
+		return bit, ok
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	bit, ok := r.nameToBit[name]
@@ -90,6 +97,12 @@ func (r *Registry) Bit(name string) (int, bool) {
 
 // Name returns the permission name for the given bit index, or false if unassigned.
 func (r *Registry) Name(bit int) (string, bool) {
+	// Post-freeze lookups are lock-free: the registry is immutable after Build().
+	if r.frozen.Load() {
+		name, ok := r.bitToName[bit]
+		return name, ok
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	name, ok := r.bitToName[bit]
@@ -101,11 +114,15 @@ func (r *Registry) Name(bit int) (string, bool) {
 func (r *Registry) Freeze() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.frozen = true
+	r.frozen.Store(true)
 }
 
 // Count returns the number of registered permissions.
 func (r *Registry) Count() int {
+	if r.frozen.Load() {
+		return len(r.nameToBit)
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.nameToBit)

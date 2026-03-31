@@ -18,6 +18,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2026-03-31
+
+### Changed
+
+- Permission registry and role manager read helpers now elide read locks after `Build()` freeze, while keeping write-path locking intact.
+- `Engine.HasPermission` behavior and API remain unchanged, but now benefit from lock-free frozen permission lookup paths.
+
+### Performance
+
+- Reduced CPU overhead in hot RBAC lookup paths by removing post-freeze read-lock contention from permission and role lookups.
+- Added focused benchmarks for permission helper paths: registry bit lookup and end-to-end `HasPermission`.
+
+### Docs
+
+- Updated permission, RBAC validation, API reference, methods guide, and performance docs to reflect frozen lock-free lookup behavior and updated benchmark coverage.
+
+### Tests
+
+- Added benchmark coverage for permission lookup helpers and validated existing auth flow behavior without API changes.
+
+---
+
 ## [0.2.0] - 2026-03-16
 
 ### Added
@@ -104,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.2.1]: https://github.com/MrEthical07/goAuth/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MrEthical07/goAuth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MrEthical07/goAuth/releases/tag/v0.1.0
-[Unreleased]: https://github.com/MrEthical07/goAuth/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/MrEthical07/goAuth/compare/v0.2.1...HEAD

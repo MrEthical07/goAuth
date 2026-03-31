@@ -30,3 +30,4 @@ Then permission bit checks are evaluated with O(1) mask operations.
 
 - Fixed-size masks (`64/128/256/512`) avoid dynamic growth.
 - Hot path remains DB-free.
+- Permission/role lookup maps are read lock-free after `Build()` freezes registry and role manager state.
