@@ -40,7 +40,8 @@ fmt:
 
 ## bench: Run benchmarks
 bench:
-	go test -bench=. -benchmem -run=^$$ ./...
+	@mkdir -p benchmarks
+	go test -bench=. -benchmem -run=^$$ ./... | tee benchmarks/bench_latest.txt
 
 ## integration: Run integration tests
 integration:

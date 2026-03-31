@@ -12,14 +12,14 @@ type AccountStatusRecord struct {
 }
 
 type UpdateAccountStatusDeps struct {
-	GetUserByID                 func(userID string) (AccountStatusRecord, error)
-	UpdateAccountStatus         func(ctx context.Context, userID string, status uint8) (AccountStatusRecord, error)
-	LogoutAllInTenant           func(ctx context.Context, tenantID, userID string) error
-	TenantIDFromContext         func(context.Context) string
-	ErrEngineNotReady           error
-	ErrUserNotFound             error
+	GetUserByID                  func(userID string) (AccountStatusRecord, error)
+	UpdateAccountStatus          func(ctx context.Context, userID string, status uint8) (AccountStatusRecord, error)
+	LogoutAllInTenant            func(ctx context.Context, tenantID, userID string) error
+	TenantIDFromContext          func(context.Context) string
+	ErrEngineNotReady            error
+	ErrUserNotFound              error
 	ErrAccountVersionNotAdvanced error
-	ErrUnauthorized             error
+	ErrUnauthorized              error
 	ErrSessionInvalidationFailed error
 }
 

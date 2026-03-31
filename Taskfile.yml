@@ -48,9 +48,16 @@ tasks:
         platforms: [windows]
 
   bench:
-    desc: Run benchmarks
+    desc: Run benchmarks and store output in benchmarks/bench_latest.txt
     cmds:
-      - go test -bench=. -benchmem -run=^$ ./...
+      - cmd: |
+          mkdir -p benchmarks
+          go test -bench=. -benchmem -run=^$ ./... | tee benchmarks/bench_latest.txt
+        platforms: [linux, darwin]
+      - cmd: |
+          New-Item -ItemType Directory -Path benchmarks -Force | Out-Null
+          go test -bench=. -benchmem -run=^$ ./... | Tee-Object -FilePath benchmarks/bench_latest.txt
+        platforms: [windows]
 
   integration:
     desc: Run integration tests

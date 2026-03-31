@@ -43,42 +43,42 @@ type EmailVerificationErrors struct {
 }
 
 type EmailVerificationDeps struct {
-	Enabled                  bool
-	Strategy                 int
-	OTPDigits                int
-	VerificationTTL          time.Duration
-	MaxAttempts              int
-	ActiveStatus             uint8
+	Enabled         bool
+	Strategy        int
+	OTPDigits       int
+	VerificationTTL time.Duration
+	MaxAttempts     int
+	ActiveStatus    uint8
 
-	TenantIDFromContext      func(context.Context) string
-	ClientIPFromContext      func(context.Context) string
-	AccountStatusError       func(uint8) error
-	Now                      func() time.Time
+	TenantIDFromContext func(context.Context) string
+	ClientIPFromContext func(context.Context) string
+	AccountStatusError  func(uint8) error
+	Now                 func() time.Time
 
-	CheckRequestLimiter      func(context.Context, string, string, string) error
-	CheckConfirmLimiter      func(context.Context, string, string, string) error
-	MapLimiterError          func(error) error
-	MapStoreError            func(error) error
+	CheckRequestLimiter func(context.Context, string, string, string) error
+	CheckConfirmLimiter func(context.Context, string, string, string) error
+	MapLimiterError     func(error) error
+	MapStoreError       func(error) error
 
-	GetUserByIdentifier      func(string) (EmailVerificationUser, error)
-	GetUserByID              func(string) (EmailVerificationUser, error)
+	GetUserByIdentifier       func(string) (EmailVerificationUser, error)
+	GetUserByID               func(string) (EmailVerificationUser, error)
 	UpdateStatusAndInvalidate func(context.Context, string, uint8) error
 
-	SaveVerificationRecord   func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
+	SaveVerificationRecord    func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
 	ConsumeVerificationRecord func(context.Context, string, string, [32]byte, int, int) (EmailVerificationStoreRecord, error)
 
-	GenerateChallenge        func(int, int, string) (string, string, [32]byte, error)
-	ParseChallenge           func(int, string, int) (string, string, [32]byte, error)
-	ParseChallengeCode       func(int, string, string, int) ([32]byte, error)
-	SleepEnumerationDelay    func(context.Context) error
+	GenerateChallenge     func(int, int, string) (string, string, [32]byte, error)
+	ParseChallenge        func(int, string, int) (string, string, [32]byte, error)
+	ParseChallengeCode    func(int, string, string, int) ([32]byte, error)
+	SleepEnumerationDelay func(context.Context) error
 
-	MetricInc                func(int)
-	EmitAudit                func(context.Context, string, bool, string, string, string, error, func() map[string]string)
-	EmitRateLimit            func(context.Context, string, string, func() map[string]string)
+	MetricInc     func(int)
+	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
+	EmitRateLimit func(context.Context, string, string, func() map[string]string)
 
-	Metrics                  EmailVerificationMetrics
-	Events                   EmailVerificationEvents
-	Errors                   EmailVerificationErrors
+	Metrics EmailVerificationMetrics
+	Events  EmailVerificationEvents
+	Errors  EmailVerificationErrors
 }
 
 func RunRequestEmailVerification(ctx context.Context, identifier string, deps EmailVerificationDeps) (string, error) {

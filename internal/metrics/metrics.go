@@ -61,7 +61,7 @@ const (
 )
 
 const (
-	MetricIDCount  = metricIDCount
+	MetricIDCount   = metricIDCount
 	histBucketCount = 8
 	cacheLineSize   = 64
 )

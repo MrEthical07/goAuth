@@ -22,10 +22,10 @@ type PasswordResetStoreRecord struct {
 }
 
 type PasswordResetMetrics struct {
-	PasswordResetRequest           int
-	PasswordResetConfirmSuccess    int
-	PasswordResetConfirmFailure    int
-	PasswordResetAttemptsExceeded  int
+	PasswordResetRequest          int
+	PasswordResetConfirmSuccess   int
+	PasswordResetConfirmFailure   int
+	PasswordResetAttemptsExceeded int
 }
 
 type PasswordResetEvents struct {
@@ -48,48 +48,48 @@ type PasswordResetErrors struct {
 }
 
 type PasswordResetDeps struct {
-	Enabled        bool
-	Strategy       int
-	OTPDigits      int
-	ResetTTL       time.Duration
-	MaxAttempts    int
-	RequireMFA     bool
+	Enabled     bool
+	Strategy    int
+	OTPDigits   int
+	ResetTTL    time.Duration
+	MaxAttempts int
+	RequireMFA  bool
 
-	TenantIDFromContext       func(context.Context) string
-	ClientIPFromContext       func(context.Context) string
-	AccountStatusError        func(uint8) error
-	Now                       func() time.Time
+	TenantIDFromContext func(context.Context) string
+	ClientIPFromContext func(context.Context) string
+	AccountStatusError  func(uint8) error
+	Now                 func() time.Time
 
-	CheckRequestLimiter       func(context.Context, string, string, string) error
-	CheckConfirmLimiter       func(context.Context, string, string, string) error
-	MapLimiterError           func(error) error
-	MapStoreError             func(error) error
-	IsStoreNotFound           func(error) bool
+	CheckRequestLimiter func(context.Context, string, string, string) error
+	CheckConfirmLimiter func(context.Context, string, string, string) error
+	MapLimiterError     func(error) error
+	MapStoreError       func(error) error
+	IsStoreNotFound     func(error) bool
 
-	GetUserByIdentifier       func(string) (PasswordResetUser, error)
-	GetUserByID               func(string) (PasswordResetUser, error)
-	HashPassword              func(string) (string, error)
-	UpdatePasswordHash        func(string, string) error
-	LogoutAllInTenant         func(context.Context, string, string) error
+	GetUserByIdentifier func(string) (PasswordResetUser, error)
+	GetUserByID         func(string) (PasswordResetUser, error)
+	HashPassword        func(string) (string, error)
+	UpdatePasswordHash  func(string, string) error
+	LogoutAllInTenant   func(context.Context, string, string) error
 
-	SaveResetRecord           func(context.Context, string, string, PasswordResetStoreRecord, time.Duration) error
-	GetResetRecord            func(context.Context, string, string) (PasswordResetStoreRecord, error)
-	ConsumeResetRecord        func(context.Context, string, string, [32]byte, int, int) (PasswordResetStoreRecord, error)
+	SaveResetRecord    func(context.Context, string, string, PasswordResetStoreRecord, time.Duration) error
+	GetResetRecord     func(context.Context, string, string) (PasswordResetStoreRecord, error)
+	ConsumeResetRecord func(context.Context, string, string, [32]byte, int, int) (PasswordResetStoreRecord, error)
 
-	GenerateChallenge         func(int, int) (string, string, [32]byte, error)
-	ParseChallenge            func(int, string, int) (string, [32]byte, error)
-	SleepEnumerationDelay     func(context.Context) error
+	GenerateChallenge     func(int, int) (string, string, [32]byte, error)
+	ParseChallenge        func(int, string, int) (string, [32]byte, error)
+	SleepEnumerationDelay func(context.Context) error
 
-	VerifyTOTPForUser         func(context.Context, PasswordResetUser, string) error
-	VerifyBackupCodeInTenant  func(context.Context, string, string, string) error
+	VerifyTOTPForUser        func(context.Context, PasswordResetUser, string) error
+	VerifyBackupCodeInTenant func(context.Context, string, string, string) error
 
-	MetricInc                 func(int)
-	EmitAudit                 func(context.Context, string, bool, string, string, string, error, func() map[string]string)
-	EmitRateLimit             func(context.Context, string, string, func() map[string]string)
+	MetricInc     func(int)
+	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
+	EmitRateLimit func(context.Context, string, string, func() map[string]string)
 
-	Metrics                   PasswordResetMetrics
-	Events                    PasswordResetEvents
-	Errors                    PasswordResetErrors
+	Metrics PasswordResetMetrics
+	Events  PasswordResetEvents
+	Errors  PasswordResetErrors
 }
 
 func RunRequestPasswordReset(ctx context.Context, identifier string, deps PasswordResetDeps) (string, error) {

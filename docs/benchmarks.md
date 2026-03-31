@@ -4,6 +4,8 @@ Benchmarks were executed with:
 
 - `go test -run '^$' -bench . -benchmem ./...`
 
+Persist benchmark snapshots under `benchmarks/` (for example `benchmarks/bench_latest.txt`) to keep the repository root clean.
+
 ## goAuth package highlights
 
 - `BenchmarkMetricsInc`: 6.214 ns/op, 0 B/op, 0 allocs/op.

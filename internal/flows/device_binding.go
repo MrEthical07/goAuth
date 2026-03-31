@@ -22,19 +22,19 @@ type DeviceBindingConfig struct {
 }
 
 type DeviceBindingDeps struct {
-	Config                    DeviceBindingConfig
-	ClientIPFromContext       func(context.Context) string
-	UserAgentFromContext      func(context.Context) string
-	HashBindingValue          func(string) [32]byte
-	ShouldEmitDeviceAnomaly   func(context.Context, string, string) bool
-	MetricInc                 func(int)
-	EmitAudit                 func(context.Context, string, bool, string, string, string, error, func() map[string]string)
+	Config                     DeviceBindingConfig
+	ClientIPFromContext        func(context.Context) string
+	UserAgentFromContext       func(context.Context) string
+	HashBindingValue           func(string) [32]byte
+	ShouldEmitDeviceAnomaly    func(context.Context, string, string) bool
+	MetricInc                  func(int)
+	EmitAudit                  func(context.Context, string, bool, string, string, string, error, func() map[string]string)
 	EventDeviceAnomalyDetected string
 	EventDeviceBindingRejected string
-	MetricDeviceIPMismatch    int
-	MetricDeviceUAMismatch    int
-	MetricDeviceRejected      int
-	ErrDeviceBindingRejected  error
+	MetricDeviceIPMismatch     int
+	MetricDeviceUAMismatch     int
+	MetricDeviceRejected       int
+	ErrDeviceBindingRejected   error
 }
 
 func RunValidateDeviceBinding(ctx context.Context, sess DeviceBindingSession, deps DeviceBindingDeps) error {

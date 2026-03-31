@@ -13,7 +13,7 @@ Tracked benchmarks (from `auth_bench_test.go`):
 
 Baseline samples are stored in:
 
-- `security/perf/bench_baseline.txt`
+- `benchmarks/bench_baseline.txt`
 
 ## Budget Targets
 
@@ -52,5 +52,5 @@ regressions.
 When an intentional perf change is accepted:
 
 1. Re-run the benchmark subset on representative hardware.
-2. Update `security/perf/bench_baseline.txt`.
+2. Update `benchmarks/bench_baseline.txt`.
 3. Keep the rationale in the PR description (what changed and why).

@@ -47,9 +47,9 @@ func newTestEmailVerificationEngine(
 		config: Config{
 			EmailVerification: cfg,
 		},
-		userProvider:        up,
-		sessionStore:        session.NewStore(rdb, "as", false, false, 0),
-		verificationStore:   stores.NewEmailVerificationStore(rdb, "apv"),
+		userProvider:      up,
+		sessionStore:      session.NewStore(rdb, "as", false, false, 0),
+		verificationStore: stores.NewEmailVerificationStore(rdb, "apv"),
 		verificationLimiter: limiters.NewEmailVerificationLimiter(rdb, limiters.EmailVerificationConfig{
 			EnableIdentifierThrottle: cfg.EnableIdentifierThrottle,
 			EnableIPThrottle:         cfg.EnableIPThrottle,
@@ -482,38 +482,38 @@ func TestEmailVerificationJWTOnlyAllowsPendingUntilAccessTTL(t *testing.T) {
 
 func TestEmailVerificationEnumerationResistance(t *testing.T) {
 	tests := []struct {
-		name        string
-		status      AccountStatus
-		exists      bool
+		name         string
+		status       AccountStatus
+		exists       bool
 		wantNonEmpty bool
-		wantErr     error
+		wantErr      error
 	}{
 		{
-			name:        "not_found",
-			exists:      false,
+			name:         "not_found",
+			exists:       false,
 			wantNonEmpty: true,
-			wantErr:     nil,
+			wantErr:      nil,
 		},
 		{
-			name:        "active",
-			status:      AccountActive,
-			exists:      true,
+			name:         "active",
+			status:       AccountActive,
+			exists:       true,
 			wantNonEmpty: true,
-			wantErr:     nil,
+			wantErr:      nil,
 		},
 		{
-			name:        "pending_verification",
-			status:      AccountPendingVerification,
-			exists:      true,
+			name:         "pending_verification",
+			status:       AccountPendingVerification,
+			exists:       true,
 			wantNonEmpty: true,
-			wantErr:     nil,
+			wantErr:      nil,
 		},
 		{
-			name:        "disabled_returns_fake_challenge",
-			status:      AccountDisabled,
-			exists:      true,
+			name:         "disabled_returns_fake_challenge",
+			status:       AccountDisabled,
+			exists:       true,
 			wantNonEmpty: true,
-			wantErr:     nil,
+			wantErr:      nil,
 		},
 	}
 

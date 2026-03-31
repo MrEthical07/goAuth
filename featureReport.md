@@ -277,7 +277,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 | `BenchmarkRefresh-16` | 242,249 | 222,760 | 919 |
 | `BenchmarkLogin-16` | 5,521,473 | 8,636,041 | 1,162 |
 
-**vs. bench_new.txt baseline:**
+**vs. benchmarks/bench_new.txt baseline:**
 
 | Benchmark | Baseline ns/op | Current ns/op | Delta |
 |-----------|---------------|---------------|-------|
@@ -286,7 +286,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 | Refresh | 596,455 | 242,249 | **−59%** |
 | Login | 11,547,165 | 5,521,473 | **−52%** |
 
-> These improvements reflect combined effects of the code optimizations tracked in `bench_optimized.txt` and `bench_refresh_opt.txt`. Alloc counts also dropped (e.g. Strict: 109→99, Refresh: 957→919).
+> These improvements reflect combined effects of the code optimizations tracked in `benchmarks/bench_optimized.txt` and `benchmarks/bench_refresh_opt.txt`. Alloc counts also dropped (e.g. Strict: 109→99, Refresh: 957→919).
 
 **Result: All within expected budgets, significant improvement from baseline** ✓
 
@@ -860,7 +860,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 
 **Regression gate:** `security/run_perf_sanity.sh` runs `benchstat` with stored baselines. +30% time threshold, +10% allocs threshold.
 
-**Baseline files:** `security/perf/bench_baseline.txt`, `bench_new.txt`, `bench_optimized.txt`, `bench_refresh_opt.txt`
+**Baseline files:** `benchmarks/bench_baseline.txt`, `benchmarks/bench_new.txt`, `benchmarks/bench_optimized.txt`, `benchmarks/bench_refresh_opt.txt`
 
 **Real Redis benchmarks:** `BenchmarkRefreshRealRedis` and `BenchmarkValidateStrictRealRedis` exist in `auth_bench_test.go` but require `REDIS_ADDR`. Not run in this verification (no Docker Redis available).
 
@@ -974,7 +974,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 
 ### Benchmark Improvements
 
-| Benchmark | bench_new.txt | Current | Improvement |
+| Benchmark | benchmarks/bench_new.txt | Current | Improvement |
 |-----------|--------------|---------|-------------|
 | ValidateJWTOnly | 14,858 ns/op | 7,562 ns/op | −49% |
 | ValidateStrict | 267,047 ns/op | 104,197 ns/op | −61% |
@@ -983,7 +983,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 | Allocs (Strict) | 109 | 99 | −9% |
 | Allocs (Refresh) | 957 | 919 | −4% |
 
-Optimization tracked in `bench_optimized.txt` and `bench_refresh_opt.txt`.
+Optimization tracked in `benchmarks/bench_optimized.txt` and `benchmarks/bench_refresh_opt.txt`.
 
 ### API Surface Statement
 

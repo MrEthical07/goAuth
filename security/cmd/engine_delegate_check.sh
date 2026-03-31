@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# engine_delegate_check.sh — CI guard for root engine.go method complexity.
+# engine_delegate_check.sh â€” CI guard for root engine.go method complexity.
 #
 # RULE: Public methods in engine.go should be thin delegates.
 # Any method exceeding MAX_LINES likely contains inline business logic
@@ -84,9 +84,9 @@ if [ "$count" -gt 0 ]; then
   echo ""
   echo "Found $count public method(s) in $FILE exceeding $MAX_LINES lines."
   echo "Business logic should live in internal/flows/*, not in the root engine."
-  echo "Methods that delegate to flows.Service should be ≤ $MAX_LINES lines."
+  echo "Methods that delegate to flows.Service should be â‰¤ $MAX_LINES lines."
   if [ "$WARN_ONLY" = "1" ]; then
-    echo "(DELEGATE_CHECK_WARN_ONLY=1 — treating as warning)"
+    echo "(DELEGATE_CHECK_WARN_ONLY=1 â€” treating as warning)"
     exit 0
   fi
   exit 1

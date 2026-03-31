@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE_FILE="${ROOT_DIR}/security/perf/bench_baseline.txt"
-ARTIFACT_DIR="${ROOT_DIR}/.perf-reports"
+BASELINE_FILE="${ROOT_DIR}/benchmarks/bench_baseline.txt"
+ARTIFACT_DIR="${ROOT_DIR}/benchmarks"
 CANDIDATE_FILE="${ARTIFACT_DIR}/bench_candidate.txt"
 BENCHSTAT_BIN="${BENCHSTAT_BIN:-$(go env GOPATH)/bin/benchstat}"
 
@@ -12,8 +12,8 @@ if [[ ! -f "${BASELINE_FILE}" ]]; then
 	exit 1
 fi
 
-rm -rf "${ARTIFACT_DIR}"
 mkdir -p "${ARTIFACT_DIR}"
+rm -f "${CANDIDATE_FILE}"
 
 go test -vet=off -run '^$' -bench 'Benchmark(ValidateJWTOnly|ValidateStrict|Refresh)$' -benchmem -count=5 . > "${CANDIDATE_FILE}"
 
