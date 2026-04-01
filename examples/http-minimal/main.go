@@ -70,7 +70,7 @@ func main() {
 
 	seedHash, err := hasher.Hash("correct-horse")
 	if err != nil {
-		log.Fatal("argon2 hash:", err)
+		log.Fatal("argon2 hash failed")
 	}
 
 	provider := newStubProvider()
