@@ -18,7 +18,11 @@ rm -f "${CANDIDATE_FILE}"
 go test -vet=off -run '^$' -bench 'Benchmark(ValidateJWTOnly|ValidateStrict|Refresh)$' -benchmem -count=5 . > "${CANDIDATE_FILE}"
 
 echo "benchstat comparison (baseline vs candidate):"
-"${BENCHSTAT_BIN}" -ignore cpu "${BASELINE_FILE}" "${CANDIDATE_FILE}"
+if [[ -x "${BENCHSTAT_BIN}" ]]; then
+	"${BENCHSTAT_BIN}" -ignore cpu "${BASELINE_FILE}" "${CANDIDATE_FILE}"
+else
+	echo "benchstat not found at ${BENCHSTAT_BIN}; skipping benchstat output"
+fi
 
 go run ./security/cmd/perf-regression \
 	-baseline "${BASELINE_FILE}" \
