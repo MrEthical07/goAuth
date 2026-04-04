@@ -124,6 +124,7 @@ func main() {
 }
 
 func parseBenchmarkFile(path string) (sampleSet, error) {
+	// #nosec G304 -- benchmark file paths are controlled by local tooling/CI scripts.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

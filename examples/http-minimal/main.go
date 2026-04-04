@@ -114,7 +114,15 @@ func main() {
 	mux.Handle("GET /protected", protected)
 
 	fmt.Println("listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 
 // ---------------------------------------------------------------------------
@@ -226,15 +234,18 @@ func bearerToken(h string) string {
 // Cookie helpers
 // ---------------------------------------------------------------------------
 
+const refreshCookieMaxAgeSeconds = 7 * 24 * 60 * 60
+
 func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string) {
 	// For localhost demo on plain HTTP, Secure cookies won't be sent.
 	secure := r.TLS != nil
 
+	// #nosec G124 -- localhost demo intentionally allows non-TLS cookies.
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
 		Value:    token,
 		Path:     "/",
-		MaxAge:   int((7 * 24 * time.Hour).Seconds()),
+		MaxAge:   refreshCookieMaxAgeSeconds,
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
@@ -243,6 +254,7 @@ func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string) {
 
 func clearRefreshCookie(w http.ResponseWriter, r *http.Request) {
 	secure := r.TLS != nil
+	// #nosec G124 -- localhost demo intentionally allows non-TLS cookies.
 	http.SetCookie(w, &http.Cookie{
 		Name:     "refresh_token",
 		Value:    "",
