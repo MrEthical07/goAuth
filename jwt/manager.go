@@ -56,6 +56,9 @@ type Manager struct {
 	config        Config
 	parsedSignKey interface{} // cached at init: ed25519.PrivateKey or []byte (HS256)
 	fast          *fastJWTState
+	methodAlg     string
+	accessParser  *jwt.Parser
+	accessKeyFunc jwt.Keyfunc
 }
 
 // fastJWTState holds pre-computed state for zero-overhead JWT creation.
@@ -94,6 +97,10 @@ type AccessClaims struct {
 	AccountVersion uint32 `json:"av,omitempty"`
 	jwt.RegisteredClaims
 }
+
+// plainAccessClaims uses default JSON decoding (string tid only) for the fast path.
+// Legacy numeric tid tokens are handled by a fallback parse path.
+type plainAccessClaims AccessClaims
 
 type accessClaimsJSON struct {
 	UID            string          `json:"uid"`
@@ -186,6 +193,9 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	m := &Manager{config: cfg}
+	m.methodAlg = m.getMethod().Alg()
+	m.accessParser = jwt.NewParser(buildAccessParserOptions(cfg, m.methodAlg)...)
+	m.accessKeyFunc = m.accessTokenKeyFunc
 
 	// Pre-parse and cache the signing key to avoid per-call parsing.
 	switch cfg.SigningMethod {
@@ -418,71 +428,106 @@ func (j *Manager) createAccessLegacy(
 //	Performance: single signature verify + claim decode.
 //	Docs: docs/jwt.md
 func (j *Manager) ParseAccess(tokenStr string) (*AccessClaims, error) {
-	options := []jwt.ParserOption{
-		jwt.WithValidMethods([]string{j.getMethod().Alg()}),
-	}
-	if j.config.Leeway > 0 {
-		options = append(options, jwt.WithLeeway(j.config.Leeway))
-	}
-	if j.config.RequireIAT {
-		options = append(options, jwt.WithIssuedAt())
-	}
-	if j.config.Issuer != "" {
-		options = append(options, jwt.WithIssuer(j.config.Issuer))
-	}
-	if j.config.Audience != "" {
-		options = append(options, jwt.WithAudience(j.config.Audience))
-	}
-
-	parser := jwt.NewParser(options...)
-	token, err := parser.ParseWithClaims(tokenStr, &AccessClaims{}, func(t *jwt.Token) (interface{}, error) {
-		if t.Method.Alg() != j.getMethod().Alg() {
-			return nil, fmt.Errorf("unexpected signing algorithm: %s", t.Method.Alg())
+	plain := &plainAccessClaims{}
+	token, err := j.accessParser.ParseWithClaims(tokenStr, plain, j.accessKeyFunc)
+	if err == nil {
+		claims := (*AccessClaims)(plain)
+		if !token.Valid {
+			return nil, jwt.ErrTokenInvalidClaims
 		}
-
-		if len(j.config.VerifyKeys) > 0 {
-			kid, _ := t.Header["kid"].(string)
-			if kid == "" {
-				return nil, errors.New("missing kid")
-			}
-			key, ok := j.config.VerifyKeys[kid]
-			if !ok {
-				return nil, errors.New("unknown kid")
-			}
-			return j.keyBytesToVerifyKey(key)
+		if err := j.validateParsedAccessClaims(claims); err != nil {
+			return nil, err
 		}
+		return claims, nil
+	}
 
-		if j.config.KeyID != "" {
-			kid, _ := t.Header["kid"].(string)
-			if kid == "" {
-				return nil, errors.New("missing kid")
-			}
-			if kid != j.config.KeyID {
-				return nil, errors.New("unknown kid")
-			}
-		}
-
-		return j.getVerifyKey()
-	})
-	if err != nil {
+	if !isLegacyTenantTypeError(err) {
 		return nil, err
 	}
 
-	claims, ok := token.Claims.(*AccessClaims)
-	if !ok || !token.Valid {
+	legacyToken, legacyErr := j.accessParser.ParseWithClaims(tokenStr, &AccessClaims{}, j.accessKeyFunc)
+	if legacyErr != nil {
+		return nil, legacyErr
+	}
+
+	claims, ok := legacyToken.Claims.(*AccessClaims)
+	if !ok || !legacyToken.Valid {
 		return nil, jwt.ErrTokenInvalidClaims
 	}
+	if err := j.validateParsedAccessClaims(claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
+}
+
+func buildAccessParserOptions(cfg Config, methodAlg string) []jwt.ParserOption {
+	options := make([]jwt.ParserOption, 0, 5)
+	options = append(options, jwt.WithValidMethods([]string{methodAlg}))
+	if cfg.Leeway > 0 {
+		options = append(options, jwt.WithLeeway(cfg.Leeway))
+	}
+	if cfg.RequireIAT {
+		options = append(options, jwt.WithIssuedAt())
+	}
+	if cfg.Issuer != "" {
+		options = append(options, jwt.WithIssuer(cfg.Issuer))
+	}
+	if cfg.Audience != "" {
+		options = append(options, jwt.WithAudience(cfg.Audience))
+	}
+	return options
+}
+
+func (j *Manager) accessTokenKeyFunc(t *jwt.Token) (interface{}, error) {
+	if t.Method.Alg() != j.methodAlg {
+		return nil, fmt.Errorf("unexpected signing algorithm: %s", t.Method.Alg())
+	}
+
+	if len(j.config.VerifyKeys) > 0 {
+		kid, _ := t.Header["kid"].(string)
+		if kid == "" {
+			return nil, errors.New("missing kid")
+		}
+		key, ok := j.config.VerifyKeys[kid]
+		if !ok {
+			return nil, errors.New("unknown kid")
+		}
+		return j.keyBytesToVerifyKey(key)
+	}
+
+	if j.config.KeyID != "" {
+		kid, _ := t.Header["kid"].(string)
+		if kid == "" {
+			return nil, errors.New("missing kid")
+		}
+		if kid != j.config.KeyID {
+			return nil, errors.New("unknown kid")
+		}
+	}
+
+	return j.getVerifyKey()
+}
+
+func (j *Manager) validateParsedAccessClaims(claims *AccessClaims) error {
 	if j.config.RequireIAT && claims.IssuedAt == nil {
-		return nil, errors.New("token missing required iat claim")
+		return errors.New("token missing required iat claim")
 	}
 	if claims.IssuedAt != nil && j.config.MaxFutureIAT > 0 {
 		maxAllowed := time.Now().Add(j.config.MaxFutureIAT)
 		if claims.IssuedAt.Time.After(maxAllowed) {
-			return nil, errors.New("token iat too far in the future")
+			return errors.New("token iat too far in the future")
 		}
 	}
+	return nil
+}
 
-	return claims, nil
+func isLegacyTenantTypeError(err error) bool {
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) {
+		return false
+	}
+	return typeErr.Value == "number" && (typeErr.Field == "tid" || strings.HasSuffix(typeErr.Field, ".tid"))
 }
 
 func (j *Manager) getMethod() jwt.SigningMethod {

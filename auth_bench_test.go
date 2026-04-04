@@ -98,6 +98,8 @@ func newBenchmarkEngine(tb testing.TB, mode ValidationMode) (*Engine, func()) {
 	cfg.Password.Memory = 8 * 1024
 	cfg.Password.Time = 1
 	cfg.Password.Parallelism = 1
+	cfg.Session.SlidingExpiration = false
+	cfg.Session.JitterEnabled = false
 	cfg.Metrics.Enabled = false
 	cfg.Audit.Enabled = false
 	cfg.SessionHardening.MaxSessionsPerUser = 0
@@ -183,6 +185,8 @@ func newBenchmarkEngineRealRedis(tb testing.TB, mode ValidationMode) (*Engine, f
 	cfg.Password.Memory = 8 * 1024
 	cfg.Password.Time = 1
 	cfg.Password.Parallelism = 1
+	cfg.Session.SlidingExpiration = false
+	cfg.Session.JitterEnabled = false
 	cfg.Metrics.Enabled = false
 	cfg.Audit.Enabled = false
 	cfg.SessionHardening.MaxSessionsPerUser = 0
