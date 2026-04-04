@@ -523,11 +523,11 @@ func (j *Manager) validateParsedAccessClaims(claims *AccessClaims) error {
 }
 
 func isLegacyTenantTypeError(err error) bool {
-	if err == nil {
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "cannot unmarshal number into Go struct field") && strings.Contains(msg, ".tid")
+	return typeErr.Value == "number" && (typeErr.Field == "tid" || strings.HasSuffix(typeErr.Field, ".tid"))
 }
 
 func (j *Manager) getMethod() jwt.SigningMethod {
