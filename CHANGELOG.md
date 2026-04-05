@@ -18,6 +18,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-04-06
+
+### Breaking
+
+- Public engine failures are now normalized to a canonical `*AuthError` boundary; raw internal/store/limiter/session errors are no longer returned from exported `Engine` methods.
+- Removed refresh-throttle configuration and behavior (`Security.EnableRefreshThrottle`, `Security.MaxRefreshAttempts`, `Security.RefreshCooldownDuration`) and retired refresh rate-limit signaling from the public surface.
+- Renamed config fields for abuse controls:
+	- `Security.EnableIPThrottle` -> `Security.EnableLoginFailureLimiter`
+	- `PasswordReset.EnableIPThrottle` / `PasswordReset.EnableIdentifierThrottle` -> `PasswordReset.EnableRequestLimiter` / `PasswordReset.EnableConfirmFailureLimiter`
+	- `EmailVerification.EnableIPThrottle` / `EmailVerification.EnableIdentifierThrottle` -> `EmailVerification.EnableRequestLimiter` / `EmailVerification.EnableConfirmFailureLimiter`
+	- `Account.EnableIPThrottle` / `Account.EnableIdentifierThrottle` -> `Account.EnableCreationLimiter`
+- Limiter keyspace moved to tenant-scoped `rl:*` prefixes; legacy limiter keys are not reused.
+
+### Added
+
+- Canonical public error model:
+	- `AuthError` with stable `Category` and `Code`
+	- Full `AuthCode` registry
+	- `NewAuthError` and `WrapAuthError`
+	- Boundary mapper (`mapToAuthError`) and canonical fallbacks (`ErrSystemInternal`, `ErrSystemUnavailable`)
+- CI guardrails for error-boundary regressions:
+	- Static boundary scanner (`engine_error_boundary_static_test.go`)
+	- Runtime boundary contract tests (`engine_error_boundary_runtime_test.go`)
+- New observability counters for limiter behavior and lockout:
+	- `MetricLimiterCheck`
+	- `MetricLimiterTrigger`
+	- `MetricLimiterFailOpen`
+	- `MetricLockoutTrigger`
+- New error-model documentation (`docs/error-model.md`).
+
+### Changed
+
+- Login limiter now uses tenant+identifier scoping and no longer depends on IP pairing.
+- Password reset and email verification abuse controls are split into explicit request-phase and confirm-failure limiter paths.
+- Limiter backend failures in runtime flow wrappers now follow fail-open policy with audit + metric signals (`limiter_fail_open`) while preserving explicit limiter denials.
+- Security report and docs now reflect `EnableLoginFailureLimiter` as the login abuse-control gate.
+
+### Removed
+
+- `ErrRefreshRateLimited` and `MetricRefreshRateLimited` from the public model.
+- Refresh-throttle flow path and associated refresh rate-limit audit branch.
+
+### Docs
+
+- Updated API, config, flow, security, operations, and rate-limiting docs to align with v0.3.0 semantics.
+- Added boundary enforcement policy details under the error-model documentation.
+
+### Tests
+
+- Migrated limiter and config tests to new semantics and keyspace.
+- Added static + runtime tests that hard-fail CI on boundary contract drift.
+- Targeted guardrail run passes: `go test ./... -run "TestEngineErrorBoundaryStatic|TestEngineErrorBoundaryRuntime"`.
+
+---
+
 ## [0.2.1] - 2026-03-31
 
 ### Changed
@@ -126,7 +181,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.3.0]: https://github.com/MrEthical07/goAuth/releases/tag/v0.3.0
 [0.2.1]: https://github.com/MrEthical07/goAuth/releases/tag/v0.2.1
 [0.2.0]: https://github.com/MrEthical07/goAuth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MrEthical07/goAuth/releases/tag/v0.1.0
-[Unreleased]: https://github.com/MrEthical07/goAuth/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/MrEthical07/goAuth/compare/v0.3.0...HEAD

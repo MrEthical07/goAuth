@@ -137,14 +137,21 @@ Rate limiting for TOTP and backup codes uses dedicated domain limiters (`TOTPLim
 | Error | Condition |
 |-------|----------|
 | `ErrMFALoginRequired` | TOTP enabled but no code provided in login |
+| `ErrTOTPFeatureDisabled` | TOTP/backup-code functionality is disabled in config |
 | `ErrTOTPRequired` | TOTP code required for this operation |
 | `ErrTOTPInvalid` | Wrong TOTP code |
 | `ErrTOTPRateLimited` | TOTP attempt limit exceeded |
-| `ErrTOTPNotEnabled` | TOTP not set up for user |
+| `ErrTOTPNotConfigured` | TOTP not set up for user |
+| `ErrTOTPUnavailable` | TOTP backend/limiter unavailable |
 | `ErrBackupCodeInvalid` | Wrong backup code |
 | `ErrBackupCodeRateLimited` | Backup code attempt limit exceeded |
+| `ErrBackupCodeUnavailable` | Backup code backend/limiter unavailable |
+| `ErrBackupCodesNotConfigured` | Backup codes are not configured for the user |
+| `ErrBackupCodeRegenerationRequiresTOTP` | Regenerating backup codes requires successful TOTP verification |
 | `ErrMFALoginExpired` | MFA challenge TTL elapsed |
 | `ErrMFALoginAttemptsExceeded` | Too many failed MFA attempts |
+| `ErrMFALoginReplay` | MFA challenge replay detected |
+| `ErrMFALoginUnavailable` | MFA challenge backend unavailable |
 | `ErrMFALoginInvalid` | Malformed MFA challenge |
 
 ## Flow Ownership

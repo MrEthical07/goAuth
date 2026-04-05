@@ -302,8 +302,6 @@ const (
 	MetricRefreshReuseDetected = MetricID(internalmetrics.MetricRefreshReuseDetected)
 	// MetricReplayDetected is an exported constant or variable used by the authentication engine.
 	MetricReplayDetected = MetricID(internalmetrics.MetricReplayDetected)
-	// MetricRefreshRateLimited is an exported constant or variable used by the authentication engine.
-	MetricRefreshRateLimited = MetricID(internalmetrics.MetricRefreshRateLimited)
 	// MetricDeviceIPMismatch is an exported constant or variable used by the authentication engine.
 	MetricDeviceIPMismatch = MetricID(internalmetrics.MetricDeviceIPMismatch)
 	// MetricDeviceUAMismatch is an exported constant or variable used by the authentication engine.
@@ -332,6 +330,14 @@ const (
 	MetricBackupCodeRegenerated = MetricID(internalmetrics.MetricBackupCodeRegenerated)
 	// MetricRateLimitHit is an exported constant or variable used by the authentication engine.
 	MetricRateLimitHit = MetricID(internalmetrics.MetricRateLimitHit)
+	// MetricLimiterCheck is an exported constant or variable used by the authentication engine.
+	MetricLimiterCheck = MetricID(internalmetrics.MetricLimiterCheck)
+	// MetricLimiterTrigger is an exported constant or variable used by the authentication engine.
+	MetricLimiterTrigger = MetricID(internalmetrics.MetricLimiterTrigger)
+	// MetricLimiterFailOpen is an exported constant or variable used by the authentication engine.
+	MetricLimiterFailOpen = MetricID(internalmetrics.MetricLimiterFailOpen)
+	// MetricLockoutTrigger is an exported constant or variable used by the authentication engine.
+	MetricLockoutTrigger = MetricID(internalmetrics.MetricLockoutTrigger)
 	// MetricSessionCreated is an exported constant or variable used by the authentication engine.
 	MetricSessionCreated = MetricID(internalmetrics.MetricSessionCreated)
 	// MetricSessionInvalidated is an exported constant or variable used by the authentication engine.

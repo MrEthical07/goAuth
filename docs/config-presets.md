@@ -25,7 +25,7 @@ Tighter posture for security-sensitive APIs:
 - Validation mode: `ModeStrict`
 - `Security.ProductionMode`: enabled
 - JWT hardening: `RequireIAT=true`, shorter refresh/session lifetime
-- Login/refresh rate limits: tighter thresholds
+- Login failure limiter: tighter thresholds
 - Device binding: enabled with user-agent enforcement + anomaly detection
 
 Use this when immediate revocation and strict backend verification are required.
@@ -37,7 +37,7 @@ Higher sustained throughput posture while preserving security invariants:
 - Validation mode: `ModeHybrid`
 - `Security.ProductionMode`: enabled
 - Longer access/refresh/session lifetimes to reduce churn
-- Login IP throttle disabled (refresh throttle remains enabled)
+- Login failure limiter stays enabled with default thresholds
 
 Use route-level `ModeJWTOnly` for endpoints where immediate revocation is not
 required and latency budget is critical.

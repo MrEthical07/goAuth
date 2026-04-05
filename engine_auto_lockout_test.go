@@ -235,6 +235,29 @@ func TestAutoLockout_DisabledDoesNotLock(t *testing.T) {
 	}
 }
 
+func TestAutoLockout_StillTriggersWhenLoginFailureLimiterDisabled(t *testing.T) {
+	cfg := lockoutTestConfig()
+	cfg.Security.EnableLoginFailureLimiter = false
+	up := newHardeningUserProvider(t)
+
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	ctx := context.Background()
+
+	for i := 0; i < cfg.Security.AutoLockoutThreshold-1; i++ {
+		_, _, err := engine.Login(ctx, "alice", "wrong-password")
+		if !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("attempt %d: expected ErrInvalidCredentials, got %v", i+1, err)
+		}
+	}
+
+	_, _, err := engine.Login(ctx, "alice", "wrong-password")
+	if !errors.Is(err, ErrAccountLocked) {
+		t.Fatalf("threshold attempt: expected ErrAccountLocked, got %v", err)
+	}
+}
+
 func TestAutoLockout_LockedAccountStrictValidateFails(t *testing.T) {
 	cfg := lockoutTestConfig()
 	up := newHardeningUserProvider(t)

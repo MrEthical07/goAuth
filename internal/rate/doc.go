@@ -3,10 +3,8 @@
 //
 // # Window semantics
 //
-// Fixed-window counters: INCR + conditional EXPIRE on first hit. Key prefixes:
-//   - al:  — login per-user
-//   - ali: — login per-IP
-//   - ar:  — refresh per-session
+// Fixed-window counters: INCR + conditional EXPIRE on first hit. Key prefix:
+//   - rl:login:fail:{tenant}:{identifier} — login failure counter
 //
 // # What this package must NOT do
 //

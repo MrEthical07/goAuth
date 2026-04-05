@@ -185,7 +185,7 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 		return deps.Errors.UserNotFound
 	}
 	if tenantID == "" {
-		tenantID = "0"
+		tenantID = deps.TenantIDFromContext(ctx)
 	}
 
 	if err := deps.CheckLimiter(ctx, tenantID, userID); err != nil {

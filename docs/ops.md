@@ -65,14 +65,11 @@ Scale up connections if you observe Redis latency > 1 ms under sustained load.
 
 | Setting | Default | Recommended (public) | Recommended (internal) |
 |---------|---------|---------------------|----------------------|
-| `Security.EnableIPThrottle` | false | **true** | true |
+| `Security.EnableLoginFailureLimiter` | true | **true** | true |
 | `Security.MaxLoginAttempts` | 5 | **3–5** | 10 |
 | `Security.LoginCooldownDuration` | 15 min | **15 min** | 5 min |
-| `Security.EnableRefreshThrottle` | true | **true** | true |
-| `Security.MaxRefreshAttempts` | 20 | **10–20** | 60 |
-| `Security.RefreshCooldownDuration` | 1 min | **1–2 min** | 1 min |
 
-For public-facing APIs, enable IP throttling unconditionally. For internal microservices behind a gateway, you may relax login limits but keep refresh throttling active.
+For public-facing APIs, keep the login failure limiter enabled unconditionally. For internal microservices behind a gateway, you may relax login thresholds but should keep limiter enforcement on.
 
 ---
 
@@ -95,7 +92,7 @@ Use per-route overrides: `middleware.Guard(engine, goAuth.ModeStrict)` for sensi
 - [ ] Pre-generate and securely store signing keys (don't rely on ephemeral keys)
 - [ ] Set `noeviction` policy on Redis
 - [ ] Enable `JWT.RequireIAT = true`
-- [ ] Enable `Security.EnableIPThrottle = true` for public APIs
+- [ ] Keep `Security.EnableLoginFailureLimiter = true` for public APIs
 - [ ] Configure audit sink to durable storage
 - [ ] Run `Config.Lint()` at startup and log warnings
 - [ ] Set up monitoring on `MetricsSnapshot()` counters
@@ -128,4 +125,4 @@ if warnings := cfg.Lint(); len(warnings) > 0 {
 }
 ```
 
-`Lint()` checks include: excessive leeway, long access TTLs, JWT-only mode with device binding, disabled rate limiting on public endpoints, and more. Unlike `Validate()`, `Lint()` never returns an error — only advisory warnings.
+`Lint()` checks include: excessive leeway, long access TTLs, JWT-only mode with device binding, disabled login-failure limiting, and more. Unlike `Validate()`, `Lint()` never returns an error — only advisory warnings.

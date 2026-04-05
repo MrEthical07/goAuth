@@ -124,11 +124,45 @@ The root package contains the authentication engine, builder, configuration, typ
 | `GetSessionInfo` | method | Returns metadata for a single session by ID. |
 | `ActiveSessionEstimate` | method | Returns a probabilistic estimate of total active sessions (HyperLogLog). |
 | `Health` | method | Pings Redis and returns a `HealthStatus`. |
-| `GetLoginAttempts` | method | Returns the current failed-login count for a user+IP key. |
+| `GetLoginAttempts` | method | Returns the current failed-login count for a tenant+identifier key. |
 | `MetricsSnapshot` | method | Returns a point-in-time copy of all in-process metrics. |
 | `AuditDropped` | method | Returns the number of audit events dropped due to buffer overflow. |
 | `AuditSinkErrors` | method | Returns the number of audit sink write errors reported by the configured sink. |
 | `SecurityReport` | method | Returns a `SecurityReport` reflecting the engine's security posture. |
+
+### Error Model
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `AuthError` | type | Canonical public error type with `Category`, `Code`, and `Message`. |
+| `ErrorCategory` | type | Enum-like classifier with four values: `AUTH_ABUSE`, `AUTH_STATE`, `AUTH_VALIDATION`, `SYSTEM`. |
+| `NewAuthError` | func | Constructs a canonical auth error sentinel. |
+| `WrapAuthError` | func | Preserves canonical code/category while attaching an underlying cause. |
+
+All exported `Err*` values are `*AuthError` sentinels.
+
+All exported `Engine` methods normalize outward failures through the boundary mapper, so callers never receive raw internal/store/limiter/session errors.
+
+- Stable matching: use `errors.Is(err, goAuth.ErrXxx)`.
+- Code/category introspection: use `errors.As(err, &ae)` then inspect `ae.Code` and `ae.Category`.
+- Unknown internal failures map to `ErrSystemInternal` (`SYSTEM_INTERNAL_ERROR`).
+- Dependency/availability failures map to `ErrSystemUnavailable` (`SYSTEM_UNAVAILABLE`) or domain-specific unavailable sentinels.
+
+#### Common Sentinel Examples
+
+| Error | Category | Code | Meaning |
+|------|----------|------|---------|
+| `ErrInvalidCredentials` | `CategoryAuthValidation` | `AUTH_INVALID_CREDENTIALS` | Username/password mismatch |
+| `ErrLoginRateLimited` | `CategoryAuthAbuse` | `AUTH_TOO_MANY_ATTEMPTS` | Login throttled |
+| `ErrAccountLocked` | `CategoryAuthState` | `AUTH_ACCOUNT_LOCKED` | Account locked |
+| `ErrMFALoginInvalid` | `CategoryAuthValidation` | `AUTH_MFA_INVALID_CODE` | MFA code invalid |
+| `ErrPasswordResetInvalid` | `CategoryAuthValidation` | `AUTH_RESET_INVALID` | Password-reset challenge invalid |
+| `ErrRefreshReuse` | `CategoryAuthAbuse` | `AUTH_REFRESH_REUSE_DETECTED` | Refresh replay detected |
+| `ErrStrictBackendDown` | `CategorySystem` | `SYSTEM_UNAVAILABLE_STRICT_BACKEND` | Strict validation backend unavailable |
+| `ErrSystemInternal` | `CategorySystem` | `SYSTEM_INTERNAL_ERROR` | Canonical unknown-error fallback |
+| `ErrSystemUnavailable` | `CategorySystem` | `SYSTEM_UNAVAILABLE` | Canonical availability fallback |
+
+For the complete `AuthCode` and exported sentinel registry, see [error-model.md](error-model.md).
 
 ### Configuration
 
@@ -384,6 +418,8 @@ OpenTelemetry metric bridge.
 | `NewOTelExporter` | func | Creates an exporter from an `*Engine` and a `metric.Meter`. |
 | `NewOTelExporterFromSource` | func | Creates an exporter from any snapshot source and meter. |
 | `Close` | method | Stops the background collection goroutine. |
+| `ErrNilMeter` | var | Returned when creating an OTel exporter with a nil meter. |
+| `ErrNilSource` | var | Returned when creating an OTel exporter with a nil metrics source. |
 
 ---
 
@@ -433,15 +469,36 @@ These packages are not importable by external Go code but are documented here fo
 
 | Symbol | Kind | Description |
 |--------|------|-------------|
-| `Config` | type | Rate-limiter configuration (max attempts, window, lockout). |
-| `Limiter` | type | Redis-backed sliding-window rate limiter. |
+| `Config` | type | Login-failure limiter configuration (enable toggle, max attempts, cooldown). |
+| `Limiter` | type | Redis-backed fixed-window login-failure limiter. |
 | `New` | func | Creates a `Limiter` from a `Config` and Redis client. |
-| `CheckLogin` | method | Returns whether a login attempt is allowed for the given key. |
-| `IncrementLogin` | method | Records a failed login attempt. |
+| `CheckLogin` | method | Returns whether a login attempt is allowed for a tenant+identifier key. |
+| `IncrementLogin` | method | Records a failed login attempt for a tenant+identifier key. |
 | `ResetLogin` | method | Clears the failure counter after a successful login. |
-| `CheckRefresh` | method | Returns whether a refresh attempt is allowed. |
-| `IncrementRefresh` | method | Records a failed refresh attempt. |
-| `GetLoginAttempts` | method | Returns the current failure count for an identifier. |
+| `GetLoginAttempts` | method | Returns the current failure count for a tenant+identifier key. |
+
+### Package `internal/limiters`
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `ErrAccountRedisUnavailable` | var | Account-creation limiter backend unavailable. |
+| `ErrLockoutUnavailable` | var | Auto-lockout limiter backend unavailable. |
+| `ErrVerificationLimiterUnavailable` | var | Email-verification limiter backend unavailable. |
+
+### Package `internal/stores`
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `ErrMFALoginChallengeNotFound` | var | MFA challenge not found. |
+| `ErrMFALoginChallengeExpired` | var | MFA challenge expired. |
+| `ErrMFALoginChallengeExceeded` | var | MFA challenge attempt limit exceeded. |
+| `ErrMFALoginChallengeBackend` | var | MFA challenge store backend unavailable. |
+| `ErrResetNotFound` | var | Password-reset record not found or expired. |
+| `ErrResetSecretMismatch` | var | Password-reset secret/strategy mismatch. |
+| `ErrResetAttemptsExceeded` | var | Password-reset attempt limit exceeded. |
+| `ErrResetRedisUnavailable` | var | Password-reset store backend unavailable. |
+| `ErrVerificationNotFound` | var | Email-verification record not found or expired. |
+| `ErrVerificationRedisUnavailable` | var | Email-verification store backend unavailable. |
 
 ---
 

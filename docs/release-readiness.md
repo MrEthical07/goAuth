@@ -1,126 +1,89 @@
 # Release Readiness Assessment
 
-**Date:** 2026-02-19  
-**Branch:** `refactor/root-thin`  
-**Go version:** 1.26.0  
-**Test suite:** 266 tests across 9 packages — all passing  
+Date: 2026-04-06  
+Branch: fix/dualratelimit  
+Release Target: v0.3.0  
+Status: Ready for release
 
 ---
 
 ## Summary
 
-All P0, P1, and P2 gaps identified in the feature report have been resolved. The library is feature-complete for a production release with the changes below.
+v0.3.0 is a breaking release that finalizes the new limiter architecture, canonical AuthError boundary normalization, and expanded guardrail coverage.
+
+All release-critical tests pass on this branch, and migration guidance is now documented.
 
 ---
 
-## Completed Work
+## Breaking Scope (v0.3.0)
 
-### P0 — Critical
-
-| ID | Task | Commit | Status |
-|----|------|--------|--------|
-| R0 | Verify Redis compat tests against real Redis 7-alpine | `e2d0a2b` | Done |
-
-### P1 — High
-
-| ID | Task | Commit | Status |
-|----|------|--------|--------|
-| L1 | Automatic account lockout after N failed login attempts | `15f7dc9` | Done |
-
-### P2 — Medium
-
-| ID | Task | Commit | Status |
-|----|------|--------|--------|
-| P2.1 | Max password length (`MaxPasswordBytes`) to prevent Argon2 memory DoS | `1fbd9fb` | Done |
-| P2.2 | Configurable TOTP rate limiter thresholds | `1905023` | Done |
-| P2.3 | Fix `RequireIAT` enforcement + add missing-iat test | `3e3f8f3` | Done |
-| P2.4 | Document fixed-window boundary burst limitation | `31feed1` | Done |
-| P2.5 | Align permission version drift to delete session (consistency fix) | `b54a6f0` | Done |
-| P2.6 | Document `DeleteAllForUser` atomicity limitation | `f0148ea` | Done |
-| P2.7 | Eliminate empty password timing oracle | `b37f514` | Done |
+1. Canonical public error model is now enforced at engine boundaries:
+   - Exported Engine methods now return normalized AuthError-compatible failures.
+   - Unknown internal errors collapse to ErrSystemInternal.
+   - Availability/dependency failures collapse to ErrSystemUnavailable or domain-specific unavailable sentinels.
+2. Refresh-throttle path removed:
+   - Security.EnableRefreshThrottle, Security.MaxRefreshAttempts, Security.RefreshCooldownDuration removed.
+   - ErrRefreshRateLimited and MetricRefreshRateLimited removed.
+3. Config field migration required:
+   - Security.EnableIPThrottle -> Security.EnableLoginFailureLimiter
+   - PasswordReset and EmailVerification toggles split into request and confirm-failure limiter toggles.
+   - Account creation limiter toggles consolidated under Account.EnableCreationLimiter.
+4. Limiter keyspace moved to tenant-scoped rl:* prefixes.
+5. Runtime limiter wrappers now apply fail-open behavior for limiter backend failures with audit+metrics signals.
 
 ---
 
-## Test Coverage
+## Verification Gates
 
-| Package | Status |
-|---------|--------|
-| `github.com/MrEthical07/goAuth` | Pass |
-| `github.com/MrEthical07/goAuth/internal` | Pass |
-| `github.com/MrEthical07/goAuth/jwt` | Pass |
-| `github.com/MrEthical07/goAuth/metrics/export/otel` | Pass |
-| `github.com/MrEthical07/goAuth/metrics/export/prometheus` | Pass |
-| `github.com/MrEthical07/goAuth/password` | Pass |
-| `github.com/MrEthical07/goAuth/permission` | Pass |
-| `github.com/MrEthical07/goAuth/session` | Pass |
-| `github.com/MrEthical07/goAuth/test` | Pass |
+### Full test suite
 
-### New Tests Added
+Command:
 
-| Test File | Tests | Covers |
-|-----------|-------|--------|
-| `engine_auto_lockout_test.go` | 10 | Auto-lockout threshold, locked user rejection, unlock, counter reset, manual unlock, per-user isolation, disabled mode, strict validate, refresh |
-| `password/argon2_test.go` (additions) | 4 | Max length rejected (Hash/Verify), at-max accepted, default applied |
-| `jwt/manager_hardening_test.go` (additions) | 2 sub-cases | RequireIAT rejects missing iat, accepts present iat |
+```bash
+go test ./...
+```
 
----
+Result: PASS
 
-## Security Fixes
+Key package outcomes:
 
-1. **Automatic account lockout** — Persistent failure counter in Redis. Configurable threshold and duration. Prevents indefinite retry after rate-limit cooldowns expire.
-2. **Max password length** — Rejects passwords > `MaxPasswordBytes` (default 1024) before reaching Argon2, preventing memory-amplification DoS.
-3. **RequireIAT enforcement** — `golang-jwt`'s `WithIssuedAt()` only validates iat if present; added explicit nil-check to actually require it.
-4. **Permission drift session deletion** — Permission version mismatch now deletes the stale session, consistent with role and account version drift.
-5. **Empty password timing oracle** — Dummy hash verification on empty-password path equalizes response time.
+- ok github.com/MrEthical07/goAuth
+- ok github.com/MrEthical07/goAuth/internal
+- ok github.com/MrEthical07/goAuth/jwt
+- ok github.com/MrEthical07/goAuth/metrics/export/otel
+- ok github.com/MrEthical07/goAuth/metrics/export/prometheus
+- ok github.com/MrEthical07/goAuth/password
+- ok github.com/MrEthical07/goAuth/permission
+- ok github.com/MrEthical07/goAuth/session
+- ok github.com/MrEthical07/goAuth/test
 
----
+### Boundary guardrails
 
-## Configuration Additions (Non-Breaking)
+The static and runtime boundary guardrails are present and passing in targeted runs:
 
-| Config Path | Type | Default | Description |
-|-------------|------|---------|-------------|
-| `Security.AutoLockoutEnabled` | `bool` | `false` | Enable automatic lockout |
-| `Security.AutoLockoutThreshold` | `int` | `10` | Failed attempts before lock |
-| `Security.AutoLockoutDuration` | `time.Duration` | `30m` | 0 = manual unlock only |
-| `TOTP.MaxVerifyAttempts` | `int` | `5` | TOTP verification rate limit |
-| `TOTP.VerifyAttemptCooldown` | `time.Duration` | `1m` | TOTP rate limit window |
-| `password.Config.MaxPasswordBytes` | `int` | `1024` | Max password length |
+```bash
+go test ./... -run "TestEngineErrorBoundaryStatic|TestEngineErrorBoundaryRuntime"
+```
 
-All defaults preserve existing behavior — no breaking changes.
+Result: PASS
 
 ---
 
-## New Public API
+## Documentation Status
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `Engine.UnlockAccount` | `(ctx context.Context, userID string) error` | Re-enables a locked account and resets lockout counter |
+Release docs were updated for v0.3.0:
 
----
-
-## Documentation Updates
-
-| Document | Changes |
-|----------|---------|
-| `featureReport.md` | Updated section 3.10 (lockout: Complete), all P2 items marked as resolved |
-| `docs/rate_limiting.md` | Added "Fixed-Window Boundary Burst" section with diagram and mitigations |
-| `docs/session.md` | Added `DeleteAllForUser` atomicity note to Edge Cases |
+- CHANGELOG updated with v0.3.0 breaking release notes.
+- docs/migrations updated with v0.3.0 migration mapping and rollout guidance.
+- docs/error-model added and linked from core documentation.
+- Existing docs for config, rate limiting, engine behavior, flows, security, and API reference were aligned with the new semantics.
 
 ---
 
-## Known Limitations (Documented, Accepted)
+## Release Checklist
 
-1. **Fixed-window rate limiting** — Up to 2× burst at window boundaries. Mitigated by auto-lockout, Argon2 cost, and audit events. Sliding window deferred to future release.
-2. **`DeleteAllForUser` atomicity** — Non-atomic read-then-delete. Stray sessions expire naturally. Double-call workaround documented.
-
----
-
-## Pre-Release Checklist
-
-- [x] All 266 tests pass (`go test ./...`)
-- [x] No build errors (`go build ./...`)
-- [x] Redis integration tests verified on real Redis 7-alpine
-- [x] All P0/P1/P2 gaps from feature report resolved
-- [x] No breaking API or config changes
-- [x] Documentation updated
-- [x] Each change committed individually with descriptive messages
+- [x] Breaking changes documented in changelog
+- [x] Migration guide updated for renamed/removed config fields
+- [x] Public error-boundary contract documented and test-enforced
+- [x] Full repository test suite passes
+- [x] Release branch is ready for commit and tag v0.3.0

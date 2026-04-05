@@ -58,8 +58,8 @@ func TestHighThroughputConfigPresetValidates(t *testing.T) {
 	if cfg.JWT.AccessTTL <= 0 || cfg.JWT.RefreshTTL <= 0 {
 		t.Fatal("expected positive token ttls")
 	}
-	if cfg.Security.EnableIPThrottle {
-		t.Fatal("expected ip throttle disabled for throughput preset")
+	if !cfg.Security.EnableLoginFailureLimiter {
+		t.Fatal("expected login failure limiter enabled for throughput preset")
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected high throughput preset to validate, got %v", err)

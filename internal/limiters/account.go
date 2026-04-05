@@ -15,10 +15,9 @@ var (
 )
 
 type AccountConfig struct {
-	EnableIdentifierThrottle bool
-	EnableIPThrottle         bool
-	MaxAttempts              int
-	Cooldown                 time.Duration
+	EnableLimiter bool
+	MaxAttempts   int
+	Cooldown      time.Duration
 }
 
 type AccountCreationLimiter struct {
@@ -33,17 +32,13 @@ func NewAccountCreationLimiter(redisClient redis.UniversalClient, cfg AccountCon
 	}
 }
 
-func (l *AccountCreationLimiter) Enforce(ctx context.Context, tenantID, identifier, ip string) error {
-	if l.config.EnableIdentifierThrottle {
-		if err := l.enforceKey(ctx, accountIdentifierKey(tenantID, identifier)); err != nil {
-			return err
-		}
+func (l *AccountCreationLimiter) Enforce(ctx context.Context, tenantID, identifier string) error {
+	if !l.config.EnableLimiter || identifier == "" {
+		return nil
 	}
 
-	if l.config.EnableIPThrottle && ip != "" {
-		if err := l.enforceKey(ctx, accountIPKey(tenantID, ip)); err != nil {
-			return err
-		}
+	if err := l.enforceKey(ctx, accountIdentifierKey(tenantID, identifier)); err != nil {
+		return err
 	}
 
 	return nil
@@ -69,9 +64,5 @@ func (l *AccountCreationLimiter) enforceKey(ctx context.Context, key string) err
 }
 
 func accountIdentifierKey(tenantID, identifier string) string {
-	return "aca:" + normalizeTenantID(tenantID) + ":" + identifier
-}
-
-func accountIPKey(tenantID, ip string) string {
-	return "acaip:" + normalizeTenantID(tenantID) + ":" + ip
+	return "rl:account:req:" + tenantID + ":" + identifier
 }

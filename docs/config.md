@@ -66,14 +66,12 @@ Three presets are provided:
 | `ProductionMode`               | `bool`        | `false`      | Enable production security checks |
 | `EnableIPBinding`              | `bool`        | `false`      | Bind sessions to client IP |
 | `EnableUserAgentBinding`       | `bool`        | `true`       | Bind sessions to User-Agent |
-| `EnableIPThrottle`             | `bool`        | `false`      | Per-IP login rate limiting |
-| `EnableRefreshThrottle`        | `bool`        | `true`       | Per-session refresh rate limiting |
+| `EnableLoginFailureLimiter`    | `bool`        | `true`       | Enable login-failure limiter |
+| `EnableIPSignal`               | `bool`        | `false`      | Include client IP as a signal in audit/anomaly paths |
 | `EnforceRefreshRotation`       | `bool`        | `true`       | Require token rotation on refresh |
 | `EnforceRefreshReuseDetection` | `bool`        | `true`       | Invalidate session on token reuse |
 | `MaxLoginAttempts`             | `int`         | 5            | Failed logins before cooldown |
 | `LoginCooldownDuration`        | `time.Duration`| 15 min      | Cooldown after max login attempts |
-| `MaxRefreshAttempts`           | `int`         | 20           | Refresh attempts before cooldown |
-| `RefreshCooldownDuration`      | `time.Duration`| 1 min       | Cooldown after max refresh attempts |
 | `StrictMode`                   | `bool`        | `false`      | Force strict validation globally |
 | `EnablePermissionVersionCheck` | `bool`        | `true`       | Check permission version on validate |
 | `EnableRoleVersionCheck`       | `bool`        | `true`       | Check role version on validate |
@@ -137,8 +135,8 @@ Three presets are provided:
 | `Strategy`               | `ResetStrategyType`| `ResetToken`  | `ResetToken`, `ResetOTP`, or `ResetUUID` |
 | `ResetTTL`               | `time.Duration`   | 15 min         | Challenge lifetime |
 | `MaxAttempts`            | `int`             | 5              | Max confirm attempts per challenge |
-| `EnableIPThrottle`       | `bool`            | `true`         | Per-IP rate limiting |
-| `EnableIdentifierThrottle` | `bool`          | `true`         | Per-identifier rate limiting |
+| `EnableRequestLimiter`   | `bool`            | `true`         | Enable request-phase limiter |
+| `EnableConfirmFailureLimiter` | `bool`      | `true`         | Enable confirm-failure limiter |
 | `OTPDigits`              | `int`             | 6              | OTP digit count (OTP strategy) |
 
 > **See also:** [password_reset.md](password_reset.md)
@@ -152,8 +150,8 @@ Three presets are provided:
 | `VerificationTTL`        | `time.Duration`         | 15 min             | Challenge lifetime |
 | `MaxAttempts`            | `int`                   | 5                  | Max confirm attempts |
 | `RequireForLogin`        | `bool`                  | `false`            | Block login for unverified accounts |
-| `EnableIPThrottle`       | `bool`                  | `true`             | Per-IP rate limiting |
-| `EnableIdentifierThrottle` | `bool`                | `true`             | Per-identifier rate limiting |
+| `EnableRequestLimiter`   | `bool`                  | `true`             | Enable request-phase limiter |
+| `EnableConfirmFailureLimiter` | `bool`            | `true`             | Enable confirm-failure limiter |
 | `OTPDigits`              | `int`                   | 6                  | OTP digit count |
 
 > **See also:** [email_verification.md](email_verification.md)
@@ -164,11 +162,10 @@ Three presets are provided:
 |--------------------------------|---------------|---------|-------------|
 | `Enabled`                      | `bool`        | `true`  | Enable account creation |
 | `AutoLogin`                    | `bool`        | `false` | Issue tokens on creation |
+| `EnableCreationLimiter`        | `bool`        | `true`  | Enable account-creation limiter |
 | `DefaultRole`                  | `string`      | `""`    | Role assigned to new accounts |
 | `AccountCreationMaxAttempts`   | `int`         | 5       | Rate limit attempts |
 | `AccountCreationCooldown`      | `time.Duration`| 15 min | Cooldown period |
-| `EnableIPThrottle`             | `bool`        | `true`  | Per-IP rate limiting |
-| `EnableIdentifierThrottle`     | `bool`        | `true`  | Per-identifier rate limiting |
 
 ## Audit (`Config.Audit`)
 

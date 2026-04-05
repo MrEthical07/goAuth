@@ -41,8 +41,7 @@ func accountTestConfig() Config {
 	cfg.JWT.PrivateKey = []byte("test-secret")
 	cfg.Account.Enabled = true
 	cfg.Account.AutoLogin = false
-	cfg.Account.EnableIPThrottle = true
-	cfg.Account.EnableIdentifierThrottle = true
+	cfg.Account.EnableCreationLimiter = true
 	cfg.Account.AccountCreationMaxAttempts = 5
 	cfg.Account.AccountCreationCooldown = time.Minute
 	cfg.Account.DefaultRole = "member"
@@ -255,7 +254,7 @@ func TestCreateAccountRateLimitEnforced(t *testing.T) {
 	}
 
 	_, err := engine.CreateAccount(ctx, CreateAccountRequest{
-		Identifier: "g2",
+		Identifier: "g1",
 		Password:   "new-password-123",
 	})
 	if !errors.Is(err, ErrAccountCreationRateLimited) {
@@ -339,8 +338,8 @@ func TestCreateAccountRedisUnavailable(t *testing.T) {
 		Identifier: "harry",
 		Password:   "new-password-123",
 	})
-	if !errors.Is(err, ErrAccountCreationUnavailable) {
-		t.Fatalf("expected ErrAccountCreationUnavailable, got %v", err)
+	if err != nil {
+		t.Fatalf("expected fail-open account limiter behavior, got %v", err)
 	}
 }
 

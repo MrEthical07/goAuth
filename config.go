@@ -119,13 +119,13 @@ const (
 //
 //	Docs: docs/password_reset.md, docs/config.md
 type PasswordResetConfig struct {
-	Enabled                  bool
-	Strategy                 ResetStrategyType
-	ResetTTL                 time.Duration
-	MaxAttempts              int
-	EnableIPThrottle         bool
-	EnableIdentifierThrottle bool
-	OTPDigits                int
+	Enabled                     bool
+	Strategy                    ResetStrategyType
+	ResetTTL                    time.Duration
+	MaxAttempts                 int
+	EnableRequestLimiter        bool
+	EnableConfirmFailureLimiter bool
+	OTPDigits                   int
 }
 
 // VerificationStrategyType selects the email verification challenge strategy
@@ -147,14 +147,14 @@ const (
 //
 //	Docs: docs/email_verification.md, docs/config.md
 type EmailVerificationConfig struct {
-	Enabled                  bool
-	Strategy                 VerificationStrategyType
-	VerificationTTL          time.Duration
-	MaxAttempts              int
-	RequireForLogin          bool
-	EnableIPThrottle         bool
-	EnableIdentifierThrottle bool
-	OTPDigits                int
+	Enabled                     bool
+	Strategy                    VerificationStrategyType
+	VerificationTTL             time.Duration
+	MaxAttempts                 int
+	RequireForLogin             bool
+	EnableRequestLimiter        bool
+	EnableConfirmFailureLimiter bool
+	OTPDigits                   int
 }
 
 // AccountConfig controls account creation, auto-login, default role, and
@@ -164,8 +164,7 @@ type EmailVerificationConfig struct {
 type AccountConfig struct {
 	Enabled                               bool
 	AutoLogin                             bool
-	EnableIPThrottle                      bool
-	EnableIdentifierThrottle              bool
+	EnableCreationLimiter                 bool
 	AccountCreationMaxAttempts            int
 	AccountCreationCooldown               time.Duration
 	DefaultRole                           string
@@ -205,14 +204,12 @@ type SecurityConfig struct {
 	ProductionMode               bool
 	EnableIPBinding              bool
 	EnableUserAgentBinding       bool
-	EnableIPThrottle             bool
-	EnableRefreshThrottle        bool
+	EnableLoginFailureLimiter    bool
+	EnableIPSignal               bool
 	EnforceRefreshRotation       bool
 	EnforceRefreshReuseDetection bool
 	MaxLoginAttempts             int
 	LoginCooldownDuration        time.Duration
-	MaxRefreshAttempts           int
-	RefreshCooldownDuration      time.Duration
 	StrictMode                   bool
 	RequireSecureCookies         bool
 	SameSitePolicy               http.SameSite
@@ -406,29 +403,28 @@ func defaultConfig() Config {
 			UpgradeOnLogin: true,
 		},
 		PasswordReset: PasswordResetConfig{
-			Enabled:                  false,
-			Strategy:                 ResetToken,
-			ResetTTL:                 15 * time.Minute,
-			MaxAttempts:              5,
-			EnableIPThrottle:         true,
-			EnableIdentifierThrottle: true,
-			OTPDigits:                6,
+			Enabled:                     false,
+			Strategy:                    ResetToken,
+			ResetTTL:                    15 * time.Minute,
+			MaxAttempts:                 5,
+			EnableRequestLimiter:        true,
+			EnableConfirmFailureLimiter: true,
+			OTPDigits:                   6,
 		},
 		EmailVerification: EmailVerificationConfig{
-			Enabled:                  false,
-			Strategy:                 VerificationToken,
-			VerificationTTL:          15 * time.Minute,
-			MaxAttempts:              5,
-			RequireForLogin:          false,
-			EnableIPThrottle:         true,
-			EnableIdentifierThrottle: true,
-			OTPDigits:                6,
+			Enabled:                     false,
+			Strategy:                    VerificationToken,
+			VerificationTTL:             15 * time.Minute,
+			MaxAttempts:                 5,
+			RequireForLogin:             false,
+			EnableRequestLimiter:        true,
+			EnableConfirmFailureLimiter: true,
+			OTPDigits:                   6,
 		},
 		Account: AccountConfig{
 			Enabled:                               true,
 			AutoLogin:                             false,
-			EnableIPThrottle:                      true,
-			EnableIdentifierThrottle:              true,
+			EnableCreationLimiter:                 true,
 			AccountCreationMaxAttempts:            5,
 			AccountCreationCooldown:               15 * time.Minute,
 			DefaultRole:                           "",
@@ -447,14 +443,12 @@ func defaultConfig() Config {
 			ProductionMode:               false,
 			EnableIPBinding:              false,
 			EnableUserAgentBinding:       true,
-			EnableIPThrottle:             false,
-			EnableRefreshThrottle:        true,
+			EnableLoginFailureLimiter:    true,
+			EnableIPSignal:               false,
 			EnforceRefreshRotation:       true,
 			EnforceRefreshReuseDetection: true,
 			MaxLoginAttempts:             5,
 			LoginCooldownDuration:        15 * time.Minute,
-			MaxRefreshAttempts:           20,
-			RefreshCooldownDuration:      1 * time.Minute,
 			StrictMode:                   false,
 			RequireSecureCookies:         true,
 			SameSitePolicy:               http.SameSiteStrictMode,
@@ -558,11 +552,8 @@ func HighSecurityConfig() Config {
 	cfg.JWT.RefreshTTL = 24 * time.Hour
 	cfg.Session.AbsoluteSessionLifetime = 24 * time.Hour
 
-	cfg.Security.EnableIPThrottle = true
 	cfg.Security.MaxLoginAttempts = 3
 	cfg.Security.LoginCooldownDuration = 15 * time.Minute
-	cfg.Security.MaxRefreshAttempts = 10
-	cfg.Security.RefreshCooldownDuration = 2 * time.Minute
 
 	cfg.DeviceBinding.Enabled = true
 	cfg.DeviceBinding.DetectIPChange = true
@@ -586,10 +577,6 @@ func HighThroughputConfig() Config {
 	cfg.JWT.AccessTTL = 15 * time.Minute
 	cfg.JWT.RefreshTTL = 14 * 24 * time.Hour
 	cfg.Session.AbsoluteSessionLifetime = 14 * 24 * time.Hour
-
-	cfg.Security.EnableIPThrottle = false
-	cfg.Security.MaxRefreshAttempts = 60
-	cfg.Security.RefreshCooldownDuration = 1 * time.Minute
 
 	return cfg
 }
@@ -734,6 +721,12 @@ func (c *Config) Validate() error {
 		if c.PasswordReset.MaxAttempts <= 0 {
 			return errors.New("PasswordReset MaxAttempts must be > 0")
 		}
+		if !c.PasswordReset.EnableRequestLimiter {
+			return errors.New("PasswordReset EnableRequestLimiter must be true when PasswordReset is enabled")
+		}
+		if !c.PasswordReset.EnableConfirmFailureLimiter {
+			return errors.New("PasswordReset EnableConfirmFailureLimiter must be true when PasswordReset is enabled")
+		}
 
 		if c.PasswordReset.Strategy == ResetOTP {
 			if c.PasswordReset.OTPDigits < 6 || c.PasswordReset.OTPDigits > 10 {
@@ -744,12 +737,6 @@ func (c *Config) Validate() error {
 			}
 			if c.PasswordReset.ResetTTL > 15*time.Minute {
 				return errors.New("PasswordReset ResetTTL must be <= 15m in OTP mode")
-			}
-			if !c.PasswordReset.EnableIPThrottle {
-				return errors.New("PasswordReset EnableIPThrottle must be true in OTP mode")
-			}
-			if !c.PasswordReset.EnableIdentifierThrottle {
-				return errors.New("PasswordReset EnableIdentifierThrottle must be true in OTP mode")
 			}
 		}
 	}
@@ -769,6 +756,12 @@ func (c *Config) Validate() error {
 		if c.EmailVerification.MaxAttempts <= 0 {
 			return errors.New("EmailVerification MaxAttempts must be > 0")
 		}
+		if !c.EmailVerification.EnableRequestLimiter {
+			return errors.New("EmailVerification EnableRequestLimiter must be true when EmailVerification is enabled")
+		}
+		if !c.EmailVerification.EnableConfirmFailureLimiter {
+			return errors.New("EmailVerification EnableConfirmFailureLimiter must be true when EmailVerification is enabled")
+		}
 		if c.EmailVerification.Strategy == VerificationOTP {
 			if c.EmailVerification.OTPDigits < 6 || c.EmailVerification.OTPDigits > 10 {
 				return errors.New("EmailVerification OTPDigits must be between 6 and 10 in OTP mode")
@@ -778,12 +771,6 @@ func (c *Config) Validate() error {
 			}
 			if c.EmailVerification.VerificationTTL > 15*time.Minute {
 				return errors.New("EmailVerification VerificationTTL must be <= 15m in OTP mode")
-			}
-			if !c.EmailVerification.EnableIPThrottle {
-				return errors.New("EmailVerification EnableIPThrottle must be true in OTP mode")
-			}
-			if !c.EmailVerification.EnableIdentifierThrottle {
-				return errors.New("EmailVerification EnableIdentifierThrottle must be true in OTP mode")
 			}
 		}
 	}
@@ -803,14 +790,13 @@ func (c *Config) Validate() error {
 		if c.Account.DefaultRole == "" {
 			return errors.New("Account DefaultRole is required when account creation is enabled")
 		}
-		if !c.Account.EnableIPThrottle || !c.Account.EnableIdentifierThrottle {
-			return errors.New("Account throttles must be enabled")
-		}
-		if c.Account.AccountCreationMaxAttempts <= 0 {
-			return errors.New("Account AccountCreationMaxAttempts must be > 0")
-		}
-		if c.Account.AccountCreationCooldown <= 0 {
-			return errors.New("Account AccountCreationCooldown must be > 0")
+		if c.Account.EnableCreationLimiter {
+			if c.Account.AccountCreationMaxAttempts <= 0 {
+				return errors.New("Account AccountCreationMaxAttempts must be > 0 when account creation limiter is enabled")
+			}
+			if c.Account.AccountCreationCooldown <= 0 {
+				return errors.New("Account AccountCreationCooldown must be > 0 when account creation limiter is enabled")
+			}
 		}
 		if c.Account.AutoLogin && c.JWT.RefreshTTL <= 0 {
 			return errors.New("Account AutoLogin requires refresh system to be enabled")
@@ -830,14 +816,6 @@ func (c *Config) Validate() error {
 	}
 	if !c.Security.EnforceRefreshReuseDetection {
 		return errors.New("EnforceRefreshReuseDetection must be true")
-	}
-	if c.Security.EnableRefreshThrottle {
-		if c.Security.MaxRefreshAttempts <= 0 {
-			return errors.New("MaxRefreshAttempts must be > 0 when refresh throttle is enabled")
-		}
-		if c.Security.RefreshCooldownDuration <= 0 {
-			return errors.New("RefreshCooldownDuration must be > 0 when refresh throttle is enabled")
-		}
 	}
 	if c.SessionHardening.MaxSessionsPerUser < 0 {
 		return errors.New("SessionHardening MaxSessionsPerUser must be >= 0")
@@ -988,8 +966,8 @@ func (c *Config) Validate() error {
 			if c.PasswordReset.MaxAttempts > 5 {
 				return errors.New("ProductionMode requires PasswordReset MaxAttempts <= 5 in OTP mode")
 			}
-			if !c.PasswordReset.EnableIPThrottle || !c.PasswordReset.EnableIdentifierThrottle {
-				return errors.New("ProductionMode requires PasswordReset throttles in OTP mode")
+			if !c.PasswordReset.EnableRequestLimiter || !c.PasswordReset.EnableConfirmFailureLimiter {
+				return errors.New("ProductionMode requires PasswordReset request and confirm limiters in OTP mode")
 			}
 		}
 		if c.EmailVerification.Enabled && c.EmailVerification.Strategy == VerificationOTP {
@@ -999,8 +977,8 @@ func (c *Config) Validate() error {
 			if c.EmailVerification.MaxAttempts > 5 {
 				return errors.New("ProductionMode requires EmailVerification MaxAttempts <= 5 in OTP mode")
 			}
-			if !c.EmailVerification.EnableIPThrottle || !c.EmailVerification.EnableIdentifierThrottle {
-				return errors.New("ProductionMode requires EmailVerification throttles in OTP mode")
+			if !c.EmailVerification.EnableRequestLimiter || !c.EmailVerification.EnableConfirmFailureLimiter {
+				return errors.New("ProductionMode requires EmailVerification request and confirm limiters in OTP mode")
 			}
 		}
 	}
@@ -1163,15 +1141,10 @@ func (c *Config) Lint() LintResult {
 			"ValidationMode is JWTOnly with PermissionVersionCheck; version checks use embedded claim values only and won't catch real-time revocations")
 	}
 
-	// --- Rate limiting ---
-	if !c.Security.EnableIPThrottle && !c.Security.EnableRefreshThrottle {
-		warn(LintHigh, "rate_limits_disabled",
-			"Both IP throttle and refresh throttle are disabled; public endpoints are unprotected from brute-force")
-	}
-
-	if !c.Security.EnableIPThrottle {
-		warn(LintWarn, "ip_throttle_disabled",
-			"IP throttle is disabled; login endpoints are vulnerable to distributed brute-force")
+	// --- Abuse protection ---
+	if !c.Security.EnableLoginFailureLimiter {
+		warn(LintHigh, "login_failure_limiter_disabled",
+			"EnableLoginFailureLimiter is false; login abuse protection is disabled")
 	}
 
 	// --- Session ---

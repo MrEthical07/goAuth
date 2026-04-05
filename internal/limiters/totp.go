@@ -45,12 +45,12 @@ func NewTOTPLimiter(redisClient redis.UniversalClient, cfg TOTPLimiterConfig) *T
 	return &TOTPLimiter{redis: redisClient, maxAttempts: int64(max), cooldown: cd}
 }
 
-func (l *TOTPLimiter) key(userID string) string {
-	return "att:" + userID
+func (l *TOTPLimiter) key(tenantID, userID string) string {
+	return "rl:totp:fail:" + tenantID + ":" + userID
 }
 
-func (l *TOTPLimiter) Check(ctx context.Context, userID string) error {
-	count, err := l.redis.Get(ctx, l.key(userID)).Int64()
+func (l *TOTPLimiter) Check(ctx context.Context, tenantID, userID string) error {
+	count, err := l.redis.Get(ctx, l.key(tenantID, userID)).Int64()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil
@@ -63,13 +63,13 @@ func (l *TOTPLimiter) Check(ctx context.Context, userID string) error {
 	return nil
 }
 
-func (l *TOTPLimiter) RecordFailure(ctx context.Context, userID string) error {
-	count, err := l.redis.Incr(ctx, l.key(userID)).Result()
+func (l *TOTPLimiter) RecordFailure(ctx context.Context, tenantID, userID string) error {
+	count, err := l.redis.Incr(ctx, l.key(tenantID, userID)).Result()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 	}
 	if count == 1 {
-		if err := l.redis.Expire(ctx, l.key(userID), l.cooldown).Err(); err != nil {
+		if err := l.redis.Expire(ctx, l.key(tenantID, userID), l.cooldown).Err(); err != nil {
 			return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 		}
 	}
@@ -79,8 +79,8 @@ func (l *TOTPLimiter) RecordFailure(ctx context.Context, userID string) error {
 	return nil
 }
 
-func (l *TOTPLimiter) Reset(ctx context.Context, userID string) error {
-	if err := l.redis.Del(ctx, l.key(userID)).Err(); err != nil {
+func (l *TOTPLimiter) Reset(ctx context.Context, tenantID, userID string) error {
+	if err := l.redis.Del(ctx, l.key(tenantID, userID)).Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 	}
 	return nil

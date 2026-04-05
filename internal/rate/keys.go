@@ -1,13 +1,15 @@
 package rate
 
-func loginUserKey(username string) string {
-	return "al:" + username
+import (
+	"crypto/sha256"
+	"encoding/hex"
+)
+
+func safeID(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
-func loginIPKey(ip string) string {
-	return "ali:" + ip
-}
-
-func refreshKey(sessionID string) string {
-	return "ar:" + sessionID
+func loginUserKey(tenantID, identifier string) string {
+	return "rl:login:fail:" + safeID(tenantID) + ":" + safeID(identifier)
 }

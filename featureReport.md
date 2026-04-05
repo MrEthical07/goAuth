@@ -375,7 +375,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 - `engine.go` — `Login()`, `LoginWithResult()`, `LoginWithTOTP()`, `LoginWithBackupCode()`
 
 **Behavior verified:**
-- Rate limiting applied: `CheckLoginRate`/`IncrementLoginRate`/`ResetLoginRate` keyed by (username, IP)
+- Rate limiting applied: `CheckLoginRate`/`IncrementLoginRate`/`ResetLoginRate` keyed by (tenant, identifier)
 - Auto-lockout: `LockoutLimiter.RecordFailure` → `LockAccount()` after threshold
 - Audit/metrics emitted for all outcomes
 - Account status enforced: disabled/locked → `ErrAccountDisabled`/`ErrAccountLocked`; unverified → `ErrAccountUnverified`
@@ -394,7 +394,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 - TOTP disabled after challenge issued → rejected
 - Password cleared from memory after verification
 
-**Config knobs:** `SecurityConfig{MaxLoginAttempts, LoginCooldownDuration, EnableIPThrottle, AutoLockoutEnabled, AutoLockoutThreshold, AutoLockoutDuration}`, `TOTPConfig{RequireForLogin}`, `PasswordConfig{UpgradeOnLogin}`
+**Config knobs:** `SecurityConfig{MaxLoginAttempts, LoginCooldownDuration, EnableLoginFailureLimiter, AutoLockoutEnabled, AutoLockoutThreshold, AutoLockoutDuration}`, `TOTPConfig{RequireForLogin}`, `PasswordConfig{UpgradeOnLogin}`
 
 ---
 
@@ -410,7 +410,6 @@ ok      github.com/MrEthical07/goAuth   6.693s
 - **Atomic rotation:** Lua script parses binary blob, verifies expiry, constant-time hash compare, writes new hash in-place, preserves TTL via PTTL
 - **Replay detection:** Hash mismatch → session **deleted** (family invalidation) + `ErrRefreshHashMismatch`
 - **Replay tracking:** Optional `TrackReplayAnomaly` counter (`arp:<sid>`) with TTL
-- **Rate limiting:** `CheckRefresh` per-session via `RefreshRateLimiter`
 - **TTL preservation:** Lua reads PTTL and re-sets with same value — no drift
 - **Account status check:** Post-rotation checks disabled/locked/unverified → deletes session on failure
 
@@ -421,7 +420,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 - `TestRedisCompat_ReplayDetectionDeletesSession` — hash mismatch → session destroyed
 - `TestRefreshRotationRedisBudget` — verifies ≤2 Redis commands
 
-**Config knobs:** `SecurityConfig{EnforceRefreshRotation, EnforceRefreshReuseDetection, EnableRefreshThrottle, MaxRefreshAttempts, RefreshCooldownDuration}`, `JWTConfig{RefreshTTL}`
+**Config knobs:** `SecurityConfig{EnforceRefreshRotation, EnforceRefreshReuseDetection}`, `JWTConfig{RefreshTTL}`
 
 ---
 
@@ -537,7 +536,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 
 **Tests (8):** `TestPasswordResetTokenFlow`, `TestPasswordResetUUIDFlow`, `TestPasswordResetOTPAttemptsExceeded`, `TestPasswordResetRequestEnumerationSafe`, `TestPasswordResetConfigOTPValidation`, `TestPasswordResetReplayRaceSingleSuccess`, `TestPasswordResetRequestFailsWhenRedisUnavailable`, `TestPasswordResetConfirmFailsWhenRedisUnavailable`
 
-**Config knobs:** `PasswordResetConfig{Enabled, Strategy (Token/OTP/UUID), ResetTTL, MaxAttempts, EnableIPThrottle, EnableIdentifierThrottle, OTPDigits}`, `TOTPConfig{RequireForPasswordReset, RequireTOTPForPasswordReset}`
+**Config knobs:** `PasswordResetConfig{Enabled, Strategy (Token/OTP/UUID), ResetTTL, MaxAttempts, EnableRequestLimiter, EnableConfirmFailureLimiter, OTPDigits}`, `TOTPConfig{RequireForPasswordReset, RequireTOTPForPasswordReset}`
 
 ---
 
@@ -582,7 +581,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 
 **Tests (18):** `TestEmailVerificationTokenFlowSuccess`, `TestEmailVerificationOTPFlowSuccess`, `TestEmailVerificationUUIDFlowSuccess`, `TestEmailVerificationReplayRejected`, `TestEmailVerificationAttemptsExceeded`, `TestEmailVerificationEnumerationSafeNoRecordWrite`, `TestRequireForLoginBlocksLoginForPendingAccount`, `TestEmailVerificationSuccessEnablesLogin`, `TestEmailVerificationStatusChangeIncrementsAccountVersion`, `TestEmailVerificationRequestFailsWhenRedisUnavailable`, `TestEmailVerificationStrictModeBlocksPendingAccessImmediately`, `TestEmailVerificationJWTOnlyAllowsPendingUntilAccessTTL`, `TestEmailVerificationEnumerationResistance`, `TestEmailVerificationTenantBinding`, `TestEmailVerificationConfirmByCode`, `TestEmailVerificationConfirmByCodeTokenStrategy`, `TestEmailVerificationParallelConfirmOnlyOneSucceeds`, `TestEmailVerificationChallengeFormat`
 
-**Config knobs:** `EmailVerificationConfig{Enabled, Strategy (Token/OTP/UUID), VerificationTTL, MaxAttempts, RequireForLogin, EnableIPThrottle, EnableIdentifierThrottle, OTPDigits}`
+**Config knobs:** `EmailVerificationConfig{Enabled, Strategy (Token/OTP/UUID), VerificationTTL, MaxAttempts, RequireForLogin, EnableRequestLimiter, EnableConfirmFailureLimiter, OTPDigits}`
 
 ---
 
@@ -666,19 +665,18 @@ ok      github.com/MrEthical07/goAuth   6.693s
 
 | Domain | Limiter | Key Prefixes |
 |--------|---------|-------------|
-| Login | `rate.Limiter` | `al:`, `ali:` |
-| Refresh | `rate.Limiter` | `ar:` |
-| Account creation | `AccountCreationLimiter` | `aca:`, `acaip:` |
-| Password reset | `PasswordResetLimiter` | `apri:`, `aprip:`, `aprc:`, `aprcip:` |
-| Email verification | `EmailVerificationLimiter` | `apvi:`, `apvip:`, `apvc:`, `apvcip:` |
-| TOTP | `TOTPLimiter` | `att:` |
-| Backup codes | `BackupCodeLimiter` | `abk:` |
+| Login | `rate.Limiter` | `rl:login:fail:{tenant}:{identifier}` |
+| Account creation | `AccountCreationLimiter` | `rl:account:req:{tenant}:{identifier}` |
+| Password reset | `PasswordResetLimiter` | `rl:reset:req:*`, `rl:reset:confirm:fail:*` |
+| Email verification | `EmailVerificationLimiter` | `rl:verify:req:*`, `rl:verify:confirm:fail:*` |
+| TOTP | `TOTPLimiter` | `rl:totp:fail:{tenant}:{user}` |
+| Backup codes | `BackupCodeLimiter` | `rl:backup:fail:{tenant}:{user}` |
 
-**Fail behavior:** Fail-closed on Redis unavailable (error propagated).
+**Fail behavior:** Fail-open on limiter backend failures with audit + metrics telemetry.
 
-**Tests:** `TestCreateAccountRateLimitEnforced`, `TestBackupCodeRateLimitEnforced`, `TestAutoLockout_ThresholdTriggersLock`, `TestPasswordResetOTPAttemptsExceeded`, `TestEmailVerificationAttemptsExceeded`, `TestLint_AllRateLimitsDisabled`
+**Tests:** `TestCreateAccountRateLimitEnforced`, `TestBackupCodeRateLimitEnforced`, `TestAutoLockout_ThresholdTriggersLock`, `TestPasswordResetOTPAttemptsExceeded`, `TestEmailVerificationAttemptsExceeded`, `TestLint_LoginFailureLimiterDisabled`
 
-**Config knobs:** `MaxLoginAttempts`, `LoginCooldownDuration`, `MaxRefreshAttempts`, `RefreshCooldownDuration`, `EnableIPThrottle`, `EnableRefreshThrottle`, plus per-domain `MaxAttempts`/`Cooldown`/`TTL`.
+**Config knobs:** `EnableLoginFailureLimiter`, `MaxLoginAttempts`, `LoginCooldownDuration`, plus per-domain request/confirm limiter toggles and attempt windows.
 
 **Notes:** Fixed-window counters (allows up to 2× burst at window boundary — documented in `docs/rate_limiting.md`). Auto-lockout provides defense-in-depth against boundary burst attacks.
 

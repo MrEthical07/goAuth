@@ -47,11 +47,19 @@ The `Engine` is the runtime API surface of goAuth. It orchestrates all authentic
 | `LogoutAll` | `(ctx, userID string) error` |
 | `InvalidateUserSessions` | `(ctx, userID string) error` |
 
-### Errors (sentinel)
+### Errors (AuthError model)
 
-Key errors: `ErrInvalidCredentials`, `ErrLoginRateLimited`, `ErrUnauthorized`, `ErrRefreshReuse`, `ErrAccountDisabled`, `ErrTOTPRequired`, `ErrMFALoginRequired`.
+goAuth enforces a strict public error boundary on `Engine` entry points.
 
-See [errors.go](../errors.go) for the full list (40+ sentinel errors).
+- On failure, exported `Engine` methods return `*AuthError` (or `nil` on success).
+- Internal/store/limiter/session errors are normalized at the boundary through `mapToAuthError`.
+- Unknown failures are collapsed to `ErrSystemInternal`; availability failures map to `ErrSystemUnavailable` (or a domain-specific unavailable sentinel).
+- Stable matching: use `errors.Is(err, goAuth.ErrInvalidCredentials)` style checks.
+- Introspection: type-assert to `*AuthError` and inspect `Category` + `Code`.
+
+Categories are standardized to `AUTH_ABUSE`, `AUTH_STATE`, `AUTH_VALIDATION`, and `SYSTEM`.
+
+See [error-model.md](error-model.md) for the full code/sentinel registry and HTTP mapping guidance.
 
 ## Strategies
 
@@ -95,7 +103,7 @@ if result.MFARequired {
 
 - `Close()` must be called to flush pending audit events and release resources.
 - All sensitive comparisons use constant-time operations.
-- Rate limiting protects login, refresh, account creation, password reset, and email verification.
+- Rate limiting protects login failures and domain abuse flows (account creation, password reset, email verification, TOTP, backup codes).
 - Refresh token reuse triggers automatic session invalidation (replay detection).
 
 ## Performance Notes

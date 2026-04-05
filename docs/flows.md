@@ -8,6 +8,7 @@ For module-level details, see the linked module docs. For configuration, see [co
 
 ## Table of Contents
 
+- [Public Error Contract](#public-error-contract)
 - [Login (without MFA)](#login-without-mfa)
 - [Login (with MFA)](#login-with-mfa)
 - [Confirm MFA Login](#confirm-mfa-login)
@@ -30,6 +31,19 @@ For module-level details, see the linked module docs. For configuration, see [co
 - [Account Status Transitions](#account-status-transitions)
 - [Device Binding](#device-binding)
 - [Introspection Operations](#introspection-operations)
+
+---
+
+## Public Error Contract
+
+All flow failures listed in this document are surfaced from exported `Engine` entry points as `*AuthError`.
+
+- Flow internals may produce wrapped/internal errors, but the engine boundary normalizes them through `mapToAuthError` before return.
+- Caller checks should use stable sentinel matching (`errors.Is`) and optionally inspect `AuthError.Category`/`AuthError.Code`.
+- Unknown internal failures are returned as `ErrSystemInternal` (`SYSTEM_INTERNAL_ERROR`).
+- Dependency/cancellation/timeout failures are returned as `ErrSystemUnavailable` (`SYSTEM_UNAVAILABLE`) or the relevant domain-specific unavailable sentinel.
+
+See [error-model.md](error-model.md) for the complete category, code, and sentinel registry.
 
 ---
 
@@ -182,15 +196,14 @@ if result.MFARequired {
 ### Steps
 
 1. **Decode refresh token** — `internal.DecodeRefreshToken(token)` → `(sessionID, secret)`.
-2. **Refresh rate-limit check** — `rate.Limiter.CheckRefresh(ctx, sessionID)`.
-3. **Atomic rotation** — `session.Store.RotateRefreshHash(ctx, tenantID, sessionID, SHA256(oldSecret), SHA256(newSecret))` via Lua CAS script.
-4. If hash mismatch: **replay detected** — session deleted, `ErrRefreshReuse` returned, metrics/audit emitted.
-5. **Account status check** — reject disabled/locked/deleted via `UserProvider.GetUserByID`.
-6. **Device binding check** — `RunValidateDeviceBinding` if enabled.
-7. **JWT issuance** — `jwt.Manager.CreateAccess(...)` from refreshed session data.
-8. **New refresh token** — `internal.EncodeRefreshToken(sid, newSecret)`.
-9. **Audit emit** — `refresh_success` or `refresh_reuse_detected`.
-10. **Metrics** — increment `MetricRefreshSuccess` or `MetricRefreshReuseDetected`.
+2. **Atomic rotation** — `session.Store.RotateRefreshHash(ctx, tenantID, sessionID, SHA256(oldSecret), SHA256(newSecret))` via Lua CAS script.
+3. If hash mismatch: **replay detected** — session deleted, `ErrRefreshReuse` returned, metrics/audit emitted.
+4. **Account status check** — reject disabled/locked/deleted via `UserProvider.GetUserByID`.
+5. **Device binding check** — `RunValidateDeviceBinding` if enabled.
+6. **JWT issuance** — `jwt.Manager.CreateAccess(...)` from refreshed session data.
+7. **New refresh token** — `internal.EncodeRefreshToken(sid, newSecret)`.
+8. **Audit emit** — `refresh_success` or `refresh_reuse_detected`.
+9. **Metrics** — increment `MetricRefreshSuccess` or `MetricRefreshReuseDetected`.
 
 ### Modules
 
@@ -199,7 +212,6 @@ if result.MFARequired {
 ### Stores / Limiters
 
 - `session.Store` (RotateRefreshHash — Lua script)
-- `rate.Limiter` (CheckRefresh, IncrementRefresh)
 - `jwt.Manager` (CreateAccess)
 - `UserProvider` (GetUserByID)
 
@@ -211,7 +223,7 @@ if result.MFARequired {
 
 ### Redis Op Budget
 
-~3–5 commands (rate check 1, Lua rotation 1–2, rate increment 1).
+~2–4 commands (Lua rotation 1–2 + optional status/session checks).
 
 ### Failure Modes
 
@@ -219,7 +231,6 @@ if result.MFARequired {
 |-------|-------|
 | `ErrRefreshInvalid` | Malformed token |
 | `ErrRefreshReuse` | Old token replayed — session destroyed |
-| `ErrRefreshRateLimited` | Too many refresh attempts |
 | `ErrAccountDisabled/Locked/Deleted` | Account compromised |
 | `ErrDeviceBindingRejected` | IP/UA mismatch in enforce mode |
 

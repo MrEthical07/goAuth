@@ -7,7 +7,7 @@ type tenantIDContextKey struct{}
 type userAgentContextKey struct{}
 
 // WithClientIP attaches the caller’s IP address to ctx. The Engine uses it
-// for per-IP rate limiting, audit logging, and device binding checks.
+// for audit metadata and device binding checks.
 //
 //	Docs: docs/rate_limiting.md, docs/device_binding.md
 func WithClientIP(ctx context.Context, ip string) context.Context {

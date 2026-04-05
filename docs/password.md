@@ -102,7 +102,7 @@ Login flow:
 |-------|----------|
 | `ErrPasswordPolicy` | Password too short (< 10 bytes) or too long |
 | `ErrPasswordReuse` | New password matches current hash |
-| `ErrPasswordConfig` | Invalid Argon2 configuration (memory, time, parallelism) |
+| `Config.Validate` / `password.NewArgon2` error (non-sentinel) | Invalid Argon2 configuration (memory, time, parallelism) |
 | `ErrInvalidCredentials` | Password verification failed (returned by engine, not password package) |
 
 ## Flow Ownership

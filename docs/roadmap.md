@@ -41,7 +41,7 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | `Engine.RevokePermission` for dynamic permission changes | P2 | maintainer | planned | API: runtime permission mutation without rebuild |
-| Typed error wrapping with `errors.Is` chains | P2 | maintainer | planned | API: better error introspection for callers |
+| Typed error wrapping with `errors.Is` chains | P2 | maintainer | done | API: better error introspection for callers |
 | WebAuthn / FIDO2 second-factor support | P2 | maintainer | planned | API: modern passwordless MFA option |
 
 ---

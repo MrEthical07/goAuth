@@ -125,7 +125,7 @@ jwt.NewManager(cfg)
 |-------|----------|
 | `ErrTokenInvalid` | Token expired, malformed, or signature invalid |
 | `ErrTokenClockSkew` | Token `iat` claim is too far in the future |
-| `ErrJWTConfig` | Invalid JWT configuration (bad keys, unsupported method) |
+| `jwt.NewManager` configuration error (non-sentinel) | Invalid JWT configuration (bad keys, unsupported method) |
 | `ErrUnauthorized` | Generic authorization failure (wraps token errors) |
 
 ## Flow Ownership

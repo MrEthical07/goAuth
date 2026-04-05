@@ -3,11 +3,11 @@
 //
 // # Limiters
 //
-//   - [AccountCreationLimiter] — per-identifier + per-IP throttle for sign-ups.
+//   - [AccountCreationLimiter] — per-identifier request limiter for sign-ups.
 //   - [BackupCodeLimiter] — per-user failure throttle for backup code attempts.
-//   - [EmailVerificationLimiter] — per-identifier + per-IP for request and confirm.
+//   - [EmailVerificationLimiter] — request limiter + confirm failure limiter.
 //   - [TOTPLimiter] — hardcoded 5 attempts / 60 s per user.
-//   - [PasswordResetLimiter] — per-identifier + per-IP for request and confirm.
+//   - [PasswordResetLimiter] — request limiter + confirm failure limiter.
 //
 // All limiters are nil-safe: calling any method on a nil receiver returns nil.
 //
