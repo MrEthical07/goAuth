@@ -21,6 +21,20 @@ Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessi
 - **Audit + Metrics** — 44 counters, latency histogram, Prometheus + OpenTelemetry exporters
 - **Multi-tenancy** — tenant-scoped sessions, counters, and rate limits
 
+## Showcase
+
+`goAuth` is used in [**SuperAPI**](https://github.com/MrEthical07/superapi), a modular SaaS backend template designed for production use from day one.
+
+**SuperAPI**  
+Modular SaaS backend template with policy pipelines, caching, rate limiting, and observability.
+
+It provides:
+
+- A module-oriented API architecture
+- Policy-based middleware wiring
+- Built-in auth, caching, rate limiting, and observability primitives
+- A store-first data layer with strict boundaries
+
 ## Quickstart
 
 ```go
