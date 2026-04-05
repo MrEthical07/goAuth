@@ -165,7 +165,7 @@ func (e *Engine) SecurityReport() SecurityReport {
 		DeviceBindingEnabled:         e.config.DeviceBinding.Enabled,
 		RefreshRotationEnabled:       e.config.Security.EnforceRefreshRotation,
 		RefreshReuseDetectionEnabled: e.config.Security.EnforceRefreshReuseDetection,
-		EnableRefreshThrottle:        e.config.Security.EnableRefreshThrottle,
+		EnableLoginFailureLimiter:    e.config.Security.EnableLoginFailureLimiter,
 		EmailVerificationEnabled:     e.config.EmailVerification.Enabled,
 		PasswordResetEnabled:         e.config.PasswordReset.Enabled,
 		MaxSessionsPerUser:           e.config.SessionHardening.MaxSessionsPerUser,
@@ -218,17 +218,17 @@ func (e *Engine) warn(msg string, args ...any) {
 //	Flow:        Login (without MFA)
 //	Docs:        docs/flows.md#login-without-mfa, docs/engine.md
 //	Performance: 5–7 Redis commands; dominated by Argon2 hash (~100 ms).
-//	Security:    rate-limited per identifier+IP; timing-equalized on unknown users.
+//	Security:    rate-limited per identifier; timing-equalized on unknown users.
 func (e *Engine) Login(ctx context.Context, username, password string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
-		return "", "", err
+		return "", "", mapToAuthError(err)
 	}
 	if result == nil {
-		return "", "", ErrEngineNotReady
+		return "", "", mapToAuthError(ErrEngineNotReady)
 	}
 	if result.MFARequired {
-		return "", "", ErrTOTPRequired
+		return "", "", mapToAuthError(ErrTOTPRequired)
 	}
 	return result.AccessToken, result.RefreshToken, nil
 }
@@ -244,23 +244,23 @@ func (e *Engine) Login(ctx context.Context, username, password string) (string, 
 func (e *Engine) LoginWithTOTP(ctx context.Context, username, password, totpCode string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
-		return "", "", err
+		return "", "", mapToAuthError(err)
 	}
 	if result == nil {
-		return "", "", ErrEngineNotReady
+		return "", "", mapToAuthError(ErrEngineNotReady)
 	}
 	if result.MFARequired {
 		result, err = e.ConfirmLoginMFAWithType(ctx, result.MFASession, totpCode, "totp")
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrMFALoginInvalid), errors.Is(err, ErrMFALoginExpired):
-				return "", "", ErrTOTPInvalid
+				return "", "", mapToAuthError(ErrTOTPInvalid)
 			case errors.Is(err, ErrMFALoginAttemptsExceeded):
-				return "", "", ErrTOTPRateLimited
+				return "", "", mapToAuthError(ErrTOTPRateLimited)
 			case errors.Is(err, ErrMFALoginUnavailable):
-				return "", "", ErrTOTPUnavailable
+				return "", "", mapToAuthError(ErrTOTPUnavailable)
 			}
-			return "", "", err
+			return "", "", mapToAuthError(err)
 		}
 	}
 	return result.AccessToken, result.RefreshToken, nil
@@ -278,23 +278,23 @@ func (e *Engine) LoginWithTOTP(ctx context.Context, username, password, totpCode
 func (e *Engine) LoginWithBackupCode(ctx context.Context, username, password, backupCode string) (string, string, error) {
 	result, err := e.LoginWithResult(ctx, username, password)
 	if err != nil {
-		return "", "", err
+		return "", "", mapToAuthError(err)
 	}
 	if result == nil {
-		return "", "", ErrEngineNotReady
+		return "", "", mapToAuthError(ErrEngineNotReady)
 	}
 	if result.MFARequired {
 		result, err = e.ConfirmLoginMFAWithType(ctx, result.MFASession, backupCode, "backup")
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrMFALoginInvalid), errors.Is(err, ErrMFALoginExpired):
-				return "", "", ErrBackupCodeInvalid
+				return "", "", mapToAuthError(ErrBackupCodeInvalid)
 			case errors.Is(err, ErrMFALoginAttemptsExceeded):
-				return "", "", ErrBackupCodeRateLimited
+				return "", "", mapToAuthError(ErrBackupCodeRateLimited)
 			case errors.Is(err, ErrMFALoginUnavailable):
-				return "", "", ErrBackupCodeUnavailable
+				return "", "", mapToAuthError(ErrBackupCodeUnavailable)
 			}
-			return "", "", err
+			return "", "", mapToAuthError(err)
 		}
 	}
 	return result.AccessToken, result.RefreshToken, nil
@@ -321,16 +321,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "decode_failed",
 			}
 		})
-		return "", "", ErrRefreshInvalid
-	case internalflows.RefreshFailureRateLimited:
-		e.metricInc(MetricRefreshRateLimited)
-		e.emitAudit(ctx, auditEventRefreshRateLimited, false, "", result.TenantID, result.SessionID, ErrRefreshRateLimited, nil)
-		e.emitRateLimit(ctx, "refresh", result.TenantID, func() map[string]string {
-			return map[string]string{
-				"session_id": result.SessionID,
-			}
-		})
-		return "", "", ErrRefreshRateLimited
+		return "", "", mapToAuthError(ErrRefreshInvalid)
 	case internalflows.RefreshFailureNextSecret:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, result.Err, func() map[string]string {
@@ -338,13 +329,13 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "next_secret_generation",
 			}
 		})
-		return "", "", result.Err
+		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureReuse:
 		e.metricInc(MetricRefreshReuseDetected)
 		e.metricInc(MetricReplayDetected)
 		e.metricInc(MetricSessionInvalidated)
 		e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", result.TenantID, result.SessionID, ErrRefreshReuse, nil)
-		return "", "", ErrRefreshReuse
+		return "", "", mapToAuthError(ErrRefreshReuse)
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, func() map[string]string {
@@ -352,7 +343,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "session_not_found",
 			}
 		})
-		return "", "", ErrSessionNotFound
+		return "", "", mapToAuthError(ErrSessionNotFound)
 	case internalflows.RefreshFailureRotate:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, result.Err, func() map[string]string {
@@ -360,7 +351,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "rotate_failed",
 			}
 		})
-		return "", "", result.Err
+		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureAccountStatus:
 		e.metricInc(MetricSessionInvalidated)
 		e.metricInc(MetricRefreshFailure)
@@ -369,7 +360,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "account_status",
 			}
 		})
-		return "", "", result.Err
+		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureUnverified:
 		e.metricInc(MetricSessionInvalidated)
 		e.metricInc(MetricRefreshFailure)
@@ -378,7 +369,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "pending_verification",
 			}
 		})
-		return "", "", ErrAccountUnverified
+		return "", "", mapToAuthError(ErrAccountUnverified)
 	case internalflows.RefreshFailureIssueAccess:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
@@ -386,7 +377,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "issue_access_failed",
 			}
 		})
-		return "", "", result.Err
+		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureEncode:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
@@ -394,7 +385,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 				"reason": "encode_refresh_failed",
 			}
 		})
-		return "", "", result.Err
+		return "", "", mapToAuthError(result.Err)
 	}
 
 	e.metricInc(MetricRefreshSuccess)
@@ -440,19 +431,19 @@ func (e *Engine) Validate(ctx context.Context, tokenStr string, routeMode RouteM
 	result := e.flows.Validate(ctx, tokenStr, int(routeMode))
 	switch result.Failure {
 	case internalflows.ValidateFailureUnauthorized:
-		return nil, ErrUnauthorized
+		return nil, mapToAuthError(ErrUnauthorized)
 	case internalflows.ValidateFailureTokenClockSkew:
-		return nil, ErrTokenClockSkew
+		return nil, mapToAuthError(ErrTokenClockSkew)
 	case internalflows.ValidateFailureInvalidRouteMode:
-		return nil, ErrInvalidRouteMode
+		return nil, mapToAuthError(ErrInvalidRouteMode)
 	case internalflows.ValidateFailureSessionNotFound:
-		return nil, ErrSessionNotFound
+		return nil, mapToAuthError(ErrSessionNotFound)
 	case internalflows.ValidateFailureStatus:
-		return nil, result.Err
+		return nil, mapToAuthError(result.Err)
 	case internalflows.ValidateFailureUnverified:
-		return nil, ErrAccountUnverified
+		return nil, mapToAuthError(ErrAccountUnverified)
 	case internalflows.ValidateFailureDeviceBinding:
-		return nil, result.Err
+		return nil, mapToAuthError(result.Err)
 	}
 
 	if result.Session != nil {
@@ -589,7 +580,7 @@ func (e *Engine) issueAccessToken(sess *session.Session) (string, error) {
 //	Security:    audit-logged; session immediately unreachable after return.
 func (e *Engine) Logout(ctx context.Context, sessionID string) error {
 	e.ensureFlowDeps()
-	return e.LogoutInTenant(ctx, tenantIDFromContext(ctx), sessionID)
+	return mapToAuthErrorOrNil(e.LogoutInTenant(ctx, tenantIDFromContext(ctx), sessionID))
 }
 
 // LogoutInTenant destroys a single session by tenant and session ID.
@@ -606,7 +597,7 @@ func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string)
 		e.metricInc(MetricSessionInvalidated)
 	}
 	e.emitAudit(ctx, auditEventLogoutSession, err == nil, "", tenantID, sessionID, err, nil)
-	return err
+	return mapToAuthErrorOrNil(err)
 }
 
 // LogoutByAccessToken parses the given access token to extract the session
@@ -626,11 +617,11 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 				"reason": "invalid_access_token",
 			}
 		})
-		return ErrTokenInvalid
+		return mapToAuthError(ErrTokenInvalid)
 	}
 	if result.Err != nil {
 		e.emitAudit(ctx, auditEventLogoutSession, false, "", result.TenantID, result.SessionID, result.Err, nil)
-		return result.Err
+		return mapToAuthError(result.Err)
 	}
 	e.metricInc(MetricLogout)
 	e.metricInc(MetricSessionInvalidated)
@@ -646,7 +637,7 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 //	Performance: O(n) Redis DELs where n = active sessions for the user.
 func (e *Engine) LogoutAll(ctx context.Context, userID string) error {
 	e.ensureFlowDeps()
-	return e.LogoutAllInTenant(ctx, tenantIDFromContext(ctx), userID)
+	return mapToAuthErrorOrNil(e.LogoutAllInTenant(ctx, tenantIDFromContext(ctx), userID))
 }
 
 // LogoutAllInTenant destroys every session for userID within the specified
@@ -665,7 +656,7 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 		e.metricInc(MetricSessionInvalidated)
 	}
 	e.emitAudit(ctx, auditEventLogoutAll, err == nil, userID, tenantID, "", err, nil)
-	return err
+	return mapToAuthErrorOrNil(err)
 }
 
 // InvalidateUserSessions is an alias for [Engine.LogoutAll]. It destroys
@@ -674,7 +665,7 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 //	Flow:        Logout All
 //	Docs:        docs/flows.md#logout
 func (e *Engine) InvalidateUserSessions(ctx context.Context, userID string) error {
-	return e.LogoutAll(ctx, userID)
+	return mapToAuthErrorOrNil(e.LogoutAll(ctx, userID))
 }
 
 // ChangePassword verifies the old password, hashes the new one, persists
@@ -688,7 +679,7 @@ func (e *Engine) InvalidateUserSessions(ctx context.Context, userID string) erro
 //	Security:    rejects same-password reuse; audit-logged.
 func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPassword string) error {
 	if e.passwordHash == nil {
-		return ErrEngineNotReady
+		return mapToAuthError(ErrEngineNotReady)
 	}
 	if userID == "" || oldPassword == "" || newPassword == "" {
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, tenantIDFromContext(ctx), "", ErrPasswordPolicy, func() map[string]string {
@@ -696,7 +687,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 				"reason": "invalid_input",
 			}
 		})
-		return ErrPasswordPolicy
+		return mapToAuthError(ErrPasswordPolicy)
 	}
 
 	user, err := e.userProvider.GetUserByID(userID)
@@ -706,7 +697,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 				"reason": "user_not_found",
 			}
 		})
-		return ErrUserNotFound
+		return mapToAuthError(ErrUserNotFound)
 	}
 	if statusErr := accountStatusToError(user.Status); statusErr != nil {
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, user.TenantID, "", statusErr, func() map[string]string {
@@ -714,21 +705,21 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 				"reason": "account_status",
 			}
 		})
-		return statusErr
+		return mapToAuthError(statusErr)
 	}
 
 	oldOK, err := e.passwordHash.Verify(oldPassword, user.PasswordHash)
 	if err != nil || !oldOK {
 		e.metricInc(MetricPasswordChangeInvalidOld)
 		e.emitAudit(ctx, auditEventPasswordChangeInvalidOld, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
-		return ErrInvalidCredentials
+		return mapToAuthError(ErrInvalidCredentials)
 	}
 
 	samePassword, err := e.passwordHash.Verify(newPassword, user.PasswordHash)
 	if err == nil && samePassword {
 		e.metricInc(MetricPasswordChangeReuseRejected)
 		e.emitAudit(ctx, auditEventPasswordChangeReuse, false, userID, user.TenantID, "", ErrPasswordReuse, nil)
-		return ErrPasswordReuse
+		return mapToAuthError(ErrPasswordReuse)
 	}
 
 	newHash, err := e.passwordHash.Hash(newPassword)
@@ -738,7 +729,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 				"reason": "hash_policy",
 			}
 		})
-		return ErrPasswordPolicy
+		return mapToAuthError(ErrPasswordPolicy)
 	}
 
 	if err := e.userProvider.UpdatePasswordHash(userID, newHash); err != nil {
@@ -747,7 +738,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 				"reason": "update_hash_failed",
 			}
 		})
-		return err
+		return mapToAuthError(err)
 	}
 
 	invalidateTenant := tenantIDFromContext(ctx)
@@ -762,7 +753,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 				"reason": "session_invalidation_failed",
 			}
 		})
-		return errors.Join(ErrSessionInvalidationFailed, err)
+		return mapToAuthError(errors.Join(ErrSessionInvalidationFailed, err))
 	}
 
 	if e.rateLimiter != nil {
@@ -771,7 +762,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 			identifier = userID
 		}
 		// Limiter reset is best-effort and must not block successful password change.
-		if err := e.rateLimiter.ResetLogin(ctx, identifier, clientIPFromContext(ctx)); err != nil {
+		if err := e.rateLimiter.ResetLogin(ctx, tenantIDFromContext(ctx), identifier); err != nil {
 			e.warn("goAuth: login limiter reset failed after password change")
 		}
 	}
@@ -825,7 +816,6 @@ func (e *Engine) initFlowDeps() {
 			SessionLifetime:           e.sessionLifetime,
 			EnableReplayTracking:      e.config.SessionHardening.EnableReplayTracking,
 			Warn:                      e.warn,
-			RateLimiter:               e.rateLimiter,
 			SessionStore:              e.sessionStore,
 			RefreshHashMismatch:       session.ErrRefreshHashMismatch,
 			RedisNil:                  redis.Nil,
@@ -972,13 +962,13 @@ func tenantIDFromToken(tid string) string {
 //	Flow:        Create Account
 //	Docs:        docs/flows.md#create-account, docs/engine.md
 //	Performance: Argon2 hash + 3–5 Redis commands.
-//	Security:    rate-limited per identifier+IP; duplicate detection.
+//	Security:    rate-limited per identifier; duplicate detection.
 func (e *Engine) CreateAccount(ctx context.Context, req CreateAccountRequest) (*CreateAccountResult, error) {
 	e.ensureFlowDeps()
 	result, err := e.flows.CreateAccount(ctx, toFlowAccountCreateRequest(req))
 	out := fromFlowAccountCreateResult(result)
 	if err != nil {
-		return out, err
+		return out, mapToAuthError(err)
 	}
 	return out, nil
 }
@@ -1006,7 +996,6 @@ func (e *Engine) accountFlowDeps() internalflows.AccountDeps {
 		PendingStatus:               uint8(AccountPendingVerification),
 		TenantIDFromContext:         tenantIDFromContext,
 		TenantIDFromContextExplicit: tenantIDFromContextExplicit,
-		ClientIPFromContext:         clientIPFromContext,
 		MapLimiterError:             mapAccountLimiterError,
 		MetricInc: func(id int) {
 			e.metricInc(MetricID(id))
@@ -1037,10 +1026,7 @@ func (e *Engine) accountFlowDeps() internalflows.AccountDeps {
 			SessionCreationFailed:       ErrSessionCreationFailed,
 		},
 	}
-
-	if e != nil && e.accountLimiter != nil {
-		deps.EnforceAccountLimiter = e.accountLimiter.Enforce
-	}
+	e.configureAccountLimiterDeps(&deps, cfg)
 	if e != nil && e.roleManager != nil {
 		deps.RoleExists = func(role string) bool {
 			_, ok := e.roleManager.GetMask(role)
@@ -1075,6 +1061,26 @@ func (e *Engine) accountFlowDeps() internalflows.AccountDeps {
 	}
 
 	return deps
+}
+
+func (e *Engine) configureAccountLimiterDeps(deps *internalflows.AccountDeps, cfg Config) {
+	deps.EnforceAccountLimiter = func(context.Context, string, string) error { return nil }
+	if e == nil || e.accountLimiter == nil {
+		return
+	}
+
+	deps.EnforceAccountLimiter = func(ctx context.Context, tenantID, identifier string) error {
+		if !cfg.Account.EnableCreationLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.accountLimiter.Enforce(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, limiters.ErrAccountRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "account_creation", tenantID, err)
+		return nil
+	}
 }
 
 func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
@@ -1235,7 +1241,7 @@ func (e *Engine) DisableAccount(ctx context.Context, userID string) error {
 			"action": "disable",
 		}
 	})
-	return err
+	return mapToAuthErrorOrNil(err)
 }
 
 // EnableAccount sets the account status back to [AccountActive] and resets
@@ -1247,14 +1253,14 @@ func (e *Engine) DisableAccount(ctx context.Context, userID string) error {
 func (e *Engine) EnableAccount(ctx context.Context, userID string) error {
 	err := e.updateAccountStatusAndInvalidate(ctx, userID, AccountActive)
 	if err == nil && e.lockoutLimiter != nil {
-		_ = e.lockoutLimiter.Reset(ctx, userID)
+		_ = e.lockoutLimiter.Reset(ctx, tenantIDFromContext(ctx), userID)
 	}
 	e.emitAudit(ctx, auditEventAccountStatusChange, err == nil, userID, tenantIDFromContext(ctx), "", err, func() map[string]string {
 		return map[string]string{
 			"action": "enable",
 		}
 	})
-	return err
+	return mapToAuthErrorOrNil(err)
 }
 
 // UnlockAccount re-enables a locked account and resets the lockout failure counter.
@@ -1262,7 +1268,7 @@ func (e *Engine) EnableAccount(ctx context.Context, userID string) error {
 //
 // UnlockAccount may return an error when input validation, dependency calls, or security checks fail.
 func (e *Engine) UnlockAccount(ctx context.Context, userID string) error {
-	return e.EnableAccount(ctx, userID)
+	return mapToAuthErrorOrNil(e.EnableAccount(ctx, userID))
 }
 
 // LockAccount sets the account status to [AccountLocked] and invalidates
@@ -1282,7 +1288,7 @@ func (e *Engine) LockAccount(ctx context.Context, userID string) error {
 			"action": "lock",
 		}
 	})
-	return err
+	return mapToAuthErrorOrNil(err)
 }
 
 // DeleteAccount sets the account status to [AccountDeleted] and invalidates
@@ -1302,7 +1308,7 @@ func (e *Engine) DeleteAccount(ctx context.Context, userID string) error {
 			"action": "delete",
 		}
 	})
-	return err
+	return mapToAuthErrorOrNil(err)
 }
 
 func (e *Engine) updateAccountStatusAndInvalidate(ctx context.Context, userID string, status AccountStatus) error {
@@ -1341,7 +1347,6 @@ const (
 	auditEventLoginRateLimited           = "login_rate_limited"
 	auditEventRefreshSuccess             = "refresh_success"
 	auditEventRefreshInvalid             = "refresh_invalid"
-	auditEventRefreshRateLimited         = "refresh_rate_limited"
 	auditEventRefreshReuseDetected       = "refresh_reuse_detected"
 	auditEventPasswordChangeSuccess      = "password_change_success"
 	auditEventPasswordChangeInvalidOld   = "password_change_invalid_old"
@@ -1360,6 +1365,7 @@ const (
 	auditEventLogoutSession              = "logout_session"
 	auditEventLogoutAll                  = "logout_all"
 	auditEventRateLimitTriggered         = "rate_limit_triggered"
+	auditEventLimiterFailOpen            = "limiter_fail_open"
 	auditEventDeviceAnomalyDetected      = "device_anomaly_detected"
 	auditEventDeviceBindingRejected      = "device_binding_rejected"
 	auditEventTOTPSetupRequested         = "totp_setup_requested"
@@ -1459,6 +1465,7 @@ func (e *Engine) emitRateLimit(
 	tenantID string,
 	metadataBuilder func() map[string]string,
 ) {
+	e.metricInc(MetricLimiterTrigger)
 	e.metricInc(MetricRateLimitHit)
 	e.emitAudit(ctx, auditEventRateLimitTriggered, false, "", tenantID, "", nil, func() map[string]string {
 		base := map[string]string{
@@ -1474,6 +1481,20 @@ func (e *Engine) emitRateLimit(
 	})
 }
 
+func (e *Engine) emitLimiterFailOpen(ctx context.Context, scope, tenantID string, limiterErr error) {
+	e.metricInc(MetricLimiterFailOpen)
+	e.emitAudit(ctx, auditEventLimiterFailOpen, true, "", tenantID, "", nil, func() map[string]string {
+		meta := map[string]string{
+			"scope":  scope,
+			"policy": "fail_open",
+		}
+		if limiterErr != nil {
+			meta["reason"] = limiterErr.Error()
+		}
+		return meta
+	})
+}
+
 func auditErrorCode(err error) AuditErrorCode {
 	if err == nil {
 		return ""
@@ -1485,7 +1506,6 @@ func auditErrorCode(err error) AuditErrorCode {
 	case errors.Is(err, ErrInvalidCredentials):
 		return auditErrInvalidCredentials
 	case errors.Is(err, ErrLoginRateLimited),
-		errors.Is(err, ErrRefreshRateLimited),
 		errors.Is(err, ErrPasswordResetRateLimited),
 		errors.Is(err, ErrEmailVerificationRateLimited),
 		errors.Is(err, ErrAccountCreationRateLimited):
@@ -1578,7 +1598,11 @@ func auditErrorCode(err error) AuditErrorCode {
 //	Security:    codes stored as SHA-256 hashes; originals never persisted.
 func (e *Engine) GenerateBackupCodes(ctx context.Context, userID string) ([]string, error) {
 	e.ensureFlowDeps()
-	return e.flows.GenerateBackupCodes(ctx, userID)
+	codes, err := e.flows.GenerateBackupCodes(ctx, userID)
+	if err != nil {
+		return nil, mapToAuthError(err)
+	}
+	return codes, nil
 }
 
 // RegenerateBackupCodes replaces all existing backup codes after verifying
@@ -1589,7 +1613,11 @@ func (e *Engine) GenerateBackupCodes(ctx context.Context, userID string) ([]stri
 //	Security:    requires valid TOTP code; rate-limited.
 func (e *Engine) RegenerateBackupCodes(ctx context.Context, userID, totpCode string) ([]string, error) {
 	e.ensureFlowDeps()
-	return e.flows.RegenerateBackupCodes(ctx, userID, totpCode)
+	codes, err := e.flows.RegenerateBackupCodes(ctx, userID, totpCode)
+	if err != nil {
+		return nil, mapToAuthError(err)
+	}
+	return codes, nil
 }
 
 // VerifyBackupCode validates and consumes a one-time backup code for the
@@ -1600,7 +1628,7 @@ func (e *Engine) RegenerateBackupCodes(ctx context.Context, userID, totpCode str
 //	Security:    constant-time comparison; code consumed on success.
 func (e *Engine) VerifyBackupCode(ctx context.Context, userID, code string) error {
 	e.ensureFlowDeps()
-	return e.flows.VerifyBackupCode(ctx, userID, code)
+	return mapToAuthErrorOrNil(e.flows.VerifyBackupCode(ctx, userID, code))
 }
 
 // VerifyBackupCodeInTenant validates and consumes a backup code within a
@@ -1610,7 +1638,7 @@ func (e *Engine) VerifyBackupCode(ctx context.Context, userID, code string) erro
 //	Docs:        docs/flows.md#backup-codes, docs/mfa.md
 func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code string) error {
 	e.ensureFlowDeps()
-	return e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code)
+	return mapToAuthErrorOrNil(e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code))
 }
 
 func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
@@ -1681,9 +1709,36 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 		}
 	}
 	if e != nil && e.backupLimiter != nil {
-		deps.CheckLimiter = e.backupLimiter.Check
-		deps.RecordLimiterFailure = e.backupLimiter.RecordFailure
-		deps.ResetLimiter = e.backupLimiter.Reset
+		deps.CheckLimiter = func(ctx context.Context, tenantID, userID string) error {
+			e.metricInc(MetricLimiterCheck)
+			err := e.backupLimiter.Check(ctx, tenantID, userID)
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
+				return err
+			}
+			e.emitLimiterFailOpen(ctx, "backup_code", tenantID, err)
+			return nil
+		}
+		deps.RecordLimiterFailure = func(ctx context.Context, tenantID, userID string) error {
+			e.metricInc(MetricLimiterCheck)
+			err := e.backupLimiter.RecordFailure(ctx, tenantID, userID)
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
+				return err
+			}
+			e.emitLimiterFailOpen(ctx, "backup_code", tenantID, err)
+			return nil
+		}
+		deps.ResetLimiter = func(ctx context.Context, tenantID, userID string) error {
+			if err := e.backupLimiter.Reset(ctx, tenantID, userID); err != nil {
+				e.emitLimiterFailOpen(ctx, "backup_code", tenantID, err)
+			}
+			return nil
+		}
 	}
 
 	return deps
@@ -1797,10 +1852,14 @@ func (e *Engine) shouldEmitDeviceAnomaly(ctx context.Context, sessionID, kind st
 //	Flow:        Request Email Verification
 //	Docs:        docs/flows.md#email-verification, docs/email_verification.md
 //	Performance: 2–3 Redis commands.
-//	Security:    rate-limited per identifier+IP; enumeration-resistant delay.
+//	Security:    request-limited per identifier; enumeration-resistant delay.
 func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string) (string, error) {
 	e.ensureFlowDeps()
-	return e.flows.RequestEmailVerification(ctx, identifier)
+	challenge, err := e.flows.RequestEmailVerification(ctx, identifier)
+	if err != nil {
+		return "", mapToAuthError(err)
+	}
+	return challenge, nil
 }
 
 // ConfirmEmailVerification completes email verification using the full
@@ -1812,7 +1871,7 @@ func (e *Engine) RequestEmailVerification(ctx context.Context, identifier string
 //	Security:    constant-time comparison; attempts tracked.
 func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string) error {
 	e.ensureFlowDeps()
-	return e.flows.ConfirmEmailVerification(ctx, challenge)
+	return mapToAuthErrorOrNil(e.flows.ConfirmEmailVerification(ctx, challenge))
 }
 
 // ConfirmEmailVerificationCode is the preferred method for completing email verification.
@@ -1823,7 +1882,7 @@ func (e *Engine) ConfirmEmailVerification(ctx context.Context, challenge string)
 // ConfirmEmailVerificationCode may return an error when input validation, dependency calls, or security checks fail.
 func (e *Engine) ConfirmEmailVerificationCode(ctx context.Context, verificationID, code string) error {
 	e.ensureFlowDeps()
-	return e.flows.ConfirmEmailVerificationCode(ctx, verificationID, code)
+	return mapToAuthErrorOrNil(e.flows.ConfirmEmailVerificationCode(ctx, verificationID, code))
 }
 
 func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps {
@@ -1840,7 +1899,6 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		MaxAttempts:         cfg.EmailVerification.MaxAttempts,
 		ActiveStatus:        uint8(AccountActive),
 		TenantIDFromContext: tenantIDFromContext,
-		ClientIPFromContext: clientIPFromContext,
 		Now:                 time.Now,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
@@ -1882,66 +1940,99 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 			UserNotFound:                 ErrUserNotFound,
 		},
 	}
+	e.configureEmailVerificationLimiterDeps(&deps, cfg)
+	e.configureEmailVerificationProviderDeps(&deps)
+	e.configureEmailVerificationStoreDeps(&deps)
 
-	if e != nil && e.verificationLimiter != nil {
-		deps.CheckRequestLimiter = e.verificationLimiter.CheckRequest
-		deps.CheckConfirmLimiter = e.verificationLimiter.CheckConfirm
+	return deps
+}
+
+func (e *Engine) configureEmailVerificationLimiterDeps(deps *internalflows.EmailVerificationDeps, cfg Config) {
+	deps.CheckRequestLimiter = func(context.Context, string, string) error { return nil }
+	deps.CheckConfirmLimiter = func(context.Context, string, string) error { return nil }
+	if e == nil || e.verificationLimiter == nil {
+		return
 	}
-	if e != nil && e.userProvider != nil {
-		deps.GetUserByIdentifier = func(identifier string) (internalflows.EmailVerificationUser, error) {
-			user, err := e.userProvider.GetUserByIdentifier(identifier)
-			if err != nil {
-				return internalflows.EmailVerificationUser{}, err
-			}
-			return internalflows.EmailVerificationUser{
-				UserID:   user.UserID,
-				TenantID: user.TenantID,
-				Status:   uint8(user.Status),
-			}, nil
+
+	deps.CheckRequestLimiter = func(ctx context.Context, tenantID, identifier string) error {
+		if !cfg.EmailVerification.EnableRequestLimiter {
+			return nil
 		}
-		deps.GetUserByID = func(userID string) (internalflows.EmailVerificationUser, error) {
-			user, err := e.userProvider.GetUserByID(userID)
-			if err != nil {
-				return internalflows.EmailVerificationUser{}, err
-			}
-			return internalflows.EmailVerificationUser{
-				UserID:   user.UserID,
-				TenantID: user.TenantID,
-				Status:   uint8(user.Status),
-			}, nil
+		e.metricInc(MetricLimiterCheck)
+		err := e.verificationLimiter.CheckRequest(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, limiters.ErrVerificationRateLimited) {
+			return err
 		}
+		e.emitLimiterFailOpen(ctx, "email_verification_request", tenantID, err)
+		return nil
 	}
+	deps.CheckConfirmLimiter = func(ctx context.Context, tenantID, verificationID string) error {
+		if !cfg.EmailVerification.EnableConfirmFailureLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.verificationLimiter.CheckConfirm(ctx, tenantID, verificationID)
+		if err == nil || errors.Is(err, limiters.ErrVerificationRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "email_verification_confirm", tenantID, err)
+		return nil
+	}
+}
+
+func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.EmailVerificationDeps) {
 	if e != nil {
 		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
 			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
 		}
 	}
-	if e != nil && e.verificationStore != nil {
-		deps.SaveVerificationRecord = func(ctx context.Context, tenantID, verificationID string, record internalflows.EmailVerificationStoreRecord, ttl time.Duration) error {
-			return e.verificationStore.Save(ctx, tenantID, verificationID, &stores.EmailVerificationRecord{
-				UserID:     record.UserID,
-				SecretHash: record.SecretHash,
-				ExpiresAt:  record.ExpiresAt,
-				Attempts:   record.Attempts,
-				Strategy:   record.Strategy,
-			}, ttl)
-		}
-		deps.ConsumeVerificationRecord = func(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
-			record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
-			if err != nil {
-				return internalflows.EmailVerificationStoreRecord{}, err
-			}
-			return internalflows.EmailVerificationStoreRecord{
-				UserID:     record.UserID,
-				SecretHash: record.SecretHash,
-				ExpiresAt:  record.ExpiresAt,
-				Attempts:   record.Attempts,
-				Strategy:   record.Strategy,
-			}, nil
-		}
+	if e == nil || e.userProvider == nil {
+		return
 	}
 
-	return deps
+	deps.GetUserByIdentifier = func(identifier string) (internalflows.EmailVerificationUser, error) {
+		user, err := e.userProvider.GetUserByIdentifier(identifier)
+		if err != nil {
+			return internalflows.EmailVerificationUser{}, err
+		}
+		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
+	}
+	deps.GetUserByID = func(userID string) (internalflows.EmailVerificationUser, error) {
+		user, err := e.userProvider.GetUserByID(userID)
+		if err != nil {
+			return internalflows.EmailVerificationUser{}, err
+		}
+		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
+	}
+}
+
+func (e *Engine) configureEmailVerificationStoreDeps(deps *internalflows.EmailVerificationDeps) {
+	if e == nil || e.verificationStore == nil {
+		return
+	}
+
+	deps.SaveVerificationRecord = func(ctx context.Context, tenantID, verificationID string, record internalflows.EmailVerificationStoreRecord, ttl time.Duration) error {
+		return e.verificationStore.Save(ctx, tenantID, verificationID, &stores.EmailVerificationRecord{
+			UserID:     record.UserID,
+			SecretHash: record.SecretHash,
+			ExpiresAt:  record.ExpiresAt,
+			Attempts:   record.Attempts,
+			Strategy:   record.Strategy,
+		}, ttl)
+	}
+	deps.ConsumeVerificationRecord = func(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
+		record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
+		if err != nil {
+			return internalflows.EmailVerificationStoreRecord{}, err
+		}
+		return internalflows.EmailVerificationStoreRecord{
+			UserID:     record.UserID,
+			SecretHash: record.SecretHash,
+			ExpiresAt:  record.ExpiresAt,
+			Attempts:   record.Attempts,
+			Strategy:   record.Strategy,
+		}, nil
+	}
 }
 
 func generateEmailVerificationChallenge(
@@ -2124,7 +2215,11 @@ type HealthStatus struct {
 //	Performance: 1 Redis GET (counter).
 func (e *Engine) GetActiveSessionCount(ctx context.Context, userID string) (int, error) {
 	e.ensureFlowDeps()
-	return e.flows.GetActiveSessionCount(ctx, userID)
+	count, err := e.flows.GetActiveSessionCount(ctx, userID)
+	if err != nil {
+		return 0, mapToAuthError(err)
+	}
+	return count, nil
 }
 
 // ListActiveSessions returns metadata for every active session belonging
@@ -2137,7 +2232,7 @@ func (e *Engine) ListActiveSessions(ctx context.Context, userID string) ([]Sessi
 	e.ensureFlowDeps()
 	sessions, err := e.flows.ListActiveSessions(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, mapToAuthError(err)
 	}
 
 	out := make([]SessionInfo, 0, len(sessions))
@@ -2158,7 +2253,7 @@ func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string)
 	e.ensureFlowDeps()
 	sess, err := e.flows.GetSessionInfo(ctx, tenantID, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, mapToAuthError(err)
 	}
 
 	info := toSessionInfo(sess)
@@ -2173,7 +2268,11 @@ func (e *Engine) GetSessionInfo(ctx context.Context, tenantID, sessionID string)
 //	Performance: 1 SCAN (may be slow on large keyspaces).
 func (e *Engine) ActiveSessionEstimate(ctx context.Context) (int, error) {
 	e.ensureFlowDeps()
-	return e.flows.ActiveSessionEstimate(ctx)
+	estimate, err := e.flows.ActiveSessionEstimate(ctx)
+	if err != nil {
+		return 0, mapToAuthError(err)
+	}
+	return estimate, nil
 }
 
 // Health performs a lightweight Redis PING and returns availability and
@@ -2197,7 +2296,11 @@ func (e *Engine) Health(ctx context.Context) HealthStatus {
 //	Performance: 1 Redis GET.
 func (e *Engine) GetLoginAttempts(ctx context.Context, identifier string) (int, error) {
 	e.ensureFlowDeps()
-	return e.flows.GetLoginAttempts(ctx, identifier)
+	attempts, err := e.flows.GetLoginAttempts(ctx, identifier)
+	if err != nil {
+		return 0, mapToAuthError(err)
+	}
+	return attempts, nil
 }
 
 func toSessionInfo(sess *session.Session) SessionInfo {
@@ -2225,7 +2328,7 @@ func (e *Engine) LoginWithResult(ctx context.Context, username, password string)
 	e.ensureFlowDeps()
 	result, err := e.flows.LoginWithResult(ctx, username, password)
 	if err != nil {
-		return nil, err
+		return nil, mapToAuthError(err)
 	}
 	return fromFlowLoginResult(result), nil
 }
@@ -2237,7 +2340,11 @@ func (e *Engine) LoginWithResult(ctx context.Context, username, password string)
 //	Flow:        Confirm MFA (step 2 of two-step)
 //	Docs:        docs/flows.md#confirm-mfa, docs/mfa.md
 func (e *Engine) ConfirmLoginMFA(ctx context.Context, challengeID, code string) (*LoginResult, error) {
-	return e.ConfirmLoginMFAWithType(ctx, challengeID, code, "totp")
+	result, err := e.ConfirmLoginMFAWithType(ctx, challengeID, code, "totp")
+	if err != nil {
+		return nil, mapToAuthError(err)
+	}
+	return result, nil
 }
 
 // ConfirmLoginMFAWithType completes a two-step MFA login. mfaType must be
@@ -2251,7 +2358,7 @@ func (e *Engine) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code,
 	e.ensureFlowDeps()
 	result, err := e.flows.ConfirmLoginMFAWithType(ctx, challengeID, code, mfaType)
 	if err != nil {
-		return nil, err
+		return nil, mapToAuthError(err)
 	}
 	return fromFlowLoginResult(result), nil
 }
@@ -2322,6 +2429,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			LoginSuccess:     int(MetricLoginSuccess),
 			LoginFailure:     int(MetricLoginFailure),
 			LoginRateLimited: int(MetricLoginRateLimited),
+			LockoutTrigger:   int(MetricLockoutTrigger),
 			SessionCreated:   int(MetricSessionCreated),
 			MFALoginRequired: int(MetricMFALoginRequired),
 			MFALoginSuccess:  int(MetricMFALoginSuccess),
@@ -2338,16 +2446,15 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			MFAAttemptsExceeded: auditEventMFAAttemptsExceeded,
 		},
 	}
-
-	if e != nil && e.rateLimiter != nil {
-		deps.CheckLoginRate = e.rateLimiter.CheckLogin
-		deps.IncrementLoginRate = e.rateLimiter.IncrementLogin
-		deps.ResetLoginRate = e.rateLimiter.ResetLogin
-	}
+	e.configureLoginRateLimiterDeps(&deps)
 	if e != nil && e.lockoutLimiter != nil && e.config.Security.AutoLockoutEnabled {
 		deps.AutoLockoutEnabled = true
-		deps.RecordLockoutFailure = e.lockoutLimiter.RecordFailure
-		deps.ResetLockoutCounter = e.lockoutLimiter.Reset
+		deps.RecordLockoutFailure = func(ctx context.Context, userID string) (bool, error) {
+			return e.lockoutLimiter.RecordFailure(ctx, tenantIDFromContext(ctx), userID)
+		}
+		deps.ResetLockoutCounter = func(ctx context.Context, userID string) error {
+			return e.lockoutLimiter.Reset(ctx, tenantIDFromContext(ctx), userID)
+		}
 		deps.LockAccount = e.LockAccount
 	}
 	if e != nil && e.userProvider != nil {
@@ -2453,6 +2560,36 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	return deps
 }
 
+func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
+	if e == nil || e.rateLimiter == nil {
+		return
+	}
+
+	deps.CheckLoginRate = func(ctx context.Context, identifier string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.rateLimiter.CheckLogin(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, rate.ErrRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "login", tenantID, err)
+		return nil
+	}
+	deps.IncrementLoginRate = func(ctx context.Context, identifier string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.rateLimiter.IncrementLogin(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, rate.ErrRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "login", tenantID, err)
+		return nil
+	}
+	deps.ResetLoginRate = func(ctx context.Context, identifier string) error {
+		return e.rateLimiter.ResetLogin(ctx, tenantIDFromContext(ctx), identifier)
+	}
+}
+
 func toFlowLoginUser(user UserRecord) internalflows.LoginUserRecord {
 	return internalflows.LoginUserRecord{
 		UserID:            user.UserID,
@@ -2517,10 +2654,14 @@ func mapMFALoginStoreError(err error) error {
 //	Flow:        Request Password Reset
 //	Docs:        docs/flows.md#password-reset, docs/password_reset.md
 //	Performance: 2–3 Redis commands.
-//	Security:    rate-limited per identifier+IP; timing-equalized.
+//	Security:    request-limited per identifier; timing-equalized.
 func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {
 	e.ensureFlowDeps()
-	return e.flows.RequestPasswordReset(ctx, identifier)
+	challenge, err := e.flows.RequestPasswordReset(ctx, identifier)
+	if err != nil {
+		return "", mapToAuthError(err)
+	}
+	return challenge, nil
 }
 
 // ConfirmPasswordReset completes a password reset without MFA verification.
@@ -2529,7 +2670,7 @@ func (e *Engine) RequestPasswordReset(ctx context.Context, identifier string) (s
 //	Flow:        Confirm Password Reset
 //	Docs:        docs/flows.md#password-reset, docs/password_reset.md
 func (e *Engine) ConfirmPasswordReset(ctx context.Context, challenge, newPassword string) error {
-	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", "")
+	return mapToAuthErrorOrNil(e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", ""))
 }
 
 // ConfirmPasswordResetWithTOTP completes a password reset with TOTP
@@ -2538,7 +2679,7 @@ func (e *Engine) ConfirmPasswordReset(ctx context.Context, challenge, newPasswor
 //	Flow:        Confirm Password Reset (MFA)
 //	Docs:        docs/flows.md#password-reset, docs/password_reset.md, docs/mfa.md
 func (e *Engine) ConfirmPasswordResetWithTOTP(ctx context.Context, challenge, newPassword, totpCode string) error {
-	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", totpCode)
+	return mapToAuthErrorOrNil(e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "totp", totpCode))
 }
 
 // ConfirmPasswordResetWithBackupCode completes a password reset using a
@@ -2547,7 +2688,7 @@ func (e *Engine) ConfirmPasswordResetWithTOTP(ctx context.Context, challenge, ne
 //	Flow:        Confirm Password Reset (MFA)
 //	Docs:        docs/flows.md#password-reset, docs/password_reset.md, docs/mfa.md
 func (e *Engine) ConfirmPasswordResetWithBackupCode(ctx context.Context, challenge, newPassword, backupCode string) error {
-	return e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "backup", backupCode)
+	return mapToAuthErrorOrNil(e.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, "backup", backupCode))
 }
 
 // ConfirmPasswordResetWithMFA completes a password reset with an optional
@@ -2561,7 +2702,7 @@ func (e *Engine) ConfirmPasswordResetWithBackupCode(ctx context.Context, challen
 //	Security:    challenge consumed atomically; attempts tracked.
 func (e *Engine) ConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword, mfaType, mfaCode string) error {
 	e.ensureFlowDeps()
-	return e.flows.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, mfaType, mfaCode)
+	return mapToAuthErrorOrNil(e.flows.ConfirmPasswordResetWithMFA(ctx, challenge, newPassword, mfaType, mfaCode))
 }
 
 func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
@@ -2578,7 +2719,6 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 		MaxAttempts:         cfg.PasswordReset.MaxAttempts,
 		RequireMFA:          cfg.TOTP.Enabled && (cfg.TOTP.RequireTOTPForPasswordReset || cfg.TOTP.RequireForPasswordReset),
 		TenantIDFromContext: tenantIDFromContext,
-		ClientIPFromContext: clientIPFromContext,
 		Now:                 time.Now,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
@@ -2624,11 +2764,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 			TOTPInvalid:               ErrTOTPInvalid,
 		},
 	}
-
-	if e != nil && e.resetLimiter != nil {
-		deps.CheckRequestLimiter = e.resetLimiter.CheckRequest
-		deps.CheckConfirmLimiter = e.resetLimiter.CheckConfirm
-	}
+	e.configurePasswordResetLimiterDeps(&deps, cfg)
 	if e != nil && e.userProvider != nil {
 		deps.GetUserByIdentifier = func(identifier string) (internalflows.PasswordResetUser, error) {
 			user, err := e.userProvider.GetUserByIdentifier(identifier)
@@ -2868,12 +3004,46 @@ func isNumericString(v string) bool {
 //
 //	Flow:        TOTP Setup
 //	Docs:        docs/flows.md#totp-setup, docs/mfa.md
-//	Security:    requires active account status.
+
+func (e *Engine) configurePasswordResetLimiterDeps(deps *internalflows.PasswordResetDeps, cfg Config) {
+	deps.CheckRequestLimiter = func(context.Context, string, string) error { return nil }
+	deps.CheckConfirmLimiter = func(context.Context, string, string) error { return nil }
+	if e == nil || e.resetLimiter == nil {
+		return
+	}
+
+	deps.CheckRequestLimiter = func(ctx context.Context, tenantID, identifier string) error {
+		if !cfg.PasswordReset.EnableRequestLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.resetLimiter.CheckRequest(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "password_reset_request", tenantID, err)
+		return nil
+	}
+	deps.CheckConfirmLimiter = func(ctx context.Context, tenantID, resetID string) error {
+		if !cfg.PasswordReset.EnableConfirmFailureLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.resetLimiter.CheckConfirm(ctx, tenantID, resetID)
+		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "password_reset_confirm", tenantID, err)
+		return nil
+	}
+}
+
+// Security:    requires active account status.
 func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSetup, error) {
 	e.ensureFlowDeps()
 	setup, err := e.flows.GenerateTOTPSetup(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, mapToAuthError(err)
 	}
 	return fromFlowTOTPSetup(setup), nil
 }
@@ -2888,7 +3058,7 @@ func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvisi
 	e.ensureFlowDeps()
 	provision, err := e.flows.ProvisionTOTP(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, mapToAuthError(err)
 	}
 	return fromFlowTOTPProvision(provision), nil
 }
@@ -2902,7 +3072,7 @@ func (e *Engine) ProvisionTOTP(ctx context.Context, userID string) (*TOTPProvisi
 //	Security:    rate-limited; replay-protected if configured.
 func (e *Engine) ConfirmTOTPSetup(ctx context.Context, userID, code string) error {
 	e.ensureFlowDeps()
-	return e.flows.ConfirmTOTPSetup(ctx, userID, code)
+	return mapToAuthErrorOrNil(e.flows.ConfirmTOTPSetup(ctx, userID, code))
 }
 
 // VerifyTOTP validates a TOTP code for the user without any login context.
@@ -2913,7 +3083,7 @@ func (e *Engine) ConfirmTOTPSetup(ctx context.Context, userID, code string) erro
 //	Security:    rate-limited; replay-protected if configured.
 func (e *Engine) VerifyTOTP(ctx context.Context, userID, code string) error {
 	e.ensureFlowDeps()
-	return e.flows.VerifyTOTP(ctx, userID, code)
+	return mapToAuthErrorOrNil(e.flows.VerifyTOTP(ctx, userID, code))
 }
 
 // DisableTOTP removes the TOTP secret for the user, disabling two-factor
@@ -2923,7 +3093,7 @@ func (e *Engine) VerifyTOTP(ctx context.Context, userID, code string) error {
 //	Docs:        docs/flows.md#totp-disable, docs/mfa.md
 func (e *Engine) DisableTOTP(ctx context.Context, userID string) error {
 	e.ensureFlowDeps()
-	return e.flows.DisableTOTP(ctx, userID)
+	return mapToAuthErrorOrNil(e.flows.DisableTOTP(ctx, userID))
 }
 
 func (e *Engine) verifyTOTPForUser(ctx context.Context, user UserRecord, code string) error {
@@ -3013,13 +3183,43 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 		deps.ProvisionURI = e.totp.ProvisionURI
 		deps.VerifyCode = e.totp.VerifyCode
 	}
-	if e != nil && e.totpLimiter != nil {
-		deps.CheckTOTPLimiter = e.totpLimiter.Check
-		deps.RecordTOTPLimiterFailure = e.totpLimiter.RecordFailure
-		deps.ResetTOTPLimiter = e.totpLimiter.Reset
-	}
+	e.configureTOTPLimiterDeps(&deps)
 
 	return deps
+}
+
+func (e *Engine) configureTOTPLimiterDeps(deps *internalflows.TOTPDeps) {
+	if e == nil || e.totpLimiter == nil {
+		return
+	}
+
+	deps.CheckTOTPLimiter = func(ctx context.Context, userID string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.totpLimiter.Check(ctx, tenantID, userID)
+		if err == nil || errors.Is(err, limiters.ErrTOTPRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "totp", tenantID, err)
+		return nil
+	}
+	deps.RecordTOTPLimiterFailure = func(ctx context.Context, userID string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.totpLimiter.RecordFailure(ctx, tenantID, userID)
+		if err == nil || errors.Is(err, limiters.ErrTOTPRateLimited) {
+			return err
+		}
+		e.emitLimiterFailOpen(ctx, "totp", tenantID, err)
+		return nil
+	}
+	deps.ResetTOTPLimiter = func(ctx context.Context, userID string) error {
+		tenantID := tenantIDFromContext(ctx)
+		if err := e.totpLimiter.Reset(ctx, tenantID, userID); err != nil {
+			e.emitLimiterFailOpen(ctx, "totp", tenantID, err)
+		}
+		return nil
+	}
 }
 
 func toFlowTOTPUser(user UserRecord) internalflows.TOTPUser {

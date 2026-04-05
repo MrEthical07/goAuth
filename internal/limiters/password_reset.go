@@ -15,10 +15,10 @@ var (
 )
 
 type PasswordResetConfig struct {
-	EnableIdentifierThrottle bool
-	EnableIPThrottle         bool
-	ResetTTL                 time.Duration
-	MaxAttempts              int
+	EnableRequestLimiter        bool
+	EnableConfirmFailureLimiter bool
+	ResetTTL                    time.Duration
+	MaxAttempts                 int
 }
 
 type PasswordResetLimiter struct {
@@ -33,30 +33,22 @@ func NewPasswordResetLimiter(redisClient redis.UniversalClient, cfg PasswordRese
 	}
 }
 
-func (l *PasswordResetLimiter) CheckRequest(ctx context.Context, tenantID, identifier, ip string) error {
-	if l.config.EnableIdentifierThrottle {
-		if err := l.enforceFixedWindow(ctx, requestIdentifierKey(tenantID, identifier)); err != nil {
-			return err
-		}
+func (l *PasswordResetLimiter) CheckRequest(ctx context.Context, tenantID, identifier string) error {
+	if !l.config.EnableRequestLimiter || identifier == "" {
+		return nil
 	}
-	if l.config.EnableIPThrottle && ip != "" {
-		if err := l.enforceFixedWindow(ctx, requestIPKey(tenantID, ip)); err != nil {
-			return err
-		}
+	if err := l.enforceFixedWindow(ctx, requestIdentifierKey(tenantID, identifier)); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (l *PasswordResetLimiter) CheckConfirm(ctx context.Context, tenantID, resetID, ip string) error {
-	if l.config.EnableIdentifierThrottle {
-		if err := l.enforceFixedWindow(ctx, confirmIdentifierKey(tenantID, resetID)); err != nil {
-			return err
-		}
+func (l *PasswordResetLimiter) CheckConfirm(ctx context.Context, tenantID, resetID string) error {
+	if !l.config.EnableConfirmFailureLimiter || resetID == "" {
+		return nil
 	}
-	if l.config.EnableIPThrottle && ip != "" {
-		if err := l.enforceFixedWindow(ctx, confirmIPKey(tenantID, ip)); err != nil {
-			return err
-		}
+	if err := l.enforceFixedWindow(ctx, confirmIdentifierKey(tenantID, resetID)); err != nil {
+		return err
 	}
 	return nil
 }
@@ -85,17 +77,9 @@ func (l *PasswordResetLimiter) enforceFixedWindow(ctx context.Context, key strin
 }
 
 func requestIdentifierKey(tenantID, identifier string) string {
-	return "apri:" + normalizeTenantID(tenantID) + ":" + identifier
-}
-
-func requestIPKey(tenantID, ip string) string {
-	return "aprip:" + normalizeTenantID(tenantID) + ":" + ip
+	return "rl:reset:req:" + tenantID + ":" + identifier
 }
 
 func confirmIdentifierKey(tenantID, resetID string) string {
-	return "aprc:" + normalizeTenantID(tenantID) + ":" + resetID
-}
-
-func confirmIPKey(tenantID, ip string) string {
-	return "aprcip:" + normalizeTenantID(tenantID) + ":" + ip
+	return "rl:reset:confirm:fail:" + tenantID + ":" + resetID
 }

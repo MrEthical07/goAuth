@@ -34,27 +34,23 @@ func newTestResetEngine(
 		sessionStore: session.NewStore(rdb, "as", false, false, 0),
 		resetStore:   stores.NewPasswordResetStore(rdb, "apr"),
 		resetLimiter: limiters.NewPasswordResetLimiter(rdb, limiters.PasswordResetConfig{
-			EnableIdentifierThrottle: cfg.EnableIdentifierThrottle,
-			EnableIPThrottle:         cfg.EnableIPThrottle,
-			ResetTTL:                 cfg.ResetTTL,
-			MaxAttempts:              cfg.MaxAttempts,
+			EnableRequestLimiter:        cfg.EnableRequestLimiter,
+			EnableConfirmFailureLimiter: cfg.EnableConfirmFailureLimiter,
+			ResetTTL:                    cfg.ResetTTL,
+			MaxAttempts:                 cfg.MaxAttempts,
 		}),
 	}
 }
 
 func testResetConfig(strategy ResetStrategyType) PasswordResetConfig {
 	cfg := PasswordResetConfig{
-		Enabled:                  true,
-		Strategy:                 strategy,
-		ResetTTL:                 15 * time.Minute,
-		MaxAttempts:              5,
-		EnableIPThrottle:         true,
-		EnableIdentifierThrottle: true,
-		OTPDigits:                6,
-	}
-	if strategy != ResetOTP {
-		cfg.EnableIPThrottle = false
-		cfg.EnableIdentifierThrottle = false
+		Enabled:                     true,
+		Strategy:                    strategy,
+		ResetTTL:                    15 * time.Minute,
+		MaxAttempts:                 5,
+		EnableRequestLimiter:        true,
+		EnableConfirmFailureLimiter: true,
+		OTPDigits:                   6,
 	}
 	return cfg
 }
@@ -232,8 +228,8 @@ func TestPasswordResetConfigOTPValidation(t *testing.T) {
 	cfg.PasswordReset.Strategy = ResetOTP
 	cfg.PasswordReset.ResetTTL = 20 * time.Minute
 	cfg.PasswordReset.MaxAttempts = 6
-	cfg.PasswordReset.EnableIPThrottle = false
-	cfg.PasswordReset.EnableIdentifierThrottle = false
+	cfg.PasswordReset.EnableRequestLimiter = false
+	cfg.PasswordReset.EnableConfirmFailureLimiter = false
 	cfg.PasswordReset.OTPDigits = 4
 
 	if err := cfg.Validate(); err == nil {

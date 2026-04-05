@@ -1,126 +1,250 @@
 package goAuth
 
-import "errors"
+// ErrorCategory classifies public authentication errors.
+type ErrorCategory string
+
+const (
+	CategoryAuthAbuse      ErrorCategory = "AUTH_ABUSE"
+	CategoryAuthState      ErrorCategory = "AUTH_STATE"
+	CategoryAuthValidation ErrorCategory = "AUTH_VALIDATION"
+	CategorySystem         ErrorCategory = "SYSTEM"
+)
+
+// AuthCode is the canonical registry key for public auth errors.
+type AuthCode string
+
+const (
+	CodeAuthUnauthorized                   AuthCode = "AUTH_UNAUTHORIZED"
+	CodeAuthInvalidCredentials             AuthCode = "AUTH_INVALID_CREDENTIALS"
+	CodeAuthAccountNotFound                AuthCode = "AUTH_ACCOUNT_NOT_FOUND"
+	CodeAuthTooManyAttempts                AuthCode = "AUTH_TOO_MANY_ATTEMPTS"
+	CodeAuthLocked                         AuthCode = "AUTH_LOCKED"
+	CodeAuthAccountExists                  AuthCode = "AUTH_ACCOUNT_EXISTS"
+	CodeAuthAccountCreationDisabled        AuthCode = "AUTH_ACCOUNT_CREATION_DISABLED"
+	CodeAuthAccountCreationLimited         AuthCode = "AUTH_ACCOUNT_CREATION_LIMITED"
+	CodeSystemUnavailableAccountCreation   AuthCode = "SYSTEM_UNAVAILABLE_ACCOUNT_CREATION"
+	CodeAuthAccountCreationInvalid         AuthCode = "AUTH_ACCOUNT_CREATION_INVALID"
+	CodeAuthAccountRoleInvalid             AuthCode = "AUTH_ACCOUNT_ROLE_INVALID"
+	CodeAuthVerificationRequired           AuthCode = "AUTH_VERIFICATION_REQUIRED"
+	CodeAuthAccountDisabled                AuthCode = "AUTH_ACCOUNT_DISABLED"
+	CodeAuthAccountLocked                  AuthCode = "AUTH_ACCOUNT_LOCKED"
+	CodeAuthAccountDeleted                 AuthCode = "AUTH_ACCOUNT_DELETED"
+	CodeSystemAccountVersionNotAdvanced    AuthCode = "SYSTEM_ACCOUNT_VERSION_NOT_ADVANCED"
+	CodeAuthVerificationDisabled           AuthCode = "AUTH_VERIFICATION_DISABLED"
+	CodeAuthVerificationInvalid            AuthCode = "AUTH_VERIFICATION_INVALID"
+	CodeAuthVerificationExpired            AuthCode = "AUTH_VERIFICATION_EXPIRED"
+	CodeAuthVerificationRequestLimited     AuthCode = "AUTH_VERIFICATION_REQUEST_LIMITED"
+	CodeSystemUnavailableEmailVerification AuthCode = "SYSTEM_UNAVAILABLE_EMAIL_VERIFICATION"
+	CodeAuthVerificationAttemptsExceeded   AuthCode = "AUTH_VERIFICATION_ATTEMPTS_EXCEEDED"
+	CodeAuthResetDisabled                  AuthCode = "AUTH_RESET_DISABLED"
+	CodeAuthResetInvalid                   AuthCode = "AUTH_RESET_INVALID"
+	CodeAuthResetExpired                   AuthCode = "AUTH_RESET_EXPIRED"
+	CodeAuthResetRequestLimited            AuthCode = "AUTH_RESET_REQUEST_LIMITED"
+	CodeSystemUnavailablePasswordReset     AuthCode = "SYSTEM_UNAVAILABLE_PASSWORD_RESET"
+	CodeAuthResetAttemptsExceeded          AuthCode = "AUTH_RESET_ATTEMPTS_EXCEEDED"
+	CodeAuthPasswordPolicyViolation        AuthCode = "AUTH_PASSWORD_POLICY_VIOLATION"
+	CodeAuthPasswordReuse                  AuthCode = "AUTH_PASSWORD_REUSE"
+	CodeSystemSessionCreationFailed        AuthCode = "SYSTEM_SESSION_CREATION_FAILED"
+	CodeSystemSessionInvalidationFailed    AuthCode = "SYSTEM_SESSION_INVALIDATION_FAILED"
+	CodeAuthSessionLimitExceeded           AuthCode = "AUTH_SESSION_LIMIT_EXCEEDED"
+	CodeAuthTenantSessionLimitExceeded     AuthCode = "AUTH_TENANT_SESSION_LIMIT_EXCEEDED"
+	CodeAuthDeviceBindingRejected          AuthCode = "AUTH_DEVICE_BINDING_REJECTED"
+	CodeAuthMFADisabled                    AuthCode = "AUTH_MFA_DISABLED"
+	CodeAuthTOTPRequired                   AuthCode = "AUTH_TOTP_REQUIRED"
+	CodeAuthTOTPInvalid                    AuthCode = "AUTH_TOTP_INVALID"
+	CodeAuthTOTPRateLimited                AuthCode = "AUTH_TOTP_RATE_LIMITED"
+	CodeAuthMFANotConfigured               AuthCode = "AUTH_MFA_NOT_CONFIGURED"
+	CodeSystemUnavailableMFA               AuthCode = "SYSTEM_UNAVAILABLE_MFA"
+	CodeAuthMFARequired                    AuthCode = "AUTH_MFA_REQUIRED"
+	CodeAuthMFAInvalidCode                 AuthCode = "AUTH_MFA_INVALID_CODE"
+	CodeAuthMFAExpired                     AuthCode = "AUTH_MFA_EXPIRED"
+	CodeAuthMFAAttemptsExceeded            AuthCode = "AUTH_MFA_ATTEMPTS_EXCEEDED"
+	CodeAuthMFAReplayDetected              AuthCode = "AUTH_MFA_REPLAY_DETECTED"
+	CodeSystemUnavailableMFAChallenge      AuthCode = "SYSTEM_UNAVAILABLE_MFA_CHALLENGE"
+	CodeAuthMFABackupInvalid               AuthCode = "AUTH_MFA_BACKUP_INVALID"
+	CodeAuthMFABackupRateLimited           AuthCode = "AUTH_MFA_BACKUP_RATE_LIMITED"
+	CodeSystemUnavailableMFABackup         AuthCode = "SYSTEM_UNAVAILABLE_MFA_BACKUP"
+	CodeAuthMFABackupNotConfigured         AuthCode = "AUTH_MFA_BACKUP_NOT_CONFIGURED"
+	CodeAuthMFABackupRegenRequiresTOTP     AuthCode = "AUTH_MFA_BACKUP_REGEN_REQUIRES_TOTP"
+	CodeAuthSessionExpired                 AuthCode = "AUTH_SESSION_EXPIRED"
+	CodeAuthInvalidToken                   AuthCode = "AUTH_INVALID_TOKEN"
+	CodeAuthInvalidTokenClockSkew          AuthCode = "AUTH_INVALID_TOKEN_CLOCK_SKEW"
+	CodeAuthInvalidRouteMode               AuthCode = "AUTH_INVALID_ROUTE_MODE"
+	CodeSystemUnavailableStrictBackend     AuthCode = "SYSTEM_UNAVAILABLE_STRICT_BACKEND"
+	CodeAuthRefreshInvalid                 AuthCode = "AUTH_REFRESH_INVALID"
+	CodeAuthRefreshReuseDetected           AuthCode = "AUTH_REFRESH_REUSE_DETECTED"
+	CodeAuthPermissionDenied               AuthCode = "AUTH_PERMISSION_DENIED"
+	CodeSystemEngineNotReady               AuthCode = "SYSTEM_ENGINE_NOT_READY"
+	CodeSystemProviderDuplicateIdentifier  AuthCode = "SYSTEM_PROVIDER_DUPLICATE_IDENTIFIER"
+	CodeSystemInternalError                AuthCode = "SYSTEM_INTERNAL_ERROR"
+	CodeSystemUnavailable                  AuthCode = "SYSTEM_UNAVAILABLE"
+)
+
+// AuthError is the canonical public error shape returned by engine entrypoints.
+// It preserves errors.Is compatibility via stable error codes.
+type AuthError struct {
+	Category ErrorCategory
+	Code     string
+	Message  string
+	cause    error
+}
+
+// NewAuthError creates a canonical auth error sentinel.
+func NewAuthError(category ErrorCategory, code, message string) *AuthError {
+	return &AuthError{Category: category, Code: code, Message: message}
+}
+
+// WrapAuthError creates a canonical auth error with an underlying cause.
+func WrapAuthError(base *AuthError, cause error) *AuthError {
+	if base == nil {
+		return nil
+	}
+	return &AuthError{Category: base.Category, Code: base.Code, Message: base.Message, cause: cause}
+}
+
+func (e *AuthError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+func (e *AuthError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *AuthError) Is(target error) bool {
+	t, ok := target.(*AuthError)
+	if !ok || e == nil || t == nil {
+		return false
+	}
+	return e.Code == t.Code
+}
 
 var (
 	// ErrUnauthorized is an exported constant or variable used by the authentication engine.
-	ErrUnauthorized = errors.New("unauthorized")
+	ErrUnauthorized = NewAuthError(CategoryAuthValidation, string(CodeAuthUnauthorized), "unauthorized")
 	// ErrInvalidCredentials is an exported constant or variable used by the authentication engine.
-	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrInvalidCredentials = NewAuthError(CategoryAuthValidation, string(CodeAuthInvalidCredentials), "invalid credentials")
 	// ErrUserNotFound is an exported constant or variable used by the authentication engine.
-	ErrUserNotFound = errors.New("user not found")
+	ErrUserNotFound = NewAuthError(CategoryAuthState, string(CodeAuthAccountNotFound), "account not found")
 	// ErrLoginRateLimited is an exported constant or variable used by the authentication engine.
-	ErrLoginRateLimited = errors.New("login rate limited")
-	// ErrRefreshRateLimited is an exported constant or variable used by the authentication engine.
-	ErrRefreshRateLimited = errors.New("refresh rate limited")
+	ErrLoginRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthTooManyAttempts), "too many attempts")
 	// ErrAccountExists is an exported constant or variable used by the authentication engine.
-	ErrAccountExists = errors.New("account already exists")
+	ErrAccountExists = NewAuthError(CategoryAuthState, string(CodeAuthAccountExists), "account already exists")
 	// ErrAccountCreationDisabled is an exported constant or variable used by the authentication engine.
-	ErrAccountCreationDisabled = errors.New("account creation disabled")
+	ErrAccountCreationDisabled = NewAuthError(CategoryAuthState, string(CodeAuthAccountCreationDisabled), "account creation disabled")
 	// ErrAccountCreationRateLimited is an exported constant or variable used by the authentication engine.
-	ErrAccountCreationRateLimited = errors.New("account creation rate limited")
+	ErrAccountCreationRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthAccountCreationLimited), "account creation rate limited")
 	// ErrAccountCreationUnavailable is an exported constant or variable used by the authentication engine.
-	ErrAccountCreationUnavailable = errors.New("account creation backend unavailable")
+	ErrAccountCreationUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableAccountCreation), "account creation unavailable")
 	// ErrAccountCreationInvalid is an exported constant or variable used by the authentication engine.
-	ErrAccountCreationInvalid = errors.New("invalid account creation request")
+	ErrAccountCreationInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthAccountCreationInvalid), "invalid account creation request")
 	// ErrAccountRoleInvalid is an exported constant or variable used by the authentication engine.
-	ErrAccountRoleInvalid = errors.New("invalid account role")
+	ErrAccountRoleInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthAccountRoleInvalid), "invalid account role")
 	// ErrAccountUnverified is an exported constant or variable used by the authentication engine.
-	ErrAccountUnverified = errors.New("account unverified")
+	ErrAccountUnverified = NewAuthError(CategoryAuthState, string(CodeAuthVerificationRequired), "verification required")
 	// ErrAccountDisabled is an exported constant or variable used by the authentication engine.
-	ErrAccountDisabled = errors.New("account disabled")
+	ErrAccountDisabled = NewAuthError(CategoryAuthState, string(CodeAuthAccountDisabled), "account disabled")
 	// ErrAccountLocked is an exported constant or variable used by the authentication engine.
-	ErrAccountLocked = errors.New("account locked")
+	ErrAccountLocked = NewAuthError(CategoryAuthState, string(CodeAuthAccountLocked), "account locked")
 	// ErrAccountDeleted is an exported constant or variable used by the authentication engine.
-	ErrAccountDeleted = errors.New("account deleted")
+	ErrAccountDeleted = NewAuthError(CategoryAuthState, string(CodeAuthAccountDeleted), "account deleted")
 	// ErrAccountVersionNotAdvanced is an exported constant or variable used by the authentication engine.
-	ErrAccountVersionNotAdvanced = errors.New("account version not advanced on status change")
+	ErrAccountVersionNotAdvanced = NewAuthError(CategorySystem, string(CodeSystemAccountVersionNotAdvanced), "account state transition failed")
 	// ErrEmailVerificationDisabled is an exported constant or variable used by the authentication engine.
-	ErrEmailVerificationDisabled = errors.New("email verification disabled")
+	ErrEmailVerificationDisabled = NewAuthError(CategoryAuthState, string(CodeAuthVerificationDisabled), "email verification disabled")
 	// ErrEmailVerificationInvalid is an exported constant or variable used by the authentication engine.
-	ErrEmailVerificationInvalid = errors.New("email verification challenge invalid")
+	ErrEmailVerificationInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthVerificationInvalid), "verification challenge invalid")
 	// ErrEmailVerificationRateLimited is an exported constant or variable used by the authentication engine.
-	ErrEmailVerificationRateLimited = errors.New("email verification rate limited")
+	ErrEmailVerificationRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthVerificationRequestLimited), "verification requests rate limited")
 	// ErrEmailVerificationUnavailable is an exported constant or variable used by the authentication engine.
-	ErrEmailVerificationUnavailable = errors.New("email verification backend unavailable")
+	ErrEmailVerificationUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableEmailVerification), "email verification unavailable")
 	// ErrEmailVerificationAttempts is an exported constant or variable used by the authentication engine.
-	ErrEmailVerificationAttempts = errors.New("email verification attempts exceeded")
+	ErrEmailVerificationAttempts = NewAuthError(CategoryAuthAbuse, string(CodeAuthVerificationAttemptsExceeded), "verification attempts exceeded")
 	// ErrPasswordResetDisabled is an exported constant or variable used by the authentication engine.
-	ErrPasswordResetDisabled = errors.New("password reset disabled")
+	ErrPasswordResetDisabled = NewAuthError(CategoryAuthState, string(CodeAuthResetDisabled), "password reset disabled")
 	// ErrPasswordResetInvalid is an exported constant or variable used by the authentication engine.
-	ErrPasswordResetInvalid = errors.New("password reset challenge invalid")
+	ErrPasswordResetInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthResetInvalid), "password reset challenge invalid")
 	// ErrPasswordResetRateLimited is an exported constant or variable used by the authentication engine.
-	ErrPasswordResetRateLimited = errors.New("password reset rate limited")
+	ErrPasswordResetRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthResetRequestLimited), "password reset requests rate limited")
 	// ErrPasswordResetUnavailable is an exported constant or variable used by the authentication engine.
-	ErrPasswordResetUnavailable = errors.New("password reset backend unavailable")
+	ErrPasswordResetUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailablePasswordReset), "password reset unavailable")
 	// ErrPasswordResetAttempts is an exported constant or variable used by the authentication engine.
-	ErrPasswordResetAttempts = errors.New("password reset attempts exceeded")
+	ErrPasswordResetAttempts = NewAuthError(CategoryAuthAbuse, string(CodeAuthResetAttemptsExceeded), "password reset attempts exceeded")
 	// ErrPasswordPolicy is an exported constant or variable used by the authentication engine.
-	ErrPasswordPolicy = errors.New("password policy violation")
+	ErrPasswordPolicy = NewAuthError(CategoryAuthValidation, string(CodeAuthPasswordPolicyViolation), "password policy violation")
 	// ErrPasswordReuse is an exported constant or variable used by the authentication engine.
-	ErrPasswordReuse = errors.New("new password must be different from current password")
+	ErrPasswordReuse = NewAuthError(CategoryAuthValidation, string(CodeAuthPasswordReuse), "password reuse rejected")
 	// ErrSessionCreationFailed is an exported constant or variable used by the authentication engine.
-	ErrSessionCreationFailed = errors.New("session creation failed")
+	ErrSessionCreationFailed = NewAuthError(CategorySystem, string(CodeSystemSessionCreationFailed), "session creation failed")
 	// ErrSessionInvalidationFailed is an exported constant or variable used by the authentication engine.
-	ErrSessionInvalidationFailed = errors.New("session invalidation failed")
+	ErrSessionInvalidationFailed = NewAuthError(CategorySystem, string(CodeSystemSessionInvalidationFailed), "session invalidation failed")
 	// ErrSessionLimitExceeded is an exported constant or variable used by the authentication engine.
-	ErrSessionLimitExceeded = errors.New("session limit exceeded")
+	ErrSessionLimitExceeded = NewAuthError(CategoryAuthAbuse, string(CodeAuthSessionLimitExceeded), "session limit exceeded")
 	// ErrTenantSessionLimitExceeded is an exported constant or variable used by the authentication engine.
-	ErrTenantSessionLimitExceeded = errors.New("tenant session limit exceeded")
+	ErrTenantSessionLimitExceeded = NewAuthError(CategoryAuthAbuse, string(CodeAuthTenantSessionLimitExceeded), "tenant session limit exceeded")
 	// ErrDeviceBindingRejected is an exported constant or variable used by the authentication engine.
-	ErrDeviceBindingRejected = errors.New("device binding rejected")
+	ErrDeviceBindingRejected = NewAuthError(CategoryAuthState, string(CodeAuthDeviceBindingRejected), "device binding rejected")
 	// ErrTOTPFeatureDisabled is an exported constant or variable used by the authentication engine.
-	ErrTOTPFeatureDisabled = errors.New("totp feature disabled")
+	ErrTOTPFeatureDisabled = NewAuthError(CategoryAuthState, string(CodeAuthMFADisabled), "mfa disabled")
 	// ErrTOTPRequired is an exported constant or variable used by the authentication engine.
-	ErrTOTPRequired = errors.New("totp required")
+	ErrTOTPRequired = NewAuthError(CategoryAuthState, string(CodeAuthTOTPRequired), "totp required")
 	// ErrTOTPInvalid is an exported constant or variable used by the authentication engine.
-	ErrTOTPInvalid = errors.New("invalid totp code")
+	ErrTOTPInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthTOTPInvalid), "invalid totp code")
 	// ErrTOTPRateLimited is an exported constant or variable used by the authentication engine.
-	ErrTOTPRateLimited = errors.New("totp attempts rate limited")
+	ErrTOTPRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthTOTPRateLimited), "totp attempts rate limited")
 	// ErrTOTPNotConfigured is an exported constant or variable used by the authentication engine.
-	ErrTOTPNotConfigured = errors.New("totp not configured")
+	ErrTOTPNotConfigured = NewAuthError(CategoryAuthState, string(CodeAuthMFANotConfigured), "totp not configured")
 	// ErrTOTPUnavailable is an exported constant or variable used by the authentication engine.
-	ErrTOTPUnavailable = errors.New("totp backend unavailable")
+	ErrTOTPUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableMFA), "totp unavailable")
 	// ErrMFALoginRequired is an exported constant or variable used by the authentication engine.
-	ErrMFALoginRequired = errors.New("mfa required")
+	ErrMFALoginRequired = NewAuthError(CategoryAuthState, string(CodeAuthMFARequired), "mfa required")
 	// ErrMFALoginInvalid is an exported constant or variable used by the authentication engine.
-	ErrMFALoginInvalid = errors.New("mfa challenge invalid")
+	ErrMFALoginInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthMFAInvalidCode), "mfa code invalid")
 	// ErrMFALoginExpired is an exported constant or variable used by the authentication engine.
-	ErrMFALoginExpired = errors.New("mfa challenge expired")
+	ErrMFALoginExpired = NewAuthError(CategoryAuthState, string(CodeAuthMFAExpired), "mfa challenge expired")
 	// ErrMFALoginAttemptsExceeded is an exported constant or variable used by the authentication engine.
-	ErrMFALoginAttemptsExceeded = errors.New("mfa challenge attempts exceeded")
+	ErrMFALoginAttemptsExceeded = NewAuthError(CategoryAuthAbuse, string(CodeAuthMFAAttemptsExceeded), "mfa attempts exceeded")
 	// ErrMFALoginReplay is an exported constant or variable used by the authentication engine.
-	ErrMFALoginReplay = errors.New("mfa challenge replay detected")
+	ErrMFALoginReplay = NewAuthError(CategoryAuthAbuse, string(CodeAuthMFAReplayDetected), "mfa replay detected")
 	// ErrMFALoginUnavailable is an exported constant or variable used by the authentication engine.
-	ErrMFALoginUnavailable = errors.New("mfa challenge backend unavailable")
+	ErrMFALoginUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableMFAChallenge), "mfa challenge unavailable")
 	// ErrBackupCodeInvalid is an exported constant or variable used by the authentication engine.
-	ErrBackupCodeInvalid = errors.New("invalid backup code")
+	ErrBackupCodeInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthMFABackupInvalid), "backup code invalid")
 	// ErrBackupCodeRateLimited is an exported constant or variable used by the authentication engine.
-	ErrBackupCodeRateLimited = errors.New("backup code rate limited")
+	ErrBackupCodeRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthMFABackupRateLimited), "backup code attempts rate limited")
 	// ErrBackupCodeUnavailable is an exported constant or variable used by the authentication engine.
-	ErrBackupCodeUnavailable = errors.New("backup code backend unavailable")
+	ErrBackupCodeUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableMFABackup), "backup code unavailable")
 	// ErrBackupCodesNotConfigured is an exported constant or variable used by the authentication engine.
-	ErrBackupCodesNotConfigured = errors.New("backup codes not configured")
+	ErrBackupCodesNotConfigured = NewAuthError(CategoryAuthState, string(CodeAuthMFABackupNotConfigured), "backup codes not configured")
 	// ErrBackupCodeRegenerationRequiresTOTP is an exported constant or variable used by the authentication engine.
-	ErrBackupCodeRegenerationRequiresTOTP = errors.New("backup code regeneration requires totp verification")
+	ErrBackupCodeRegenerationRequiresTOTP = NewAuthError(CategoryAuthState, string(CodeAuthMFABackupRegenRequiresTOTP), "backup code regeneration requires totp")
 	// ErrSessionNotFound is an exported constant or variable used by the authentication engine.
-	ErrSessionNotFound = errors.New("session not found")
+	ErrSessionNotFound = NewAuthError(CategoryAuthState, string(CodeAuthSessionExpired), "session not found or expired")
 	// ErrTokenInvalid is an exported constant or variable used by the authentication engine.
-	ErrTokenInvalid = errors.New("invalid token")
+	ErrTokenInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthInvalidToken), "invalid token")
 	// ErrTokenClockSkew is an exported constant or variable used by the authentication engine.
-	ErrTokenClockSkew = errors.New("token clock skew exceeded")
+	ErrTokenClockSkew = NewAuthError(CategoryAuthValidation, string(CodeAuthInvalidTokenClockSkew), "token clock skew exceeded")
 	// ErrInvalidRouteMode is an exported constant or variable used by the authentication engine.
-	ErrInvalidRouteMode = errors.New("invalid route validation mode")
+	ErrInvalidRouteMode = NewAuthError(CategoryAuthValidation, string(CodeAuthInvalidRouteMode), "invalid route validation mode")
 	// ErrStrictBackendDown is an exported constant or variable used by the authentication engine.
-	ErrStrictBackendDown = errors.New("strict validation backend unavailable")
+	ErrStrictBackendDown = NewAuthError(CategorySystem, string(CodeSystemUnavailableStrictBackend), "strict validation backend unavailable")
 	// ErrRefreshInvalid is an exported constant or variable used by the authentication engine.
-	ErrRefreshInvalid = errors.New("invalid refresh token")
+	ErrRefreshInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthRefreshInvalid), "invalid refresh token")
 	// ErrRefreshReuse is an exported constant or variable used by the authentication engine.
-	ErrRefreshReuse = errors.New("refresh token reuse detected")
+	ErrRefreshReuse = NewAuthError(CategoryAuthAbuse, string(CodeAuthRefreshReuseDetected), "refresh token reuse detected")
 	// ErrPermissionDenied is an exported constant or variable used by the authentication engine.
-	ErrPermissionDenied = errors.New("permission denied")
+	ErrPermissionDenied = NewAuthError(CategoryAuthState, string(CodeAuthPermissionDenied), "permission denied")
 	// ErrEngineNotReady is an exported constant or variable used by the authentication engine.
-	ErrEngineNotReady = errors.New("engine not initialized")
+	ErrEngineNotReady = NewAuthError(CategorySystem, string(CodeSystemEngineNotReady), "engine not initialized")
 	// ErrProviderDuplicateIdentifier is an exported constant or variable used by the authentication engine.
-	ErrProviderDuplicateIdentifier = errors.New("provider duplicate identifier")
+	ErrProviderDuplicateIdentifier = NewAuthError(CategorySystem, string(CodeSystemProviderDuplicateIdentifier), "provider duplicate identifier")
+	// ErrSystemInternal is a canonical fallback for unexpected internal failures.
+	ErrSystemInternal = NewAuthError(CategorySystem, string(CodeSystemInternalError), "internal error")
+	// ErrSystemUnavailable is a canonical fallback for dependency or availability failures.
+	ErrSystemUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailable), "service unavailable")
 )

@@ -42,7 +42,7 @@ type ReportInput struct {
 	DeviceBindingEnabled         bool
 	RefreshRotationEnabled       bool
 	RefreshReuseDetectionEnabled bool
-	EnableRefreshThrottle        bool
+	EnableLoginFailureLimiter    bool
 	EmailVerificationEnabled     bool
 	PasswordResetEnabled         bool
 	MaxSessionsPerUser           int
@@ -76,7 +76,7 @@ func BuildReport(input ReportInput) Report {
 		RefreshRotationEnabled:       input.RefreshRotationEnabled,
 		RefreshReuseDetectionEnabled: input.RefreshReuseDetectionEnabled,
 		SessionCapsActive:            sessionCaps,
-		RateLimitingActive:           rateLimiting || input.EnableRefreshThrottle,
+		RateLimitingActive:           rateLimiting && input.EnableLoginFailureLimiter,
 		EmailVerificationActive:      input.EmailVerificationEnabled,
 		PasswordResetActive:          input.PasswordResetEnabled,
 	}

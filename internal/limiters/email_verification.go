@@ -15,10 +15,10 @@ var (
 )
 
 type EmailVerificationConfig struct {
-	EnableIdentifierThrottle bool
-	EnableIPThrottle         bool
-	VerificationTTL          time.Duration
-	MaxAttempts              int
+	EnableRequestLimiter        bool
+	EnableConfirmFailureLimiter bool
+	VerificationTTL             time.Duration
+	MaxAttempts                 int
 }
 
 type EmailVerificationLimiter struct {
@@ -33,30 +33,22 @@ func NewEmailVerificationLimiter(redisClient redis.UniversalClient, cfg EmailVer
 	}
 }
 
-func (l *EmailVerificationLimiter) CheckRequest(ctx context.Context, tenantID, identifier, ip string) error {
-	if l.config.EnableIdentifierThrottle {
-		if err := l.enforceFixedWindow(ctx, verificationRequestIdentifierKey(tenantID, identifier)); err != nil {
-			return err
-		}
+func (l *EmailVerificationLimiter) CheckRequest(ctx context.Context, tenantID, identifier string) error {
+	if !l.config.EnableRequestLimiter || identifier == "" {
+		return nil
 	}
-	if l.config.EnableIPThrottle && ip != "" {
-		if err := l.enforceFixedWindow(ctx, verificationRequestIPKey(tenantID, ip)); err != nil {
-			return err
-		}
+	if err := l.enforceFixedWindow(ctx, verificationRequestIdentifierKey(tenantID, identifier)); err != nil {
+		return err
 	}
 	return nil
 }
 
-func (l *EmailVerificationLimiter) CheckConfirm(ctx context.Context, tenantID, verificationID, ip string) error {
-	if l.config.EnableIdentifierThrottle {
-		if err := l.enforceFixedWindow(ctx, verificationConfirmIdentifierKey(tenantID, verificationID)); err != nil {
-			return err
-		}
+func (l *EmailVerificationLimiter) CheckConfirm(ctx context.Context, tenantID, verificationID string) error {
+	if !l.config.EnableConfirmFailureLimiter || verificationID == "" {
+		return nil
 	}
-	if l.config.EnableIPThrottle && ip != "" {
-		if err := l.enforceFixedWindow(ctx, verificationConfirmIPKey(tenantID, ip)); err != nil {
-			return err
-		}
+	if err := l.enforceFixedWindow(ctx, verificationConfirmIdentifierKey(tenantID, verificationID)); err != nil {
+		return err
 	}
 	return nil
 }
@@ -81,17 +73,9 @@ func (l *EmailVerificationLimiter) enforceFixedWindow(ctx context.Context, key s
 }
 
 func verificationRequestIdentifierKey(tenantID, identifier string) string {
-	return "apvi:" + normalizeTenantID(tenantID) + ":" + identifier
-}
-
-func verificationRequestIPKey(tenantID, ip string) string {
-	return "apvip:" + normalizeTenantID(tenantID) + ":" + ip
+	return "rl:verify:req:" + tenantID + ":" + identifier
 }
 
 func verificationConfirmIdentifierKey(tenantID, verificationID string) string {
-	return "apvc:" + normalizeTenantID(tenantID) + ":" + verificationID
-}
-
-func verificationConfirmIPKey(tenantID, ip string) string {
-	return "apvcip:" + normalizeTenantID(tenantID) + ":" + ip
+	return "rl:verify:confirm:fail:" + tenantID + ":" + verificationID
 }

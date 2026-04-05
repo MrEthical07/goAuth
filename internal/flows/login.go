@@ -51,6 +51,7 @@ type LoginMetrics struct {
 	LoginSuccess     int
 	LoginFailure     int
 	LoginRateLimited int
+	LockoutTrigger   int
 	SessionCreated   int
 	MFALoginRequired int
 	MFALoginSuccess  int
@@ -109,9 +110,9 @@ type LoginDeps struct {
 	Now                  func() time.Time
 	AccountStatusError   func(status uint8) error
 
-	CheckLoginRate     func(context.Context, string, string) error
-	IncrementLoginRate func(context.Context, string, string) error
-	ResetLoginRate     func(context.Context, string, string) error
+	CheckLoginRate     func(context.Context, string) error
+	IncrementLoginRate func(context.Context, string) error
+	ResetLoginRate     func(context.Context, string) error
 
 	// Auto-lockout hooks: RecordLockoutFailure returns true when threshold is reached.
 	AutoLockoutEnabled   bool
@@ -195,11 +196,10 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 		return nil, deps.Errors.EngineNotReady
 	}
 
-	ip := deps.ClientIPFromContext(ctx)
 	tenantID := deps.TenantIDFromContext(ctx)
 
 	if deps.CheckLoginRate != nil {
-		if err := deps.CheckLoginRate(ctx, username, ip); err != nil {
+		if err := deps.CheckLoginRate(ctx, username); err != nil {
 			deps.MetricInc(deps.Metrics.LoginRateLimited)
 			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 				return map[string]string{
@@ -223,7 +223,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 			_, _ = deps.VerifyPassword("dummy-timing-equalization", "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 		}
 		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username, ip); err != nil {
+			if err := deps.IncrementLoginRate(ctx, username); err != nil {
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -251,7 +251,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 	user, err := deps.GetUserByIdentifier(username)
 	if err != nil {
 		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username, ip); err != nil {
+			if err := deps.IncrementLoginRate(ctx, username); err != nil {
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -278,8 +278,23 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 
 	ok, err := deps.VerifyPassword(password, user.PasswordHash)
 	if err != nil || !ok {
+		// Auto-lockout: record failure and lock if threshold reached.
+		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil {
+			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
+				deps.MetricInc(deps.Metrics.LockoutTrigger)
+				_ = deps.LockAccount(ctx, user.UserID)
+				deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
+					return map[string]string{
+						"identifier": username,
+						"reason":     "auto_lockout",
+					}
+				})
+				return nil, deps.Errors.AccountLocked
+			}
+		}
+
 		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username, ip); err != nil {
+			if err := deps.IncrementLoginRate(ctx, username); err != nil {
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -292,19 +307,6 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 					}
 				})
 				return nil, deps.Errors.LoginRateLimited
-			}
-		}
-		// Auto-lockout: record failure and lock if threshold reached.
-		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil {
-			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
-				_ = deps.LockAccount(ctx, user.UserID)
-				deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-						"reason":     "auto_lockout",
-					}
-				})
-				return nil, deps.Errors.AccountLocked
 			}
 		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
@@ -695,11 +697,10 @@ func RunIssueLoginSessionTokens(
 		return "", "", deps.Errors.EngineNotReady
 	}
 
-	ip := deps.ClientIPFromContext(ctx)
 	mask, ok := deps.GetRoleMask(user.Role)
 	if !ok {
 		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username, ip); err != nil {
+			if err := deps.IncrementLoginRate(ctx, username); err != nil {
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -818,7 +819,7 @@ func RunIssueLoginSessionTokens(
 	}
 
 	if deps.ResetLoginRate != nil {
-		if err := deps.ResetLoginRate(ctx, username, ip); err != nil {
+		if err := deps.ResetLoginRate(ctx, username); err != nil {
 			deps.MetricInc(deps.Metrics.LoginRateLimited)
 			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, sessionID, deps.Errors.LoginRateLimited, func() map[string]string {
 				return map[string]string{

@@ -14,7 +14,6 @@ type RefreshFailureKind int
 const (
 	RefreshFailureNone RefreshFailureKind = iota
 	RefreshFailureDecode
-	RefreshFailureRateLimited
 	RefreshFailureNextSecret
 	RefreshFailureReuse
 	RefreshFailureSessionNotFound
@@ -35,10 +34,6 @@ type RefreshResult struct {
 	Session      *session.Session
 	AccessToken  string
 	RefreshToken string
-}
-
-type RefreshRateLimiter interface {
-	CheckRefresh(ctx context.Context, sessionID string) error
 }
 
 type RefreshSessionStore interface {
@@ -66,7 +61,6 @@ type RefreshDeps struct {
 	SessionLifetime           func() time.Duration
 	EnableReplayTracking      bool
 	Warn                      func(string, ...any)
-	RateLimiter               RefreshRateLimiter
 	SessionStore              RefreshSessionStore
 	RefreshHashMismatch       error
 	RedisNil                  error
@@ -81,17 +75,6 @@ func RunRefresh(ctx context.Context, refreshToken string, deps RefreshDeps) Refr
 			Failure:  RefreshFailureDecode,
 			Err:      err,
 			TenantID: tenantID,
-		}
-	}
-
-	if deps.RateLimiter != nil {
-		if err := deps.RateLimiter.CheckRefresh(ctx, sessionID); err != nil {
-			return RefreshResult{
-				Failure:   RefreshFailureRateLimited,
-				Err:       err,
-				TenantID:  tenantID,
-				SessionID: sessionID,
-			}
 		}
 	}
 

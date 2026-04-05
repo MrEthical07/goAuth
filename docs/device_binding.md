@@ -97,8 +97,7 @@ Context values (`WithClientIP`, `WithUserAgent`) must be set in an outer middlew
 | Error | Condition |
 |-------|----------|
 | `ErrDeviceBindingRejected` | IP or UA hash mismatch in enforce mode |
-| `ErrDeviceIPMismatch` | IP hash mismatch detected (detect mode — audit only, not an error) |
-| `ErrDeviceUAMismatch` | UA hash mismatch detected (detect mode — audit only, not an error) |
+| No returned error (detect mode) | IP/UA mismatch is emitted as anomaly audit + metrics, but request continues |
 
 ## Flow Ownership
 

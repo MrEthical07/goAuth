@@ -56,12 +56,11 @@ type PasswordResetDeps struct {
 	RequireMFA  bool
 
 	TenantIDFromContext func(context.Context) string
-	ClientIPFromContext func(context.Context) string
 	AccountStatusError  func(uint8) error
 	Now                 func() time.Time
 
-	CheckRequestLimiter func(context.Context, string, string, string) error
-	CheckConfirmLimiter func(context.Context, string, string, string) error
+	CheckRequestLimiter func(context.Context, string, string) error
+	CheckConfirmLimiter func(context.Context, string, string) error
 	MapLimiterError     func(error) error
 	MapStoreError       func(error) error
 	IsStoreNotFound     func(error) bool
@@ -112,8 +111,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 	}
 
 	tenantID := deps.TenantIDFromContext(ctx)
-	ip := deps.ClientIPFromContext(ctx)
-	if err := deps.CheckRequestLimiter(ctx, tenantID, identifier, ip); err != nil {
+	if err := deps.CheckRequestLimiter(ctx, tenantID, identifier); err != nil {
 		mapped := deps.MapLimiterError(err)
 		if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", tenantID, "", mapped, func() map[string]string {
@@ -242,7 +240,7 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 	}
 
 	tenantID := deps.TenantIDFromContext(ctx)
-	if err := deps.CheckConfirmLimiter(ctx, tenantID, resetID, deps.ClientIPFromContext(ctx)); err != nil {
+	if err := deps.CheckConfirmLimiter(ctx, tenantID, resetID); err != nil {
 		mapped := deps.MapLimiterError(err)
 		deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 		if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
@@ -397,9 +395,6 @@ func normalizePasswordResetDeps(deps *PasswordResetDeps) {
 	}
 	if deps.TenantIDFromContext == nil {
 		deps.TenantIDFromContext = func(context.Context) string { return "" }
-	}
-	if deps.ClientIPFromContext == nil {
-		deps.ClientIPFromContext = func(context.Context) string { return "" }
 	}
 	if deps.SleepEnumerationDelay == nil {
 		deps.SleepEnumerationDelay = func(context.Context) error { return nil }

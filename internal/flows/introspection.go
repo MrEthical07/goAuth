@@ -18,7 +18,7 @@ type IntrospectionSessionStore interface {
 }
 
 type IntrospectionRateLimiter interface {
-	GetLoginAttempts(ctx context.Context, identifier string) (int, error)
+	GetLoginAttempts(ctx context.Context, tenantID, identifier string) (int, error)
 }
 
 type IntrospectionDeps struct {
@@ -148,5 +148,9 @@ func RunGetLoginAttempts(ctx context.Context, identifier string, deps Introspect
 	if identifier == "" {
 		return 0, nil
 	}
-	return deps.RateLimiter.GetLoginAttempts(ctx, identifier)
+	tenantID, err := resolveTenantFromContext(ctx, deps)
+	if err != nil {
+		return 0, err
+	}
+	return deps.RateLimiter.GetLoginAttempts(ctx, tenantID, identifier)
 }

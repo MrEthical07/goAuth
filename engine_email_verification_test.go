@@ -17,19 +17,14 @@ import (
 
 func testEmailVerificationConfig(strategy VerificationStrategyType) EmailVerificationConfig {
 	cfg := EmailVerificationConfig{
-		Enabled:                  true,
-		Strategy:                 strategy,
-		VerificationTTL:          15 * time.Minute,
-		MaxAttempts:              5,
-		RequireForLogin:          false,
-		EnableIPThrottle:         true,
-		EnableIdentifierThrottle: true,
-		OTPDigits:                6,
-	}
-
-	if strategy != VerificationOTP {
-		cfg.EnableIPThrottle = false
-		cfg.EnableIdentifierThrottle = false
+		Enabled:                     true,
+		Strategy:                    strategy,
+		VerificationTTL:             15 * time.Minute,
+		MaxAttempts:                 5,
+		RequireForLogin:             false,
+		EnableRequestLimiter:        true,
+		EnableConfirmFailureLimiter: true,
+		OTPDigits:                   6,
 	}
 
 	return cfg
@@ -51,10 +46,10 @@ func newTestEmailVerificationEngine(
 		sessionStore:      session.NewStore(rdb, "as", false, false, 0),
 		verificationStore: stores.NewEmailVerificationStore(rdb, "apv"),
 		verificationLimiter: limiters.NewEmailVerificationLimiter(rdb, limiters.EmailVerificationConfig{
-			EnableIdentifierThrottle: cfg.EnableIdentifierThrottle,
-			EnableIPThrottle:         cfg.EnableIPThrottle,
-			VerificationTTL:          cfg.VerificationTTL,
-			MaxAttempts:              cfg.MaxAttempts,
+			EnableRequestLimiter:        cfg.EnableRequestLimiter,
+			EnableConfirmFailureLimiter: cfg.EnableConfirmFailureLimiter,
+			VerificationTTL:             cfg.VerificationTTL,
+			MaxAttempts:                 cfg.MaxAttempts,
 		}),
 	}
 }
@@ -70,8 +65,8 @@ func verificationLoginConfig(mode ValidationMode) Config {
 	cfg.EmailVerification.VerificationTTL = 15 * time.Minute
 	cfg.EmailVerification.MaxAttempts = 5
 	cfg.EmailVerification.OTPDigits = 6
-	cfg.EmailVerification.EnableIPThrottle = true
-	cfg.EmailVerification.EnableIdentifierThrottle = true
+	cfg.EmailVerification.EnableRequestLimiter = true
+	cfg.EmailVerification.EnableConfirmFailureLimiter = true
 	cfg.EmailVerification.RequireForLogin = true
 	return cfg
 }
@@ -107,7 +102,9 @@ func TestEmailVerificationTokenFlowSuccess(t *testing.T) {
 		byIdentifier: map[string]string{"alice": "u1"},
 	}
 
-	engine := newTestEmailVerificationEngine(t, rdb, up, testEmailVerificationConfig(VerificationToken))
+	cfg := testEmailVerificationConfig(VerificationToken)
+	cfg.MaxAttempts = 32
+	engine := newTestEmailVerificationEngine(t, rdb, up, cfg)
 
 	challenge, err := engine.RequestEmailVerification(ctx, "alice")
 	if err != nil {
@@ -148,8 +145,8 @@ func TestEmailVerificationOTPFlowSuccess(t *testing.T) {
 	}
 
 	cfg := testEmailVerificationConfig(VerificationOTP)
-	cfg.EnableIPThrottle = false
-	cfg.EnableIdentifierThrottle = false
+	cfg.EnableRequestLimiter = false
+	cfg.EnableConfirmFailureLimiter = false
 	engine := newTestEmailVerificationEngine(t, rdb, up, cfg)
 
 	challenge, err := engine.RequestEmailVerification(ctx, "alice")
@@ -213,7 +210,9 @@ func TestEmailVerificationReplayRejected(t *testing.T) {
 		byIdentifier: map[string]string{"alice": "u1"},
 	}
 
-	engine := newTestEmailVerificationEngine(t, rdb, up, testEmailVerificationConfig(VerificationToken))
+	cfg := testEmailVerificationConfig(VerificationToken)
+	cfg.MaxAttempts = 32
+	engine := newTestEmailVerificationEngine(t, rdb, up, cfg)
 
 	challenge, err := engine.RequestEmailVerification(ctx, "alice")
 	if err != nil {
@@ -243,8 +242,8 @@ func TestEmailVerificationAttemptsExceeded(t *testing.T) {
 
 	cfg := testEmailVerificationConfig(VerificationOTP)
 	cfg.MaxAttempts = 2
-	cfg.EnableIPThrottle = false
-	cfg.EnableIdentifierThrottle = false
+	cfg.EnableRequestLimiter = false
+	cfg.EnableConfirmFailureLimiter = false
 	engine := newTestEmailVerificationEngine(t, rdb, up, cfg)
 
 	challenge, err := engine.RequestEmailVerification(ctx, "alice")
@@ -633,8 +632,8 @@ func TestEmailVerificationConfirmByCode(t *testing.T) {
 	}
 
 	cfg := testEmailVerificationConfig(VerificationOTP)
-	cfg.EnableIPThrottle = false
-	cfg.EnableIdentifierThrottle = false
+	cfg.EnableRequestLimiter = false
+	cfg.EnableConfirmFailureLimiter = false
 	engine := newTestEmailVerificationEngine(t, rdb, up, cfg)
 
 	challenge, err := engine.RequestEmailVerification(ctx, "alice")
@@ -711,7 +710,10 @@ func TestEmailVerificationParallelConfirmOnlyOneSucceeds(t *testing.T) {
 		byIdentifier: map[string]string{"alice": "u1"},
 	}
 
-	engine := newTestEmailVerificationEngine(t, rdb, up, testEmailVerificationConfig(VerificationToken))
+	cfg := testEmailVerificationConfig(VerificationToken)
+	// This test validates single-use CAS semantics only; disable confirm limiter noise.
+	cfg.EnableConfirmFailureLimiter = false
+	engine := newTestEmailVerificationEngine(t, rdb, up, cfg)
 
 	challenge, err := engine.RequestEmailVerification(ctx, "alice")
 	if err != nil {
@@ -774,8 +776,8 @@ func TestEmailVerificationChallengeFormat(t *testing.T) {
 			}
 
 			cfg := testEmailVerificationConfig(s.strategy)
-			cfg.EnableIPThrottle = false
-			cfg.EnableIdentifierThrottle = false
+			cfg.EnableRequestLimiter = false
+			cfg.EnableConfirmFailureLimiter = false
 			engine := newTestEmailVerificationEngine(t, rdb, up, cfg)
 
 			challenge, err := engine.RequestEmailVerification(ctx, "alice")

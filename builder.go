@@ -219,32 +219,28 @@ func (b *Builder) Build() (*Engine, error) {
 
 	engine.userProvider = b.userProvider
 	engine.rateLimiter = rate.New(b.redis, rate.Config{
-		EnableIPThrottle:        cfg.Security.EnableIPThrottle,
-		EnableRefreshThrottle:   cfg.Security.EnableRefreshThrottle,
-		MaxLoginAttempts:        cfg.Security.MaxLoginAttempts,
-		LoginCooldownDuration:   cfg.Security.LoginCooldownDuration,
-		MaxRefreshAttempts:      cfg.Security.MaxRefreshAttempts,
-		RefreshCooldownDuration: cfg.Security.RefreshCooldownDuration,
+		EnableLoginFailureLimiter: cfg.Security.EnableLoginFailureLimiter,
+		MaxLoginAttempts:          cfg.Security.MaxLoginAttempts,
+		LoginCooldownDuration:     cfg.Security.LoginCooldownDuration,
 	})
 	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
 	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{
-		EnableIdentifierThrottle: cfg.PasswordReset.EnableIdentifierThrottle,
-		EnableIPThrottle:         cfg.PasswordReset.EnableIPThrottle,
-		ResetTTL:                 cfg.PasswordReset.ResetTTL,
-		MaxAttempts:              cfg.PasswordReset.MaxAttempts,
+		EnableRequestLimiter:        cfg.PasswordReset.EnableRequestLimiter,
+		EnableConfirmFailureLimiter: cfg.PasswordReset.EnableConfirmFailureLimiter,
+		ResetTTL:                    cfg.PasswordReset.ResetTTL,
+		MaxAttempts:                 cfg.PasswordReset.MaxAttempts,
 	})
 	engine.verificationStore = stores.NewEmailVerificationStore(b.redis, "apv")
 	engine.verificationLimiter = limiters.NewEmailVerificationLimiter(b.redis, limiters.EmailVerificationConfig{
-		EnableIdentifierThrottle: cfg.EmailVerification.EnableIdentifierThrottle,
-		EnableIPThrottle:         cfg.EmailVerification.EnableIPThrottle,
-		VerificationTTL:          cfg.EmailVerification.VerificationTTL,
-		MaxAttempts:              cfg.EmailVerification.MaxAttempts,
+		EnableRequestLimiter:        cfg.EmailVerification.EnableRequestLimiter,
+		EnableConfirmFailureLimiter: cfg.EmailVerification.EnableConfirmFailureLimiter,
+		VerificationTTL:             cfg.EmailVerification.VerificationTTL,
+		MaxAttempts:                 cfg.EmailVerification.MaxAttempts,
 	})
 	engine.accountLimiter = limiters.NewAccountCreationLimiter(b.redis, limiters.AccountConfig{
-		EnableIdentifierThrottle: cfg.Account.EnableIdentifierThrottle,
-		EnableIPThrottle:         cfg.Account.EnableIPThrottle,
-		MaxAttempts:              cfg.Account.AccountCreationMaxAttempts,
-		Cooldown:                 cfg.Account.AccountCreationCooldown,
+		EnableLimiter: cfg.Account.EnableCreationLimiter,
+		MaxAttempts:   cfg.Account.AccountCreationMaxAttempts,
+		Cooldown:      cfg.Account.AccountCreationCooldown,
 	})
 	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis, limiters.TOTPLimiterConfig{
 		// Direct TOTP verification paths share the MFA attempt budget.

@@ -20,7 +20,6 @@ const (
 	MetricRefreshFailure
 	MetricRefreshReuseDetected
 	MetricReplayDetected
-	MetricRefreshRateLimited
 	MetricDeviceIPMismatch
 	MetricDeviceUAMismatch
 	MetricDeviceRejected
@@ -35,6 +34,10 @@ const (
 	MetricBackupCodeFailed
 	MetricBackupCodeRegenerated
 	MetricRateLimitHit
+	MetricLimiterCheck
+	MetricLimiterTrigger
+	MetricLimiterFailOpen
+	MetricLockoutTrigger
 	MetricSessionCreated
 	MetricSessionInvalidated
 	MetricLogout

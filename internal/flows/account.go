@@ -83,9 +83,8 @@ type AccountDeps struct {
 
 	TenantIDFromContext         func(context.Context) string
 	TenantIDFromContextExplicit func(context.Context) (string, bool)
-	ClientIPFromContext         func(context.Context) string
 
-	EnforceAccountLimiter func(context.Context, string, string, string) error
+	EnforceAccountLimiter func(context.Context, string, string) error
 	MapLimiterError       func(error) error
 	RoleExists            func(string) bool
 
@@ -190,7 +189,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 		return nil, deps.Errors.AccountRoleInvalid
 	}
 
-	if err := deps.EnforceAccountLimiter(ctx, tenantID, req.Identifier, deps.ClientIPFromContext(ctx)); err != nil {
+	if err := deps.EnforceAccountLimiter(ctx, tenantID, req.Identifier); err != nil {
 		mapped := deps.MapLimiterError(err)
 		if errors.Is(mapped, deps.Errors.AccountCreationRateLimited) {
 			deps.MetricInc(deps.Metrics.AccountCreationRateLimited)
@@ -392,9 +391,6 @@ func normalizeAccountDeps(deps *AccountDeps) {
 	}
 	if deps.TenantIDFromContextExplicit == nil {
 		deps.TenantIDFromContextExplicit = func(context.Context) (string, bool) { return "", false }
-	}
-	if deps.ClientIPFromContext == nil {
-		deps.ClientIPFromContext = func(context.Context) string { return "" }
 	}
 	if deps.MapLimiterError == nil {
 		deps.MapLimiterError = func(error) error { return deps.Errors.AccountCreationUnavailable }

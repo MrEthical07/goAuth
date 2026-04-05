@@ -56,8 +56,7 @@ func (c *Config) Lint() LintResult
 | `jwtonly_device_binding` | HIGH | JWT-only mode + device binding enabled |
 | `jwtonly_single_session` | HIGH | JWT-only mode + single-session enforcement |
 | `jwtonly_perm_version` | WARN | JWT-only mode + permission version check |
-| `rate_limits_disabled` | HIGH | Both IP + refresh throttle off |
-| `ip_throttle_disabled` | WARN | IP throttle off |
+| `login_failure_limiter_disabled` | HIGH | `Security.EnableLoginFailureLimiter == false` |
 | `session_lifetime_long` | WARN | Absolute session lifetime > 30 days |
 | `session_shorter_than_refresh` | HIGH | Session lifetime < refresh TTL |
 | `not_production_mode` | INFO | Production mode not enabled |
@@ -65,7 +64,7 @@ func (c *Config) Lint() LintResult
 | `totp_skew_wide` | WARN | TOTP skew > 1 |
 | `argon2_memory_low` | WARN | Argon2 memory < 64 MB |
 
-Summary: 3 INFO, 9 WARN, 4 HIGH.
+Summary: 3 INFO, 8 WARN, 4 HIGH.
 
 ## Examples
 

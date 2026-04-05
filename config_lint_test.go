@@ -8,16 +8,14 @@ import (
 func TestLint_DefaultConfigNoWarnings(t *testing.T) {
 	// The default config is intentionally non-production (ProductionMode=false),
 	// so it will have some warnings. But it should NOT have "dangerous" warnings
-	// like disabled rate limits or contradictory mode settings.
+	// like disabled login-failure limiting or contradictory mode settings.
 	cfg := defaultConfig()
 	ws := cfg.Lint()
 
 	codes := ws.Codes()
 
-	// Default config has refresh throttle enabled but not IP throttle,
-	// so we expect ip_throttle_disabled but NOT rate_limits_disabled.
-	if containsCode(codes, "rate_limits_disabled") {
-		t.Error("default config should not have rate_limits_disabled (refresh throttle is on)")
+	if containsCode(codes, "login_failure_limiter_disabled") {
+		t.Error("default config should not have login_failure_limiter_disabled")
 	}
 }
 
@@ -31,7 +29,7 @@ func TestLint_HighSecurityConfigMinimalWarnings(t *testing.T) {
 		"leeway_large",
 		"access_ttl_long",
 		"refresh_ttl_long",
-		"rate_limits_disabled",
+		"login_failure_limiter_disabled",
 		"jwtonly_device_binding",
 		"session_shorter_than_refresh",
 	}
@@ -81,13 +79,33 @@ func TestLint_JWTOnlyWithDeviceBinding(t *testing.T) {
 	}
 }
 
-func TestLint_AllRateLimitsDisabled(t *testing.T) {
+func TestLint_LoginFailureLimiterDisabled(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.Security.EnableIPThrottle = false
-	cfg.Security.EnableRefreshThrottle = false
+	cfg.Security.EnableLoginFailureLimiter = false
 	ws := cfg.Lint()
-	if !containsCode(ws.Codes(), "rate_limits_disabled") {
-		t.Error("expected rate_limits_disabled warning")
+	if !containsCode(ws.Codes(), "login_failure_limiter_disabled") {
+		t.Error("expected login_failure_limiter_disabled warning")
+	}
+}
+
+func TestLint_LoginFailureLimiterDisabledIsHigh(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Security.EnableLoginFailureLimiter = false
+	ws := cfg.Lint()
+
+	found := false
+	for _, w := range ws {
+		if w.Code != "login_failure_limiter_disabled" {
+			continue
+		}
+		found = true
+		if w.Severity != LintHigh {
+			t.Errorf("login_failure_limiter_disabled should be HIGH, got %s", w.Severity)
+		}
+	}
+
+	if !found {
+		t.Fatal("expected login_failure_limiter_disabled warning")
 	}
 }
 

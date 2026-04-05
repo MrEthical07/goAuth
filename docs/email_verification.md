@@ -51,7 +51,7 @@ func (e *Engine) ConfirmEmailVerificationCode(ctx context.Context, verificationI
 |------------------------------------|------------------------------------------------|
 | `ErrEmailVerificationDisabled`     | Feature not enabled in config                  |
 | `ErrEmailVerificationInvalid`      | Challenge expired, invalid, already used, or malformed |
-| `ErrEmailVerificationRateLimited`  | Too many requests (IP or identifier throttle)  |
+| `ErrEmailVerificationRateLimited`  | Too many requests or confirm failures (limiter triggered) |
 | `ErrEmailVerificationUnavailable`  | Backend (Redis) unavailable                    |
 | `ErrEmailVerificationAttempts`     | Max attempts exceeded for this verification    |
 
@@ -83,14 +83,14 @@ tenant:verificationID:code
 
 ```go
 type EmailVerificationConfig struct {
-    Enabled                  bool
-    Strategy                 VerificationStrategyType
-    VerificationTTL          time.Duration
-    MaxAttempts              int
-    RequireForLogin          bool             // Block login until verified
-    EnableIPThrottle         bool
-    EnableIdentifierThrottle bool
-    OTPDigits                int              // 6–10 digits (OTP strategy only)
+  Enabled                     bool
+  Strategy                    VerificationStrategyType
+  VerificationTTL             time.Duration
+  MaxAttempts                 int
+  RequireForLogin             bool             // Block login until verified
+  EnableRequestLimiter        bool
+  EnableConfirmFailureLimiter bool
+  OTPDigits                   int              // 6–10 digits (OTP strategy only)
 }
 ```
 
@@ -136,7 +136,7 @@ The verification store uses a Lua script for the `Consume` operation, providing:
 - Challenge tokens are hashed (SHA-256) before storage — raw secrets never persist.
 - Challenges are **single-use**: consumed and deleted on success.
 - `RequireForLogin = true` blocks login with `ErrAccountUnverified` until verified.
-- Rate limiting on both request and confirm paths (IP and identifier throttles).
+- Rate limiting is split into request and confirm-failure limiter paths.
 - OTP mode enforces stricter limits in production mode.
 
 ## Examples

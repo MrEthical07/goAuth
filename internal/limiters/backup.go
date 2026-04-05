@@ -34,7 +34,7 @@ func NewBackupCodeLimiter(redisClient redis.UniversalClient, cfg BackupCodeConfi
 }
 
 func (l *BackupCodeLimiter) key(tenantID, userID string) string {
-	return "abk:" + normalizeTenantID(tenantID) + ":" + userID
+	return "rl:backup:fail:" + tenantID + ":" + userID
 }
 
 func (l *BackupCodeLimiter) Check(ctx context.Context, tenantID, userID string) error {

@@ -348,12 +348,9 @@ func newTestEngine(t *testing.T, rdb *redis.Client, up UserProvider, hasher *pas
 		passwordHash: hasher,
 		sessionStore: session.NewStore(rdb, "as", false, false, 0),
 		rateLimiter: rate.New(rdb, rate.Config{
-			EnableIPThrottle:        false,
-			EnableRefreshThrottle:   true,
-			MaxLoginAttempts:        5,
-			LoginCooldownDuration:   time.Minute,
-			MaxRefreshAttempts:      20,
-			RefreshCooldownDuration: time.Minute,
+			EnableLoginFailureLimiter: true,
+			MaxLoginAttempts:          5,
+			LoginCooldownDuration:     time.Minute,
 		}),
 	}
 }
@@ -394,7 +391,7 @@ func TestChangePasswordSuccessInvalidatesSessionsAndResetsLimiter(t *testing.T) 
 	if err := rdb.Set(ctx, "as:0:s2", "v", time.Hour).Err(); err != nil {
 		t.Fatalf("seed session s2 failed: %v", err)
 	}
-	if err := rdb.Set(ctx, "al:alice", "3", time.Hour).Err(); err != nil {
+	if err := rdb.Set(ctx, "rl:login:fail:0:alice", "3", time.Hour).Err(); err != nil {
 		t.Fatalf("seed limiter failed: %v", err)
 	}
 
@@ -418,7 +415,7 @@ func TestChangePasswordSuccessInvalidatesSessionsAndResetsLimiter(t *testing.T) 
 	if rdb.Exists(ctx, "au:0:u1").Val() != 0 {
 		t.Fatal("expected user session index to be deleted")
 	}
-	if rdb.Exists(ctx, "al:alice").Val() != 0 {
+	if rdb.Exists(ctx, "rl:login:fail:0:alice").Val() != 0 {
 		t.Fatal("expected login limiter key to be reset")
 	}
 }

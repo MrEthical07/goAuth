@@ -129,11 +129,8 @@ Permission checks at runtime are fixed-cost: a lock-free permission index lookup
 
 | Error | Condition |
 |-------|----------|
-| `ErrRegistryFrozen` | Attempt to register permissions after `Freeze()` |
-| `ErrPermissionNotFound` | Permission name not in registry |
-| `ErrMaxBitsExceeded` | Registered permissions exceed `maxBits` capacity |
-| `ErrInvalidMaxBits` | `maxBits` not one of 64, 128, 256, 512 |
-| `ErrRoleNotFound` | Role name not registered in role manager |
+| `ErrPermissionDenied` | Engine-level authorization failure when required permission is missing |
+| Plain `error` values from `permission` package (non-sentinel) | Build-time registry/role failures such as `registry frozen`, `invalid maxBits`, `permission not registered: <name>`, `role manager frozen` |
 
 ## Flow Ownership
 

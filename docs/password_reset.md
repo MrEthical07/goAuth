@@ -37,13 +37,13 @@ Password reset provides a secure lifecycle for resetting user passwords via toke
 
 ```go
 type PasswordResetConfig struct {
-    Enabled                  bool
-    Strategy                 ResetStrategyType
-    ResetTTL                 time.Duration    // Challenge lifetime
-    MaxAttempts              int              // Max confirmation attempts
-    EnableIPThrottle         bool
-    EnableIdentifierThrottle bool
-    OTPDigits                int              // Digits for OTP strategy
+  Enabled                     bool
+  Strategy                    ResetStrategyType
+  ResetTTL                    time.Duration    // Challenge lifetime
+  MaxAttempts                 int              // Max confirmation attempts
+  EnableRequestLimiter        bool
+  EnableConfirmFailureLimiter bool
+  OTPDigits                   int              // Digits for OTP strategy
 }
 ```
 
