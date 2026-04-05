@@ -2586,7 +2586,13 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		return nil
 	}
 	deps.ResetLoginRate = func(ctx context.Context, identifier string) error {
-		return e.rateLimiter.ResetLogin(ctx, tenantIDFromContext(ctx), identifier)
+		tenantID := tenantIDFromContext(ctx)
+		err := e.rateLimiter.ResetLogin(ctx, tenantID, identifier)
+		if err == nil {
+			return nil
+		}
+		e.emitLimiterFailOpen(ctx, "login", tenantID, err)
+		return nil
 	}
 }
 
@@ -2998,13 +3004,6 @@ func isNumericString(v string) bool {
 	return true
 }
 
-// GenerateTOTPSetup generates a new TOTP secret for the user and returns
-// a [TOTPSetup] containing the base32-encoded secret and a QR code URL.
-// The secret is not persisted until [Engine.ConfirmTOTPSetup] succeeds.
-//
-//	Flow:        TOTP Setup
-//	Docs:        docs/flows.md#totp-setup, docs/mfa.md
-
 func (e *Engine) configurePasswordResetLimiterDeps(deps *internalflows.PasswordResetDeps, cfg Config) {
 	deps.CheckRequestLimiter = func(context.Context, string, string) error { return nil }
 	deps.CheckConfirmLimiter = func(context.Context, string, string) error { return nil }
@@ -3038,7 +3037,14 @@ func (e *Engine) configurePasswordResetLimiterDeps(deps *internalflows.PasswordR
 	}
 }
 
+// GenerateTOTPSetup generates a new TOTP secret for the user and returns
+// a [TOTPSetup] containing the base32-encoded secret and a QR code URL.
+// The secret is not persisted until [Engine.ConfirmTOTPSetup] succeeds.
+//
 // Security:    requires active account status.
+//
+//	Flow:        TOTP Setup
+//	Docs:        docs/flows.md#totp-setup, docs/mfa.md
 func (e *Engine) GenerateTOTPSetup(ctx context.Context, userID string) (*TOTPSetup, error) {
 	e.ensureFlowDeps()
 	setup, err := e.flows.GenerateTOTPSetup(ctx, userID)

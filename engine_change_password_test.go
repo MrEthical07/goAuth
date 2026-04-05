@@ -391,7 +391,7 @@ func TestChangePasswordSuccessInvalidatesSessionsAndResetsLimiter(t *testing.T) 
 	if err := rdb.Set(ctx, "as:0:s2", "v", time.Hour).Err(); err != nil {
 		t.Fatalf("seed session s2 failed: %v", err)
 	}
-	if err := rdb.Set(ctx, "rl:login:fail:0:alice", "3", time.Hour).Err(); err != nil {
+	if err := rdb.Set(ctx, "rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:2bd806c97f0e00af1a1fc3328fa763a9269723c8db8fac4f93af71db186d6e90", "3", time.Hour).Err(); err != nil {
 		t.Fatalf("seed limiter failed: %v", err)
 	}
 
@@ -415,7 +415,7 @@ func TestChangePasswordSuccessInvalidatesSessionsAndResetsLimiter(t *testing.T) 
 	if rdb.Exists(ctx, "au:0:u1").Val() != 0 {
 		t.Fatal("expected user session index to be deleted")
 	}
-	if rdb.Exists(ctx, "rl:login:fail:0:alice").Val() != 0 {
+	if rdb.Exists(ctx, "rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:2bd806c97f0e00af1a1fc3328fa763a9269723c8db8fac4f93af71db186d6e90").Val() != 0 {
 		t.Fatal("expected login limiter key to be reset")
 	}
 }

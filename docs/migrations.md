@@ -14,17 +14,17 @@ Apply the following renames/removals:
 | `Security.EnableRefreshThrottle` | removed | Refresh throttle path removed in v0.3.0. |
 | `Security.MaxRefreshAttempts` | removed | No replacement. |
 | `Security.RefreshCooldownDuration` | removed | No replacement. |
-| `PasswordReset.EnableIPThrottle` | `PasswordReset.EnableRequestLimiter` | Request-phase limiter toggle. |
-| `PasswordReset.EnableIdentifierThrottle` | `PasswordReset.EnableConfirmFailureLimiter` | Confirm-failure limiter toggle. |
-| `EmailVerification.EnableIPThrottle` | `EmailVerification.EnableRequestLimiter` | Request-phase limiter toggle. |
-| `EmailVerification.EnableIdentifierThrottle` | `EmailVerification.EnableConfirmFailureLimiter` | Confirm-failure limiter toggle. |
+| `PasswordReset.EnableIPThrottle` | `PasswordReset.EnableRequestLimiter` | New field is request-phase specific. Legacy password-reset throttles were not phase-specific, so when migrating an enabled flow, you must enable both `EnableRequestLimiter` and `EnableConfirmFailureLimiter` if either legacy throttle had been enabled. |
+| `PasswordReset.EnableIdentifierThrottle` | `PasswordReset.EnableConfirmFailureLimiter` | New field is confirm-failure-phase specific. Legacy password-reset throttles were not phase-specific, so when migrating an enabled flow, you must enable both `EnableRequestLimiter` and `EnableConfirmFailureLimiter` if either legacy throttle had been enabled. |
+| `EmailVerification.EnableIPThrottle` | `EmailVerification.EnableRequestLimiter` | New field is request-phase specific. Legacy email-verification throttles were not phase-specific, so when migrating an enabled flow, you must enable both `EnableRequestLimiter` and `EnableConfirmFailureLimiter` if either legacy throttle had been enabled. |
+| `EmailVerification.EnableIdentifierThrottle` | `EmailVerification.EnableConfirmFailureLimiter` | New field is confirm-failure-phase specific. Legacy email-verification throttles were not phase-specific, so when migrating an enabled flow, you must enable both `EnableRequestLimiter` and `EnableConfirmFailureLimiter` if either legacy throttle had been enabled. |
 | `Account.EnableIPThrottle` | `Account.EnableCreationLimiter` | Account creation limiter toggle. |
 | `Account.EnableIdentifierThrottle` | removed | Covered by `EnableCreationLimiter`. |
 
 Validation behavior is stricter for enabled reset/verification flows:
 
-- `PasswordReset.EnableRequestLimiter` and `PasswordReset.EnableConfirmFailureLimiter` must both be `true` when password reset is enabled.
-- `EmailVerification.EnableRequestLimiter` and `EmailVerification.EnableConfirmFailureLimiter` must both be `true` when email verification is enabled.
+- `PasswordReset.EnableRequestLimiter` and `PasswordReset.EnableConfirmFailureLimiter` must both be `true` when password reset is enabled; do not treat the legacy throttle fields as separate per-phase opt-ins during migration.
+- `EmailVerification.EnableRequestLimiter` and `EmailVerification.EnableConfirmFailureLimiter` must both be `true` when email verification is enabled; do not treat the legacy throttle fields as separate per-phase opt-ins during migration.
 
 ### 2. Error Handling Migration
 
@@ -57,6 +57,8 @@ Common examples:
 - `rl:verify:confirm:fail:{tenant}:{verificationID}`
 - `rl:totp:fail:{tenant}:{userID}`
 - `rl:backup:fail:{tenant}:{userID}`
+
+Where all dynamic segments (`{tenant}`, `{identifier}`, `{userID}`, `{resetID}`, `{verificationID}`, etc.) are SHA-256 hashed and hex-encoded, so keys have a fixed-length, collision-free format regardless of the input value.
 
 Legacy limiter keys are safe to leave in Redis because they are short-lived counters, but can be removed during maintenance windows if desired.
 
