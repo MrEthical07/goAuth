@@ -1,6 +1,6 @@
 module github.com/MrEthical07/goAuth
 
-go 1.24.0
+go 1.25.0
 
 toolchain go1.26.0
 
@@ -11,7 +11,7 @@ require (
 	github.com/redis/go-redis/v9 v9.17.3
 	go.opentelemetry.io/otel/metric v1.41.0
 	go.opentelemetry.io/otel/sdk/metric v1.40.0
-	golang.org/x/crypto v0.48.0
+	golang.org/x/crypto v0.52.0
 )
 
 require (
@@ -24,5 +24,5 @@ require (
 	go.opentelemetry.io/otel v1.41.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 )
