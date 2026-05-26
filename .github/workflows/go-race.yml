@@ -17,10 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         go-version:
-          - "1.24.x"
+          - "1.25.x"
           - "1.26.x"
         include:
-          - go-version: "1.24.x"
+          - go-version: "1.25.x"
             run_extended: false
           - go-version: "1.26.x"
             run_extended: true
@@ -30,10 +30,12 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
           check-latest: true
@@ -131,7 +133,7 @@ jobs:
           go test -fuzz=FuzzJWTParseAccess -fuzztime=30s ./jwt/
 
       - name: Run perf sanity
-        if: matrix.go-version == '1.24.x'
+        if: matrix.go-version == '1.25.x'
         run: bash security/run_perf_sanity.sh
 
       - name: Install static analysis tools
@@ -164,12 +166,14 @@ jobs:
           - macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.26.x"
+          go-version: "1.25.x"
           check-latest: true
 
       - name: Run race tests
