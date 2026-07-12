@@ -38,6 +38,7 @@ var expectedEngineBoundaryMethods = map[string]struct{}{
 	"LockAccount":                        {},
 	"Login":                              {},
 	"LoginWithBackupCode":                {},
+	"LoginWithOptions":                   {},
 	"LoginWithResult":                    {},
 	"LoginWithTOTP":                      {},
 	"Logout":                             {},

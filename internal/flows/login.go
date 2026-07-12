@@ -9,6 +9,11 @@ import (
 	"github.com/MrEthical07/goAuth/session"
 )
 
+// LoginOptions carries per-login options threaded from the public API.
+type LoginOptions struct {
+	RememberMe bool
+}
+
 // LoginResult is the flow-local login response shape.
 type LoginResult struct {
 	AccessToken  string
@@ -40,10 +45,11 @@ type LoginTOTPRecord struct {
 
 // MFALoginChallengeRecord is a flow-local MFA challenge record.
 type MFALoginChallengeRecord struct {
-	UserID    string
-	TenantID  string
-	ExpiresAt int64
-	Attempts  uint16
+	UserID     string
+	TenantID   string
+	ExpiresAt  int64
+	Attempts   uint16
+	RememberMe bool
 }
 
 // LoginMetrics carries metric IDs needed by login/mfa flows.
@@ -138,8 +144,8 @@ type LoginDeps struct {
 	RecordMFAFailure   func(context.Context, string, int) (bool, error)
 	MapMFAStoreError   func(error) error
 
-	CreateMFALoginChallenge func(context.Context, string, string) (string, error)
-	IssueLoginSessionTokens func(context.Context, string, LoginUserRecord, string) (string, string, error)
+	CreateMFALoginChallenge func(context.Context, string, string, bool) (string, error)
+	IssueLoginSessionTokens func(context.Context, string, LoginUserRecord, string, bool) (string, string, error)
 	EnforceSessionHardening func(context.Context, string, string) error
 
 	GetRoleMask        func(string) (interface{}, bool)
@@ -148,7 +154,7 @@ type LoginDeps struct {
 	HashRefreshSecret  func([32]byte) [32]byte
 	EncodeRefreshToken func(string, [32]byte) (string, error)
 	HashBindingValue   func(string) [32]byte
-	SessionLifetime    func() time.Duration
+	SessionLifetime    func(rememberMe bool) time.Duration
 	SaveSession        func(context.Context, *session.Session, time.Duration) error
 	IssueAccessToken   func(*session.Session) (string, error)
 
@@ -163,7 +169,7 @@ type LoginDeps struct {
 }
 
 // RunLoginWithResult executes the login flow and either issues tokens or returns MFA challenge details.
-func RunLoginWithResult(ctx context.Context, username, password string, deps LoginDeps) (*LoginResult, error) {
+func RunLoginWithResult(ctx context.Context, username, password string, opts LoginOptions, deps LoginDeps) (*LoginResult, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
@@ -396,7 +402,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 			return nil, deps.Errors.MFALoginUnavailable
 		}
 		if record != nil && record.Enabled && len(record.Secret) > 0 {
-			challengeID, err := deps.CreateMFALoginChallenge(ctx, user.UserID, tenantID)
+			challengeID, err := deps.CreateMFALoginChallenge(ctx, user.UserID, tenantID, opts.RememberMe)
 			if err != nil {
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, tenantID, "", err, nil)
@@ -416,7 +422,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, deps Log
 		}
 	}
 
-	access, refresh, err := deps.IssueLoginSessionTokens(ctx, username, user, tenantID)
+	access, refresh, err := deps.IssueLoginSessionTokens(ctx, username, user, tenantID, opts.RememberMe)
 	if err != nil {
 		return nil, err
 	}
@@ -586,7 +592,7 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	if identifier == "" {
 		identifier = user.UserID
 	}
-	access, refresh, err := deps.IssueLoginSessionTokens(ctx, identifier, user, record.TenantID)
+	access, refresh, err := deps.IssueLoginSessionTokens(ctx, identifier, user, record.TenantID, record.RememberMe)
 	if err != nil {
 		deps.MetricInc(deps.Metrics.MFALoginFailure)
 		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", err, nil)
@@ -630,7 +636,9 @@ func runFailLoginMFAAttempt(
 }
 
 // RunCreateMFALoginChallenge creates and stores a new MFA challenge.
-func RunCreateMFALoginChallenge(ctx context.Context, userID, tenantID string, deps LoginDeps) (string, error) {
+// rememberMe is persisted with the challenge so the durable-session choice
+// made at step 1 survives to token issuance after MFA confirmation.
+func RunCreateMFALoginChallenge(ctx context.Context, userID, tenantID string, rememberMe bool, deps LoginDeps) (string, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
@@ -647,10 +655,11 @@ func RunCreateMFALoginChallenge(ctx context.Context, userID, tenantID string, de
 		ttl = 3 * time.Minute
 	}
 	record := &MFALoginChallengeRecord{
-		UserID:    userID,
-		TenantID:  tenantID,
-		ExpiresAt: deps.Now().Add(ttl).Unix(),
-		Attempts:  0,
+		UserID:     userID,
+		TenantID:   tenantID,
+		ExpiresAt:  deps.Now().Add(ttl).Unix(),
+		Attempts:   0,
+		RememberMe: rememberMe,
 	}
 
 	if err := deps.SaveMFAChallenge(ctx, challengeID, record, ttl); err != nil {
@@ -665,6 +674,7 @@ func RunIssueLoginSessionTokens(
 	username string,
 	user LoginUserRecord,
 	tenantID string,
+	rememberMe bool,
 	deps LoginDeps,
 ) (string, string, error) {
 	if deps.Now == nil {
@@ -749,7 +759,7 @@ func RunIssueLoginSessionTokens(
 	}
 
 	now := deps.Now()
-	sessionLifetime := deps.SessionLifetime()
+	sessionLifetime := deps.SessionLifetime(rememberMe)
 	accountVersion := user.AccountVersion
 	if accountVersion == 0 {
 		accountVersion = 1

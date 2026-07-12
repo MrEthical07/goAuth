@@ -794,11 +794,35 @@ func (e *Engine) isRootMask(mask interface{}) bool {
 }
 
 func (e *Engine) sessionLifetime() time.Duration {
-	lifetime := e.config.Session.AbsoluteSessionLifetime
-	if e.config.JWT.RefreshTTL > 0 && e.config.JWT.RefreshTTL < lifetime {
-		return e.config.JWT.RefreshTTL
+	return e.sessionLifetimeFor(false)
+}
+
+// sessionLifetimeFor returns the lifetime a newly created session receives.
+// Remember-me sessions get the full MaxSessionDuration ceiling; default
+// sessions keep the historical min(RefreshTTL, AbsoluteSessionLifetime),
+// additionally bounded by the ceiling when one is configured below it.
+func (e *Engine) sessionLifetimeFor(rememberMe bool) time.Duration {
+	maxLifetime := e.maxSessionLifetime()
+	if rememberMe {
+		return maxLifetime
+	}
+	lifetime := e.config.effectiveDefaultSessionLifetime()
+	if maxLifetime > 0 && maxLifetime < lifetime {
+		return maxLifetime
 	}
 	return lifetime
+}
+
+// maxSessionLifetime returns the absolute session ceiling. It is also the
+// store-level clamp for sliding renewal: per-session lifetimes shorter than
+// the ceiling are carried by Session.ExpiresAt, never by this value.
+func (e *Engine) maxSessionLifetime() time.Duration {
+	if d := e.config.Session.MaxSessionDuration; d > 0 {
+		return d
+	}
+	// Engines built via Builder always have a resolved value; this fallback
+	// covers hand-constructed engines in tests.
+	return e.config.resolvedMaxSessionDuration()
 }
 
 func (e *Engine) initFlowDeps() {
@@ -813,7 +837,7 @@ func (e *Engine) initFlowDeps() {
 			AccountStatusError:        func(status uint8) error { return accountStatusToError(AccountStatus(status)) },
 			ShouldRequireVerified:     e.shouldRequireVerified,
 			PendingVerificationStatus: uint8(AccountPendingVerification),
-			SessionLifetime:           e.sessionLifetime,
+			SessionLifetime:           e.maxSessionLifetime,
 			EnableReplayTracking:      e.config.SessionHardening.EnableReplayTracking,
 			Warn:                      e.warn,
 			SessionStore:              e.sessionStore,
@@ -838,7 +862,7 @@ func (e *Engine) initFlowDeps() {
 			AccountStatusError:        func(status uint8) error { return accountStatusToError(AccountStatus(status)) },
 			ValidateDeviceBinding:     e.validateDeviceBinding,
 			TenantIDFromToken:         tenantIDFromToken,
-			SessionLifetime:           e.sessionLifetime,
+			SessionLifetime:           e.maxSessionLifetime,
 			SessionStore:              e.sessionStore,
 			RedisUnavailable:          session.ErrRedisUnavailable,
 			RedisNil:                  redis.Nil,
@@ -973,9 +997,9 @@ func (e *Engine) CreateAccount(ctx context.Context, req CreateAccountRequest) (*
 	return out, nil
 }
 
-func (e *Engine) issueSessionTokens(ctx context.Context, user UserRecord) (string, string, error) {
+func (e *Engine) issueSessionTokens(ctx context.Context, user UserRecord, rememberMe bool) (string, string, error) {
 	e.ensureFlowDeps()
-	return e.flows.IssueAccountSessionTokens(ctx, toFlowAccountUser(user))
+	return e.flows.IssueAccountSessionTokens(ctx, toFlowAccountUser(user), rememberMe)
 }
 
 func (e *Engine) accountFlowDeps() internalflows.AccountDeps {
@@ -1055,8 +1079,8 @@ func (e *Engine) accountFlowDeps() internalflows.AccountDeps {
 		}
 	}
 	if e != nil {
-		deps.IssueSessionTokens = func(ctx context.Context, user internalflows.AccountUserRecord) (string, string, error) {
-			return e.issueSessionTokens(ctx, fromFlowAccountUser(user))
+		deps.IssueSessionTokens = func(ctx context.Context, user internalflows.AccountUserRecord, rememberMe bool) (string, string, error) {
+			return e.issueSessionTokens(ctx, fromFlowAccountUser(user), rememberMe)
 		}
 	}
 
@@ -1109,7 +1133,7 @@ func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
 		deps.GetRoleMask = e.roleManager.GetMask
 	}
 	if e != nil {
-		deps.SessionLifetime = e.sessionLifetime
+		deps.SessionLifetime = e.sessionLifetimeFor
 		deps.IssueAccessToken = e.issueAccessToken
 	}
 	if e != nil {
@@ -1170,6 +1194,7 @@ func toFlowAccountCreateRequest(req CreateAccountRequest) internalflows.AccountC
 		Identifier: req.Identifier,
 		Password:   req.Password,
 		Role:       req.Role,
+		RememberMe: req.RememberMe,
 	}
 }
 
@@ -2325,8 +2350,26 @@ func toSessionInfo(sess *session.Session) SessionInfo {
 //	Performance: 5–7 Redis commands; Argon2 dominated.
 //	Security:    rate-limited; timing-equalized.
 func (e *Engine) LoginWithResult(ctx context.Context, username, password string) (*LoginResult, error) {
+	return e.LoginWithOptions(ctx, username, password, LoginOptions{})
+}
+
+// LoginWithOptions authenticates like [Engine.LoginWithResult] with
+// additional per-login options. Setting [LoginOptions.RememberMe] issues a
+// durable session that may live up to the configured
+// [Config.Session.MaxSessionDuration]; otherwise the session uses the
+// shorter default lifetime. When MFA is required, the remember-me choice is
+// carried by the challenge and honored by [Engine.ConfirmLoginMFA].
+//
+//	Flow:        Login (with options)
+//	Docs:        docs/flows.md#login-without-mfa, docs/session.md
+//	Performance: identical to LoginWithResult.
+//	Security:    rate-limited; timing-equalized; remember-me only extends
+//	             lifetime up to the validated MaxSessionDuration ceiling.
+func (e *Engine) LoginWithOptions(ctx context.Context, username, password string, opts LoginOptions) (*LoginResult, error) {
 	e.ensureFlowDeps()
-	result, err := e.flows.LoginWithResult(ctx, username, password)
+	result, err := e.flows.LoginWithResult(ctx, username, password, internalflows.LoginOptions{
+		RememberMe: opts.RememberMe,
+	})
 	if err != nil {
 		return nil, mapToAuthError(err)
 	}
@@ -2363,9 +2406,9 @@ func (e *Engine) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code,
 	return fromFlowLoginResult(result), nil
 }
 
-func (e *Engine) createMFALoginChallenge(ctx context.Context, userID, tenantID string) (string, error) {
+func (e *Engine) createMFALoginChallenge(ctx context.Context, userID, tenantID string, rememberMe bool) (string, error) {
 	e.ensureFlowDeps()
-	return e.flows.CreateMFALoginChallenge(ctx, userID, tenantID)
+	return e.flows.CreateMFALoginChallenge(ctx, userID, tenantID, rememberMe)
 }
 
 func (e *Engine) issueLoginSessionTokensForResult(
@@ -2373,9 +2416,10 @@ func (e *Engine) issueLoginSessionTokensForResult(
 	username string,
 	user UserRecord,
 	tenantID string,
+	rememberMe bool,
 ) (string, string, error) {
 	e.ensureFlowDeps()
-	return e.flows.IssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID)
+	return e.flows.IssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID, rememberMe)
 }
 
 func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
@@ -2500,8 +2544,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	if e != nil {
 		deps.VerifyBackupCodeInTenant = e.VerifyBackupCodeInTenant
 		deps.CreateMFALoginChallenge = e.createMFALoginChallenge
-		deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user internalflows.LoginUserRecord, tenantID string) (string, string, error) {
-			return e.issueLoginSessionTokensForResult(ctx, username, fromFlowLoginUser(user), tenantID)
+		deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user internalflows.LoginUserRecord, tenantID string, rememberMe bool) (string, string, error) {
+			return e.issueLoginSessionTokensForResult(ctx, username, fromFlowLoginUser(user), tenantID, rememberMe)
 		}
 		deps.EnforceSessionHardening = e.enforceSessionHardeningOnLogin
 	}
@@ -2512,18 +2556,20 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 				return nil, err
 			}
 			return &internalflows.MFALoginChallengeRecord{
-				UserID:    record.UserID,
-				TenantID:  record.TenantID,
-				ExpiresAt: record.ExpiresAt,
-				Attempts:  record.Attempts,
+				UserID:     record.UserID,
+				TenantID:   record.TenantID,
+				ExpiresAt:  record.ExpiresAt,
+				Attempts:   record.Attempts,
+				RememberMe: record.RememberMe,
 			}, nil
 		}
 		deps.SaveMFAChallenge = func(ctx context.Context, challengeID string, record *internalflows.MFALoginChallengeRecord, ttl time.Duration) error {
 			return e.mfaLoginStore.Save(ctx, challengeID, &stores.MFALoginChallenge{
-				UserID:    record.UserID,
-				TenantID:  record.TenantID,
-				ExpiresAt: record.ExpiresAt,
-				Attempts:  record.Attempts,
+				UserID:     record.UserID,
+				TenantID:   record.TenantID,
+				ExpiresAt:  record.ExpiresAt,
+				Attempts:   record.Attempts,
+				RememberMe: record.RememberMe,
 			}, ttl)
 		}
 		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete
@@ -2545,7 +2591,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	deps.EncodeRefreshToken = internal.EncodeRefreshToken
 	deps.HashBindingValue = internal.HashBindingValue
 	if e != nil {
-		deps.SessionLifetime = e.sessionLifetime
+		deps.SessionLifetime = e.sessionLifetimeFor
 		deps.IssueAccessToken = e.issueAccessToken
 	}
 	if e != nil {

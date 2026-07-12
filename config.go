@@ -75,10 +75,21 @@ type SessionConfig struct {
 	RedisPrefix             string
 	SlidingExpiration       bool
 	AbsoluteSessionLifetime time.Duration
-	JitterEnabled           bool
-	JitterRange             time.Duration
-	MaxSessionSize          int
-	SessionEncoding         string // "binary" (default) or "msgpack"
+	// MaxSessionDuration is the absolute ceiling for any session's lifetime.
+	// Remember-me sessions (see LoginOptions) live up to this value; sliding
+	// renewal can never extend a session beyond it. Zero means unset: the
+	// ceiling is resolved at Build time to a per-validation-mode default
+	// (ModeStrict → 24h, ModeHybrid/ModeJWTOnly → 7d), raised if needed so it
+	// never falls below the effective default session lifetime
+	// (min(RefreshTTL, AbsoluteSessionLifetime)). When set explicitly, it
+	// also caps non-remember-me sessions.
+	//
+	//	Docs: docs/session.md, docs/config.md
+	MaxSessionDuration time.Duration
+	JitterEnabled      bool
+	JitterRange        time.Duration
+	MaxSessionSize     int
+	SessionEncoding    string // "binary" (default) or "msgpack"
 }
 
 /*
@@ -620,6 +631,51 @@ func cloneBytes(b []byte) []byte {
 
 /*
 ====================================
+SESSION LIFETIME RESOLUTION
+====================================
+*/
+
+const (
+	// maxSessionDurationDefaultStrict is the fallback session ceiling for ModeStrict.
+	maxSessionDurationDefaultStrict = 24 * time.Hour
+	// maxSessionDurationDefault is the fallback session ceiling for ModeHybrid/ModeJWTOnly.
+	maxSessionDurationDefault = 7 * 24 * time.Hour
+	// minMaxSessionDuration is the smallest accepted explicit MaxSessionDuration.
+	minMaxSessionDuration = time.Minute
+)
+
+// effectiveDefaultSessionLifetime is the lifetime a non-remember-me session
+// receives before the MaxSessionDuration ceiling is applied:
+// min(RefreshTTL, AbsoluteSessionLifetime).
+func (c *Config) effectiveDefaultSessionLifetime() time.Duration {
+	lifetime := c.Session.AbsoluteSessionLifetime
+	if c.JWT.RefreshTTL > 0 && c.JWT.RefreshTTL < lifetime {
+		return c.JWT.RefreshTTL
+	}
+	return lifetime
+}
+
+// resolvedMaxSessionDuration returns the effective absolute session ceiling.
+// An explicit MaxSessionDuration wins. When unset, the per-mode default
+// (ModeStrict → 24h, others → 7d) applies, raised to the effective default
+// session lifetime when that is longer — otherwise upgrading would silently
+// shorten sessions for configs that predate this field.
+func (c *Config) resolvedMaxSessionDuration() time.Duration {
+	if c.Session.MaxSessionDuration > 0 {
+		return c.Session.MaxSessionDuration
+	}
+	def := maxSessionDurationDefault
+	if c.ValidationMode == ModeStrict {
+		def = maxSessionDurationDefaultStrict
+	}
+	if base := c.effectiveDefaultSessionLifetime(); base > def {
+		return base
+	}
+	return def
+}
+
+/*
+====================================
 VALIDATION
 ====================================
 */
@@ -673,6 +729,13 @@ func (c *Config) Validate() error {
 
 	if c.Session.AbsoluteSessionLifetime <= 0 {
 		return errors.New("Session AbsoluteSessionLifetime must be > 0")
+	}
+
+	if c.Session.MaxSessionDuration < 0 {
+		return errors.New("Session MaxSessionDuration must be >= 0 (0 = unset, resolved at build)")
+	}
+	if c.Session.MaxSessionDuration > 0 && c.Session.MaxSessionDuration < minMaxSessionDuration {
+		return errors.New("Session MaxSessionDuration must be >= 1m when set")
 	}
 
 	if c.Session.JitterRange < 0 {
@@ -1156,6 +1219,16 @@ func (c *Config) Lint() LintResult {
 	if c.Session.AbsoluteSessionLifetime < c.JWT.RefreshTTL {
 		warn(LintHigh, "session_shorter_than_refresh",
 			"AbsoluteSessionLifetime < RefreshTTL; sessions will expire before refresh tokens, causing unexpected refresh failures")
+	}
+
+	if c.Session.MaxSessionDuration > 0 && c.Session.MaxSessionDuration < c.effectiveDefaultSessionLifetime() {
+		warn(LintWarn, "max_session_duration_caps_default",
+			"MaxSessionDuration < min(RefreshTTL, AbsoluteSessionLifetime); ALL sessions (not just remember-me) will be capped at MaxSessionDuration")
+	}
+
+	if c.resolvedMaxSessionDuration() > 30*24*time.Hour {
+		warn(LintWarn, "max_session_duration_long",
+			"Effective MaxSessionDuration > 30d keeps remember-me sessions alive unusually long; consider a shorter ceiling")
 	}
 
 	// --- Production readiness ---

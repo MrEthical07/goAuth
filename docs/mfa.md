@@ -96,6 +96,11 @@ if result.MFARequired {
 }
 ```
 
+A remember-me login (`LoginWithOptions` with `LoginOptions{RememberMe: true}`)
+stores the flag with the MFA challenge, so the session issued by
+`ConfirmLoginMFA` is durable without any change to the confirm call — see
+[session.md](session.md#session-lifetimes--remember-me).
+
 ## Security Notes
 
 - TOTP secrets are 20-byte random values from `crypto/rand`.

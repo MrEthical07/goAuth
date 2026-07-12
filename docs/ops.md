@@ -11,6 +11,7 @@ Production-readiness checklist and recommended operational settings for goAuth.
 | `JWT.AccessTTL` | **5 min** | 1–15 min | Short-lived tokens limit exposure window. Production mode enforces ≤ 15 min. |
 | `JWT.RefreshTTL` | **7 days** | 1–30 days | Matches session lifetime. HighSecurity preset uses 24 h. |
 | `Session.AbsoluteSessionLifetime` | **7 days** | 1–30 days | Should match or exceed `RefreshTTL`. |
+| `Session.MaxSessionDuration` | **unset** (mode default) | 1–30 days | Absolute session ceiling; governs remember-me. Unset resolves to 24 h (Strict) / 7 d (Hybrid, JWTOnly), never below the default lifetime. |
 | `TOTP.MFALoginChallengeTTL` | **3 min** | 1–5 min | MFA challenge window must be tight. |
 | `PasswordReset.ResetTTL` | **15 min** | 5–15 min | OTP mode enforces ≤ 15 min. |
 

@@ -438,7 +438,7 @@ func TestEmailVerificationStrictModeBlocksPendingAccessImmediately(t *testing.T)
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
-	access, _, err := engine.issueSessionTokens(context.Background(), pendingUser)
+	access, _, err := engine.issueSessionTokens(context.Background(), pendingUser, false)
 	if err != nil {
 		t.Fatalf("issueSessionTokens failed: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestEmailVerificationJWTOnlyAllowsPendingUntilAccessTTL(t *testing.T) {
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
-	access, _, err := engine.issueSessionTokens(context.Background(), pendingUser)
+	access, _, err := engine.issueSessionTokens(context.Background(), pendingUser, false)
 	if err != nil {
 		t.Fatalf("issueSessionTokens failed: %v", err)
 	}

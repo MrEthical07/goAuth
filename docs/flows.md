@@ -49,7 +49,12 @@ See [error-model.md](error-model.md) for the complete category, code, and sentin
 
 ## Login (without MFA) {#login-without-mfa}
 
-**Entry points:** `Engine.Login`, `Engine.LoginWithResult`
+**Entry points:** `Engine.Login`, `Engine.LoginWithResult`, `Engine.LoginWithOptions`
+
+`LoginWithOptions` accepts `LoginOptions{RememberMe: true}` to request a durable
+session: the session is created with the `Config.Session.MaxSessionDuration`
+ceiling instead of the shorter default lifetime
+(`min(RefreshTTL, AbsoluteSessionLifetime)`). All other steps are identical.
 
 ### Steps
 
@@ -153,7 +158,8 @@ access, refresh, err := engine.LoginWithTOTP(ctx, "alice@example.com", "password
 3. **Expiry check** — reject if challenge TTL elapsed (`ErrMFALoginExpired`).
 4. **Code verify** — TOTP or backup code depending on `mfaType`.
 5. **Challenge consume** — `MFALoginChallengeStore.Delete`.
-6. **Session creation** — same as Login steps 8–15.
+6. **Session creation** — same as Login steps 8–15. The remember-me flag stored
+   with the challenge (from `LoginWithOptions`) selects the session lifetime.
 
 ### Modules
 

@@ -150,6 +150,19 @@ type TOTPRecord struct {
 	LastUsedCounter int64
 }
 
+// LoginOptions carries per-login options for [Engine.LoginWithOptions].
+//
+// RememberMe requests a durable session that may live up to
+// [Config.Session.MaxSessionDuration] (or its per-mode default). When false,
+// the session uses the shorter default lifetime. The flag survives the MFA
+// hop: a challenge started via LoginWithOptions keeps it through
+// [Engine.ConfirmLoginMFA].
+//
+//	Docs: docs/session.md, docs/flows.md#login-without-mfa
+type LoginOptions struct {
+	RememberMe bool
+}
+
 // LoginResult is returned by [Engine.LoginWithResult] and
 // [Engine.ConfirmLoginMFA]. It includes tokens when authentication
 // succeeds, or MFA metadata when a second factor is required.
@@ -182,11 +195,14 @@ type CreateUserInput struct {
 
 // CreateAccountRequest is the input for [Engine.CreateAccount].
 // Identifier and Password are required; Role defaults to
-// [Config.Account.DefaultRole] when empty.
+// [Config.Account.DefaultRole] when empty. RememberMe only applies when
+// [Config.Account.AutoLogin] is enabled and requests a durable session for
+// the auto-issued tokens (see [LoginOptions]).
 type CreateAccountRequest struct {
 	Identifier string
 	Password   string
 	Role       string
+	RememberMe bool
 }
 
 // CreateAccountResult is returned by [Engine.CreateAccount]. It includes

@@ -11,6 +11,7 @@ Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessi
 ## Features
 
 - **Three validation modes** — JWT-only (0 Redis ops), Hybrid, Strict (instant revocation)
+- **Remember-me & durable sessions** — per-login `RememberMe` option with a configurable absolute session ceiling (`MaxSessionDuration`)
 - **Refresh token rotation** — atomic Lua CAS with replay detection
 - **MFA** — TOTP (RFC 6238) + backup codes with rate limiting
 - **Password management** — Argon2id hashing, reset (Token/OTP/UUID strategies), change with reuse detection
@@ -71,6 +72,11 @@ func main() {
         log.Fatal(err)
     }
     fmt.Println("Access:", access[:20]+"...")
+
+    // Remember-me login: session lives up to Config.Session.MaxSessionDuration
+    result, err := engine.LoginWithOptions(context.Background(),
+        "alice@example.com", "password", goAuth.LoginOptions{RememberMe: true})
+    _ = result
 
     // Validate
     result, err := engine.ValidateAccess(context.Background(), access)

@@ -46,8 +46,8 @@ func (s Service) CreateAccount(ctx context.Context, req AccountCreateRequest) (*
 	return RunCreateAccount(ctx, req, s.deps.Account)
 }
 
-func (s Service) IssueAccountSessionTokens(ctx context.Context, user AccountUserRecord) (string, string, error) {
-	return RunIssueAccountSessionTokens(ctx, user, s.deps.AccountSession)
+func (s Service) IssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, rememberMe bool) (string, string, error) {
+	return RunIssueAccountSessionTokens(ctx, user, rememberMe, s.deps.AccountSession)
 }
 
 func (s Service) UpdateAccountStatusAndInvalidate(ctx context.Context, userID string, status uint8) error {
@@ -110,16 +110,16 @@ func (s Service) GetLoginAttempts(ctx context.Context, identifier string) (int, 
 	return RunGetLoginAttempts(ctx, identifier, s.deps.Introspection)
 }
 
-func (s Service) LoginWithResult(ctx context.Context, username, password string) (*LoginResult, error) {
-	return RunLoginWithResult(ctx, username, password, s.deps.Login)
+func (s Service) LoginWithResult(ctx context.Context, username, password string, opts LoginOptions) (*LoginResult, error) {
+	return RunLoginWithResult(ctx, username, password, opts, s.deps.Login)
 }
 
 func (s Service) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType string) (*LoginResult, error) {
 	return RunConfirmLoginMFAWithType(ctx, challengeID, code, mfaType, s.deps.Login)
 }
 
-func (s Service) CreateMFALoginChallenge(ctx context.Context, userID, tenantID string) (string, error) {
-	return RunCreateMFALoginChallenge(ctx, userID, tenantID, s.deps.Login)
+func (s Service) CreateMFALoginChallenge(ctx context.Context, userID, tenantID string, rememberMe bool) (string, error) {
+	return RunCreateMFALoginChallenge(ctx, userID, tenantID, rememberMe, s.deps.Login)
 }
 
 func (s Service) IssueLoginSessionTokens(
@@ -127,8 +127,9 @@ func (s Service) IssueLoginSessionTokens(
 	username string,
 	user LoginUserRecord,
 	tenantID string,
+	rememberMe bool,
 ) (string, string, error) {
-	return RunIssueLoginSessionTokens(ctx, username, user, tenantID, s.deps.Login)
+	return RunIssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, s.deps.Login)
 }
 
 func (s Service) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {

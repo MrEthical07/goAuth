@@ -12,6 +12,7 @@ type AccountCreateRequest struct {
 	Identifier string
 	Password   string
 	Role       string
+	RememberMe bool
 }
 
 type AccountCreateResult struct {
@@ -90,7 +91,7 @@ type AccountDeps struct {
 
 	HashPassword       func(string) (string, error)
 	CreateUser         func(context.Context, AccountCreateUserInput) (AccountUserRecord, error)
-	IssueSessionTokens func(context.Context, AccountUserRecord) (string, string, error)
+	IssueSessionTokens func(context.Context, AccountUserRecord, bool) (string, string, error)
 
 	MetricInc     func(int)
 	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
@@ -104,7 +105,7 @@ type AccountDeps struct {
 type AccountSessionDeps struct {
 	TenantIDFromContext func(context.Context) string
 	Now                 func() time.Time
-	SessionLifetime     func() time.Duration
+	SessionLifetime     func(rememberMe bool) time.Duration
 
 	GetRoleMask        func(string) (interface{}, bool)
 	NewSessionID       func() (string, error)
@@ -287,7 +288,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 			return nil, deps.Errors.EngineNotReady
 		}
 		if !(deps.ShouldRequireVerified && created.Status == deps.PendingStatus) {
-			accessToken, refreshToken, err := deps.IssueSessionTokens(ctx, created)
+			accessToken, refreshToken, err := deps.IssueSessionTokens(ctx, created, req.RememberMe)
 			if err != nil {
 				deps.EmitAudit(ctx, deps.Events.AccountCreationSuccess, false, created.UserID, created.TenantID, "", deps.Errors.SessionCreationFailed, func() map[string]string {
 					return map[string]string{
@@ -313,7 +314,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 	return result, nil
 }
 
-func RunIssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, deps AccountSessionDeps) (string, string, error) {
+func RunIssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, rememberMe bool, deps AccountSessionDeps) (string, string, error) {
 	normalizeAccountSessionDeps(&deps)
 
 	if deps.GetRoleMask == nil ||
@@ -347,7 +348,7 @@ func RunIssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, d
 	}
 
 	now := deps.Now()
-	sessionLifetime := deps.SessionLifetime()
+	sessionLifetime := deps.SessionLifetime(rememberMe)
 	accountVersion := user.AccountVersion
 	if accountVersion == 0 {
 		accountVersion = 1

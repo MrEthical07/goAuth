@@ -119,6 +119,41 @@ func TestLint_SessionShorterThanRefresh(t *testing.T) {
 	}
 }
 
+func TestLint_MaxSessionDurationCapsDefault(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Session.MaxSessionDuration = time.Hour // below min(RefreshTTL, AbsoluteSessionLifetime) = 7d
+	ws := cfg.Lint()
+	if !containsCode(ws.Codes(), "max_session_duration_caps_default") {
+		t.Error("expected max_session_duration_caps_default warning")
+	}
+}
+
+func TestLint_MaxSessionDurationNoCapWarningWhenAboveDefault(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Session.MaxSessionDuration = 14 * 24 * time.Hour
+	ws := cfg.Lint()
+	if containsCode(ws.Codes(), "max_session_duration_caps_default") {
+		t.Error("should not warn when MaxSessionDuration exceeds the default lifetime")
+	}
+}
+
+func TestLint_MaxSessionDurationLong(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Session.MaxSessionDuration = 60 * 24 * time.Hour
+	ws := cfg.Lint()
+	if !containsCode(ws.Codes(), "max_session_duration_long") {
+		t.Error("expected max_session_duration_long warning")
+	}
+}
+
+func TestLint_MaxSessionDurationUnsetNotLong(t *testing.T) {
+	cfg := defaultConfig()
+	ws := cfg.Lint()
+	if containsCode(ws.Codes(), "max_session_duration_long") {
+		t.Error("default config resolves to 7d and should not warn max_session_duration_long")
+	}
+}
+
 func TestLint_AuditDisabled(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Audit.Enabled = false

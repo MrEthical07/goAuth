@@ -145,6 +145,34 @@ func TestConfigValidateEnums(t *testing.T) {
 			},
 			wantValid: false,
 		},
+		{
+			name: "max session duration unset valid",
+			mutate: func(c *Config) {
+				c.Session.MaxSessionDuration = 0
+			},
+			wantValid: true,
+		},
+		{
+			name: "max session duration explicit valid",
+			mutate: func(c *Config) {
+				c.Session.MaxSessionDuration = 30 * 24 * time.Hour
+			},
+			wantValid: true,
+		},
+		{
+			name: "max session duration negative invalid",
+			mutate: func(c *Config) {
+				c.Session.MaxSessionDuration = -time.Hour
+			},
+			wantValid: false,
+		},
+		{
+			name: "max session duration below one minute invalid",
+			mutate: func(c *Config) {
+				c.Session.MaxSessionDuration = 30 * time.Second
+			},
+			wantValid: false,
+		},
 	}
 
 	for _, tc := range tests {

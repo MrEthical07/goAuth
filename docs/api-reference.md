@@ -45,6 +45,8 @@ The root package contains the authentication engine, builder, configuration, typ
 | `LoginWithTOTP` | method | Authenticates with password + TOTP code in a single call. |
 | `LoginWithBackupCode` | method | Authenticates with password + backup code in a single call. |
 | `LoginWithResult` | method | Authenticates and returns a `LoginResult` indicating MFA challenge status. |
+| `LoginWithOptions` | method | Like `LoginWithResult` with per-login options (`LoginOptions`, e.g. remember-me). |
+| `LoginOptions` | struct | Per-login options; `RememberMe` requests a durable session up to `Session.MaxSessionDuration`. |
 | `ConfirmLoginMFA` | method | Completes a pending MFA challenge with a TOTP code. |
 | `ConfirmLoginMFAWithType` | method | Completes a pending MFA challenge with a specified code type (TOTP or backup). |
 

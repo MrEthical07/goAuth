@@ -144,6 +144,10 @@ func (b *Builder) Build() (*Engine, error) {
 		return nil, err
 	}
 
+	// Freeze the effective session ceiling: an unset MaxSessionDuration
+	// resolves to its per-mode default here so runtime paths never see zero.
+	cfg.Session.MaxSessionDuration = cfg.resolvedMaxSessionDuration()
+
 	if len(b.permissions) == 0 {
 		return nil, errors.New("permissions must be provided")
 	}

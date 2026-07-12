@@ -38,11 +38,29 @@ Three presets are provided:
 |---------------------------|---------------|---------|-------------|
 | `RedisPrefix`             | `string`      | `"as"`  | Redis key namespace prefix |
 | `SlidingExpiration`       | `bool`        | `true`  | Extend TTL on each access |
-| `AbsoluteSessionLifetime` | `time.Duration`| 7 days | Hard session lifetime cap |
+| `AbsoluteSessionLifetime` | `time.Duration`| 7 days | Default (non-remember-me) session lifetime, together with `JWT.RefreshTTL` |
+| `MaxSessionDuration`      | `time.Duration`| unset (0) | Absolute session ceiling; remember-me sessions live up to this. See below |
 | `JitterEnabled`           | `bool`        | `true`  | Add random jitter to TTLs |
 | `JitterRange`             | `time.Duration`| 30 s   | ±jitter window |
 | `MaxSessionSize`          | `int`         | `512`   | Max encoded session bytes |
 | `SessionEncoding`         | `string`      | `"binary"` | `"binary"` (v5) or `"msgpack"` |
+
+### MaxSessionDuration
+
+`MaxSessionDuration` is the hard ceiling beyond which no session can be created or
+extended, regardless of sliding renewal. `Validate()` rejects negative values and
+values between `0` and 1 minute; `0` means unset.
+
+- **Set explicitly (> 0):** used as-is. Remember-me sessions
+  (`LoginOptions.RememberMe`, see [engine.md](engine.md)) receive exactly this
+  lifetime. Non-remember-me sessions keep
+  `min(RefreshTTL, AbsoluteSessionLifetime)` but are additionally capped at this
+  ceiling — the `max_session_duration_caps_default` lint warns when the ceiling is
+  below the default lifetime.
+- **Unset (0):** resolved once in `Builder.Build()` to a per-validation-mode
+  default — **24 h** for `ModeStrict`, **7 days** for `ModeHybrid`/`ModeJWTOnly` —
+  raised to `min(RefreshTTL, AbsoluteSessionLifetime)` when that is longer, so
+  configurations that predate this field keep their exact session lifetimes.
 
 > **See also:** [session.md](session.md)
 
@@ -222,6 +240,7 @@ Three presets are provided:
 `Config.Validate()` is called automatically by `Builder.Build()`. It checks:
 
 - AccessTTL > 0, RefreshTTL ≥ AccessTTL
+- MaxSessionDuration ≥ 0; when set, ≥ 1 minute
 - Signing keys present for Ed25519/RSA; key length ≥ 32 for HS256
 - Argon2 parameters within safe bounds
 - Rate limiter durations > 0 when enabled
@@ -237,6 +256,8 @@ Three presets are provided:
 - ProductionMode disabled (warning only)
 - Missing KeyID (complicates key rotation)
 - Backup code count < 5
+- `max_session_duration_caps_default` — explicit MaxSessionDuration below the default session lifetime (caps all sessions)
+- `max_session_duration_long` — effective session ceiling > 30 days
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)
 
