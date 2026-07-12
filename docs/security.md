@@ -51,6 +51,14 @@ goAuth assumes attackers may:
 | **Session hijacking** | IP + UA binding (enforce or detect) | `ErrDeviceBindingRejected` or anomaly audit |
 | **Stale sessions** | Strict mode + version drift checks | Version mismatch → session deleted |
 
+> **Route-mode overrides are not bounded by the engine mode.** An explicit per-route
+> mode (`Validate(ctx, token, ModeJWTOnly)` / `ModeHybrid`, or the corresponding
+> middleware) always wins over the engine default, including on a `ModeStrict` engine —
+> such routes skip Redis-backed revocation, version, status, and device checks until
+> the access token expires. Route modes are chosen in code and are never influenced by
+> the request, so this is a deliberate developer decision; audit route-mode overrides
+> like any other authorization rule.
+
 ### MFA Security
 
 | Attack | Mitigation | Invariant |

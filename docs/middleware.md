@@ -91,6 +91,11 @@ mux.Handle("/api/billing", middleware.RequireStrict(engine)(billingHandler))
 - `RequireJWTOnly` and `RequireHybrid` cannot detect revoked sessions — a logged-out
   user's access token keeps validating on those routes until it expires (bounded by
   `JWT.AccessTTL`). Use `RequireStrict` where immediate revocation matters.
+- **The engine mode is a default, not a floor.** An explicit route mode always wins:
+  `RequireJWTOnly`/`RequireHybrid` (or `Guard` with those modes) bypass Redis-backed
+  revocation checks even on a `ModeStrict` engine. Route modes are set in code, never
+  by the request, so this is a developer decision — review route-mode overrides with
+  the same care as authorization rules.
 - The middleware does not enforce permissions — use `engine.HasPermission()` in your handler.
 - The `ValidationMode` zero value is **not** a valid mode (`ModeJWTOnly` is `1`);
   `Guard` with an uninitialized `RouteMode` variable returns 401 (`ErrInvalidRouteMode`).
