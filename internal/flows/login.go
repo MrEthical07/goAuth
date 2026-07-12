@@ -168,6 +168,12 @@ type LoginDeps struct {
 	Errors  LoginErrors
 }
 
+// dummyTimingHash is a syntactically valid Argon2id hash used to equalize
+// response time on rejection paths that have no real hash to verify against
+// (empty password, unknown identifier). Skipping the dummy verification on
+// any credential-rejection path would create a measurable timing oracle.
+const dummyTimingHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
 // RunLoginWithResult executes the login flow and either issues tokens or returns MFA challenge details.
 func RunLoginWithResult(ctx context.Context, username, password string, opts LoginOptions, deps LoginDeps) (*LoginResult, error) {
 	if deps.Now == nil {
@@ -226,7 +232,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// Without this, an attacker could distinguish empty-password rejections
 		// from wrong-password rejections by measuring response time.
 		if deps.VerifyPassword != nil {
-			_, _ = deps.VerifyPassword("dummy-timing-equalization", "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
 		}
 		if deps.IncrementLoginRate != nil {
 			if err := deps.IncrementLoginRate(ctx, username); err != nil {
@@ -256,6 +262,12 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 
 	user, err := deps.GetUserByIdentifier(username)
 	if err != nil {
+		// Perform a dummy password verification so unknown identifiers cost
+		// the same as wrong passwords; returning immediately would let an
+		// attacker enumerate valid usernames by measuring response time.
+		if deps.VerifyPassword != nil {
+			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
+		}
 		if deps.IncrementLoginRate != nil {
 			if err := deps.IncrementLoginRate(ctx, username); err != nil {
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
