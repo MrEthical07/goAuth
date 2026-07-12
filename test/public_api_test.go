@@ -31,6 +31,7 @@ func TestPublicAPISurfaceCompile(t *testing.T) {
 
 	var _ func(*goAuth.Engine, goAuth.RouteMode) func(http.Handler) http.Handler = middleware.Guard
 	var _ func(*goAuth.Engine) func(http.Handler) http.Handler = middleware.RequireJWTOnly
+	var _ func(*goAuth.Engine) func(http.Handler) http.Handler = middleware.RequireHybrid
 	var _ func(*goAuth.Engine) func(http.Handler) http.Handler = middleware.RequireStrict
 
 	var _ func(*goAuth.Engine, context.Context, string, string) (string, string, error) = (*goAuth.Engine).Login

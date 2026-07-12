@@ -10,6 +10,7 @@ The `middleware` package exposes HTTP middleware adapters for JWT-only, hybrid, 
 |-----------|-----------|-------------|
 | `Guard` | `func Guard(engine *Engine, routeMode RouteMode) func(http.Handler) http.Handler` | Generic middleware with configurable validation mode |
 | `RequireJWTOnly` | `func RequireJWTOnly(engine *Engine) func(http.Handler) http.Handler` | Shorthand for `Guard(engine, ModeJWTOnly)` |
+| `RequireHybrid` | `func RequireHybrid(engine *Engine) func(http.Handler) http.Handler` | Shorthand for `Guard(engine, ModeHybrid)` — stateless JWT validation |
 | `RequireStrict` | `func RequireStrict(engine *Engine) func(http.Handler) http.Handler` | Shorthand for `Guard(engine, ModeStrict)` |
 | `AuthResultFromContext` | `func AuthResultFromContext(ctx context.Context) (*AuthResult, bool)` | Extract validated result from request context |
 
@@ -25,9 +26,15 @@ The `middleware` package exposes HTTP middleware adapters for JWT-only, hybrid, 
 | Mode | Middleware | Redis Required | Description |
 |------|-----------|----------------|-------------|
 | JWT-Only | `RequireJWTOnly` | No | Token-only validation, fastest |
-| Hybrid | `Guard(engine, ModeHybrid)` | Optional | JWT + optional session check |
+| Hybrid | `RequireHybrid` | No | Stateless JWT validation; pair with `RequireStrict` on sensitive routes |
 | Strict | `RequireStrict` | Yes | JWT + mandatory Redis session check |
 | Per-route | `Guard(engine, mode)` | Varies | Different modes for different routes |
+
+With a Hybrid engine (`ValidationMode = ModeHybrid`), routes without an explicit
+override validate statelessly (signature, claims, clock skew — zero Redis).
+Per-route middleware then opts individual routes into `ModeStrict` (session-backed
+revocation, version, status, and device checks) or `ModeJWTOnly`. An explicit
+route mode always wins over the engine default.
 
 ## Examples
 
@@ -69,15 +76,28 @@ mux.Handle("/api/data", middleware.RequireJWTOnly(engine)(readHandler))
 mux.Handle("/api/data/write", middleware.Guard(engine, goAuth.ModeStrict)(writeHandler))
 ```
 
+### Hybrid engine with per-route escalation
+
+```go
+// Engine built with ValidationMode = ModeHybrid (the default).
+// Ordinary routes validate statelessly; sensitive routes force Redis checks.
+mux.Handle("/api/profile", middleware.RequireHybrid(engine)(profileHandler))
+mux.Handle("/api/billing", middleware.RequireStrict(engine)(billingHandler))
+```
+
 ## Security Notes
 
 - Always use `RequireStrict` for sensitive operations (account changes, payments).
-- `RequireJWTOnly` cannot detect revoked sessions — use only for read-heavy, non-critical routes.
+- `RequireJWTOnly` and `RequireHybrid` cannot detect revoked sessions — a logged-out
+  user's access token keeps validating on those routes until it expires (bounded by
+  `JWT.AccessTTL`). Use `RequireStrict` where immediate revocation matters.
 - The middleware does not enforce permissions — use `engine.HasPermission()` in your handler.
+- The `ValidationMode` zero value is **not** a valid mode (`ModeJWTOnly` is `1`);
+  `Guard` with an uninitialized `RouteMode` variable returns 401 (`ErrInvalidRouteMode`).
 
 ## Performance Notes
 
-- JWT-only: ~microsecond overhead per request.
+- JWT-only and Hybrid: ~microsecond overhead per request, zero Redis.
 - Strict: adds one Redis GET per request (~0.5ms typical).
 - No allocations in the hot path beyond the AuthResult struct.
 
@@ -119,7 +139,7 @@ All 401 responses include a JSON body: `{"error": "<message>"}`. The error messa
 |------|-------------|------------------|
 | JWT-Only Validation | `RequireJWTOnly(engine)` | Delegates to `Engine.Validate` → `internal/flows/validate.go` |
 | Strict Validation | `RequireStrict(engine)` | Delegates to `Engine.Validate` → `internal/flows/validate.go` |
-| Hybrid Validation | `Guard(engine, ModeHybrid)` | Delegates to `Engine.Validate` → `internal/flows/validate.go` |
+| Hybrid Validation | `RequireHybrid(engine)` | Delegates to `Engine.Validate` → `internal/flows/validate.go` |
 | Auth Result Extraction | `AuthResultFromContext(ctx)` | Context value lookup (no flow) |
 
 ## Testing Evidence

@@ -30,6 +30,8 @@ func ResolveRouteMode(routeMode, engineMode int, cfg ModeResolverConfig) (int, b
 		}
 	case cfg.ModeJWTOnly:
 		return cfg.ModeJWTOnly, true
+	case cfg.ModeHybrid:
+		return cfg.ModeHybrid, true
 	case cfg.ModeStrict:
 		return cfg.ModeStrict, true
 	default:

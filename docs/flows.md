@@ -262,7 +262,7 @@ newAccess, newRefresh, err := engine.Refresh(ctx, oldRefreshToken)
    b. **Version checks** — compare `PermissionVersion`, `RoleVersion`, `AccountVersion` between token and session. Mismatch → delete session, return `ErrUnauthorized`.
    c. **Account status check** — reject non-active status.
    d. **Device binding** — `RunValidateDeviceBinding` if enabled.
-5. **Hybrid path** (mode=2): JWT-only by default; callers opt into strict per-route via `Validate(ctx, token, ModeStrict)`.
+5. **Hybrid path** (mode=2): stateless, identical to JWT-only — **0 Redis ops**; callers opt into strict per-route via `Validate(ctx, token, ModeStrict)` or `middleware.RequireStrict`. An explicit route mode (including `ModeHybrid` itself) always wins over the engine default.
 6. **Latency observation** — `metrics.Observe(MetricValidateLatency, duration)`.
 7. Return `*AuthResult`.
 

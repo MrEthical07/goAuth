@@ -387,6 +387,7 @@ HTTP middleware for token validation.
 |--------|------|-------------|
 | `Guard` | func | Returns middleware that validates via the engine's configured validation mode. |
 | `RequireJWTOnly` | func | Returns middleware that validates using JWT-only (0 Redis calls). |
+| `RequireHybrid` | func | Returns middleware that validates in Hybrid mode — stateless JWT validation (0 Redis calls). |
 | `RequireStrict` | func | Returns middleware that validates with full session verification (1 Redis GET). |
 | `AuthResultFromContext` | func | Extracts the `AuthResult` set by any guard middleware. |
 

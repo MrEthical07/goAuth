@@ -410,7 +410,8 @@ func (e *Engine) ValidateAccess(ctx context.Context, tokenStr string) (*AuthResu
 // Redis session lookup depending on the requested [ValidationMode]:
 //
 //   - ModeJWTOnly  – signature + claims only, zero Redis.
-//   - ModeHybrid   – JWT validation; Redis lookup used when available.
+//   - ModeHybrid   – stateless JWT validation (zero Redis); with a Hybrid
+//     engine, routes opt into ModeStrict or ModeJWTOnly per call.
 //   - ModeStrict   – JWT validation + mandatory session GET.
 //   - ModeInherit  – use the engine’s configured default mode.
 //

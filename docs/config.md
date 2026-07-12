@@ -258,6 +258,7 @@ values between `0` and 1 minute; `0` means unset.
 - Backup code count < 5
 - `max_session_duration_caps_default` — explicit MaxSessionDuration below the default session lifetime (caps all sessions)
 - `max_session_duration_long` — effective session ceiling > 30 days
+- `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on `ModeStrict`-resolved routes
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)
 

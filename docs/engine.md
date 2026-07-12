@@ -67,7 +67,7 @@ See [error-model.md](error-model.md) for the full code/sentinel registry and HTT
 | Strategy | Config Knob | Description |
 |----------|------------|-------------|
 | JWT-Only validation | `ValidationMode = ModeJWTOnly` | Token-only, no Redis call |
-| Hybrid validation | `ValidationMode = ModeHybrid` | JWT + optional Redis session check |
+| Hybrid validation | `ValidationMode = ModeHybrid` | Stateless JWT by default; routes opt into Strict or JWT-only per call |
 | Strict validation | `ValidationMode = ModeStrict` | JWT + mandatory Redis session check |
 | Per-route override | `RouteMode` param on `Validate()` | Override global mode for specific routes |
 

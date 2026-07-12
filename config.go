@@ -1204,6 +1204,12 @@ func (c *Config) Lint() LintResult {
 			"ValidationMode is JWTOnly with PermissionVersionCheck; version checks use embedded claim values only and won't catch real-time revocations")
 	}
 
+	if c.ValidationMode == ModeHybrid &&
+		(c.DeviceBinding.EnforceIPBinding || c.DeviceBinding.EnforceUserAgentBinding) {
+		warn(LintInfo, "hybrid_enforcement_strict_routes_only",
+			"ValidationMode is Hybrid with enforced device binding; enforcement runs only on routes validated in ModeStrict — Hybrid-resolved routes are stateless and skip device checks")
+	}
+
 	// --- Abuse protection ---
 	if !c.Security.EnableLoginFailureLimiter {
 		warn(LintHigh, "login_failure_limiter_disabled",

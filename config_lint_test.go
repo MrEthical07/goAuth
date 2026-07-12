@@ -79,6 +79,36 @@ func TestLint_JWTOnlyWithDeviceBinding(t *testing.T) {
 	}
 }
 
+func TestLint_HybridEnforcedDeviceBindingIsInfo(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.ValidationMode = ModeHybrid
+	cfg.DeviceBinding.Enabled = true
+	cfg.DeviceBinding.EnforceIPBinding = true
+	ws := cfg.Lint()
+
+	found := false
+	for _, w := range ws {
+		if w.Code != "hybrid_enforcement_strict_routes_only" {
+			continue
+		}
+		found = true
+		if w.Severity != LintInfo {
+			t.Errorf("hybrid_enforcement_strict_routes_only should be INFO, got %s", w.Severity)
+		}
+	}
+	if !found {
+		t.Fatal("expected hybrid_enforcement_strict_routes_only warning")
+	}
+}
+
+func TestLint_StrictEnforcedDeviceBindingNoHybridNote(t *testing.T) {
+	cfg := HighSecurityConfig()
+	ws := cfg.Lint()
+	if containsCode(ws.Codes(), "hybrid_enforcement_strict_routes_only") {
+		t.Error("strict engine should not produce hybrid_enforcement_strict_routes_only")
+	}
+}
+
 func TestLint_LoginFailureLimiterDisabled(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Security.EnableLoginFailureLimiter = false

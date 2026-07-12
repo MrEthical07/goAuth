@@ -107,7 +107,7 @@ go get github.com/MrEthical07/goAuth
 | Mode | Redis Ops | Use Case |
 |------|-----------|----------|
 | `ModeJWTOnly` | 0 | Stateless microservices, dashboards |
-| `ModeHybrid` | 0–1 | Most applications (default) |
+| `ModeHybrid` | 0 (Strict routes add 1) | Most applications (default); routes opt into Strict or JWT-only per call |
 | `ModeStrict` | 1 | Financial, healthcare, compliance |
 
 ```go

@@ -79,7 +79,7 @@ For public-facing APIs, keep the login failure limiter enabled unconditionally. 
 | Mode | When to use | Redis cost |
 |------|-------------|------------|
 | `ModeJWTOnly` | Read-heavy, low-sensitivity routes (dashboards, search) | 0 ops |
-| `ModeHybrid` (default) | Most applications; strict on sensitive routes | 0–1 ops/request |
+| `ModeHybrid` (default) | Most applications; stateless by default, strict on sensitive routes | 0 ops (Hybrid-resolved routes); 1 op on `ModeStrict` routes |
 | `ModeStrict` | Financial, healthcare, compliance-critical apps | 1 op/request |
 
 Use per-route overrides: `middleware.Guard(engine, goAuth.ModeStrict)` for sensitive routes, `middleware.RequireJWTOnly(engine)` for lightweight ones.
