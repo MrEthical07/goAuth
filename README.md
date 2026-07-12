@@ -3,7 +3,7 @@
 Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessions + rotating refresh tokens + bitmask RBAC.
 
 [![Go Tests](https://img.shields.io/badge/tests-266%20passing-brightgreen)]()
-[![Go Version](https://img.shields.io/badge/go-1.24%2B-blue)]()
+[![Go Version](https://img.shields.io/badge/go-1.25%2B-blue)]()
 [![Race Detector](https://img.shields.io/badge/race%20detector-clean-brightgreen)]()
 
 ---
@@ -94,7 +94,7 @@ See [examples/http-minimal](examples/http-minimal) for a complete HTTP server wi
 go get github.com/MrEthical07/goAuth
 ```
 
-**Requirements:** Go 1.24+, Redis 6+
+**Requirements:** Go 1.25+, Redis 6+
 
 ## Validation Modes
 

@@ -207,9 +207,15 @@ Three presets are provided:
 
 | Mode       | Redis Commands | Use Case |
 |------------|---------------|----------|
-| `ModeJWTOnly` (0) | 0       | Stateless routes where revocation latency ≤ AccessTTL is acceptable |
-| `ModeHybrid` (1)  | 0–1     | Default balanced mode |
-| `ModeStrict` (2)  | 1 GET   | Immediate revocation required |
+| `ModeJWTOnly` (1) | 0       | Stateless routes where revocation latency ≤ AccessTTL is acceptable |
+| `ModeHybrid` (2)  | 0       | Engine default; behaves like JWT-only unless a route overrides to Strict |
+| `ModeStrict` (3)  | 1 GET   | Immediate revocation required |
+
+> Note: `ModeInherit` is `-1`; `ModeJWTOnly`/`ModeHybrid`/`ModeStrict` are `1`/`2`/`3`
+> (the constant block assigns `iota` after the explicit `ModeInherit = -1`, so the
+> zero value is **not** a valid mode). On the `Validate` hot path, `ModeHybrid`
+> performs no Redis lookup by itself — it is identical to `ModeJWTOnly` unless the
+> route is explicitly validated in `ModeStrict`.
 
 ## Config Validation
 
