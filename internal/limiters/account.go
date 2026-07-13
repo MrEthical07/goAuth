@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -18,16 +19,18 @@ type AccountConfig struct {
 	EnableLimiter bool
 	MaxAttempts   int
 	Cooldown      time.Duration
+	// WindowMode selects the counting algorithm (zero value = fixed window).
+	WindowMode window.Mode
 }
 
 type AccountCreationLimiter struct {
-	redis  redis.UniversalClient
+	window *window.Window
 	config AccountConfig
 }
 
 func NewAccountCreationLimiter(redisClient redis.UniversalClient, cfg AccountConfig) *AccountCreationLimiter {
 	return &AccountCreationLimiter{
-		redis:  redisClient,
+		window: window.New(redisClient, cfg.WindowMode),
 		config: cfg,
 	}
 }
@@ -45,15 +48,9 @@ func (l *AccountCreationLimiter) Enforce(ctx context.Context, tenantID, identifi
 }
 
 func (l *AccountCreationLimiter) enforceKey(ctx context.Context, key string) error {
-	count, err := l.redis.Incr(ctx, key).Result()
+	count, err := l.window.Incr(ctx, key, l.config.Cooldown)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrAccountRedisUnavailable, err)
-	}
-
-	if count == 1 {
-		if err := l.redis.Expire(ctx, key, l.config.Cooldown).Err(); err != nil {
-			return fmt.Errorf("%w: %v", ErrAccountRedisUnavailable, err)
-		}
 	}
 
 	if count > int64(l.config.MaxAttempts) {

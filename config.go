@@ -231,6 +231,15 @@ type SecurityConfig struct {
 	AutoLockoutEnabled           bool
 	AutoLockoutThreshold         int
 	AutoLockoutDuration          time.Duration // 0 = manual unlock only
+
+	// LimiterWindowMode selects the rate-limiter counting algorithm for all
+	// limiter domains: "fixed" (or empty, the default) keeps classic
+	// fixed-window counters; "sliding" opts into a weighted sliding-window
+	// approximation that removes the fixed-window 2x boundary-burst weakness.
+	// Validated at Build time.
+	//
+	//	Docs: docs/rate_limiting.md
+	LimiterWindowMode string
 }
 
 // SessionHardeningConfig controls session limits: max per user/tenant,
@@ -873,6 +882,12 @@ func (c *Config) Validate() error {
 
 	if c.Security.LoginCooldownDuration <= 0 {
 		return errors.New("LoginCooldownDuration must be > 0")
+	}
+	switch c.Security.LimiterWindowMode {
+	case "", "fixed", "sliding":
+		// valid
+	default:
+		return errors.New("LimiterWindowMode must be \"fixed\" or \"sliding\"")
 	}
 	if !c.Security.EnforceRefreshRotation {
 		return errors.New("EnforceRefreshRotation must be true")

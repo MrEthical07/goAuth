@@ -2,10 +2,10 @@ package rate
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -14,18 +14,20 @@ type Config struct {
 	EnableLoginFailureLimiter bool
 	MaxLoginAttempts          int
 	LoginCooldownDuration     time.Duration
+	// WindowMode selects the counting algorithm (zero value = fixed window).
+	WindowMode window.Mode
 }
 
 // Limiter enforces identifier-scoped login failure limits using Redis counters.
 type Limiter struct {
-	redis  redis.UniversalClient
+	window *window.Window
 	config Config
 }
 
 // New creates a rate [Limiter] backed by the given Redis client.
 func New(redisClient redis.UniversalClient, cfg Config) *Limiter {
 	return &Limiter{
-		redis:  redisClient,
+		window: window.New(redisClient, cfg.WindowMode),
 		config: cfg,
 	}
 }
@@ -37,8 +39,12 @@ func (l *Limiter) CheckLogin(ctx context.Context, tenantID, identifier string) e
 		return nil
 	}
 
-	if err := l.checkCounter(ctx, loginUserKey(tenantID, identifier), l.config.MaxLoginAttempts); err != nil {
-		return err
+	count, err := l.window.Count(ctx, loginUserKey(tenantID, identifier), l.config.LoginCooldownDuration)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	if count > int64(l.config.MaxLoginAttempts) {
+		return ErrRateLimited
 	}
 
 	return nil
@@ -50,9 +56,9 @@ func (l *Limiter) IncrementLogin(ctx context.Context, tenantID, identifier strin
 		return nil
 	}
 
-	count, err := l.incrementWithTTL(ctx, loginUserKey(tenantID, identifier), l.config.LoginCooldownDuration)
+	count, err := l.window.Incr(ctx, loginUserKey(tenantID, identifier), l.config.LoginCooldownDuration)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	if count > int64(l.config.MaxLoginAttempts) {
 		return ErrRateLimited
@@ -68,7 +74,7 @@ func (l *Limiter) ResetLogin(ctx context.Context, tenantID, identifier string) e
 		return nil
 	}
 
-	if err := l.redis.Del(ctx, loginUserKey(tenantID, identifier)).Err(); err != nil {
+	if err := l.window.Reset(ctx, loginUserKey(tenantID, identifier), l.config.LoginCooldownDuration); err != nil {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 
@@ -76,49 +82,15 @@ func (l *Limiter) ResetLogin(ctx context.Context, tenantID, identifier string) e
 }
 
 // GetLoginAttempts returns the current attempt counter for an identifier.
-// Missing keys return zero and do not reveal account existence.
+// Missing keys return zero and do not reveal account existence. In sliding
+// mode this is the weighted count over the current window.
 func (l *Limiter) GetLoginAttempts(ctx context.Context, tenantID, identifier string) (int, error) {
-	count, err := l.redis.Get(ctx, loginUserKey(tenantID, identifier)).Int64()
+	count, err := l.window.Count(ctx, loginUserKey(tenantID, identifier), l.config.LoginCooldownDuration)
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return 0, nil
-		}
 		return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	if count < 0 {
 		return 0, nil
 	}
 	return int(count), nil
-}
-
-func (l *Limiter) checkCounter(ctx context.Context, key string, maxAttempts int) error {
-	count, err := l.redis.Get(ctx, key).Int64()
-	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil
-		}
-		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-	}
-
-	if count > int64(maxAttempts) {
-		return ErrRateLimited
-	}
-
-	return nil
-}
-
-func (l *Limiter) incrementWithTTL(ctx context.Context, key string, ttl time.Duration) (int64, error) {
-	count, err := l.redis.Incr(ctx, key).Result()
-	if err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-	}
-
-	// Fixed-window semantics: set TTL only for the first hit in the window.
-	if count == 1 {
-		if err := l.redis.Expire(ctx, key, ttl).Err(); err != nil {
-			return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-		}
-	}
-
-	return count, nil
 }

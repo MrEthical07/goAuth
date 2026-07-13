@@ -17,7 +17,7 @@ Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessi
 - **Password management** — Argon2id hashing, reset (Token/OTP/UUID strategies), change with reuse detection
 - **Email verification** — enumeration-resistant with Lua CAS consumption
 - **Permission system** — 64/128/256/512-bit frozen bitmasks, O(1) checks
-- **Rate limiting** — 7-domain fixed-window limiters + auto-lockout
+- **Rate limiting** — 7-domain limiters + auto-lockout; fixed-window default with an opt-in sliding-window mode (`Security.LimiterWindowMode = "sliding"`) that removes the 2× boundary burst
 - **Device binding** — IP/UA fingerprint enforcement or anomaly detection
 - **Audit + Metrics** — 44 counters, latency histogram, Prometheus + OpenTelemetry exporters
 - **Multi-tenancy** — tenant-scoped sessions, counters, and rate limits

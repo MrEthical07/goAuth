@@ -6,6 +6,7 @@ import (
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/rate"
 	"github.com/MrEthical07/goAuth/internal/stores"
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/MrEthical07/goAuth/jwt"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/MrEthical07/goAuth/permission"
@@ -221,11 +222,17 @@ func (b *Builder) Build() (*Engine, error) {
 		sessionStore: store,
 	}
 
+	windowMode := window.Fixed
+	if cfg.Security.LimiterWindowMode == "sliding" {
+		windowMode = window.Sliding
+	}
+
 	engine.userProvider = b.userProvider
 	engine.rateLimiter = rate.New(b.redis, rate.Config{
 		EnableLoginFailureLimiter: cfg.Security.EnableLoginFailureLimiter,
 		MaxLoginAttempts:          cfg.Security.MaxLoginAttempts,
 		LoginCooldownDuration:     cfg.Security.LoginCooldownDuration,
+		WindowMode:                windowMode,
 	})
 	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
 	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{
@@ -233,6 +240,7 @@ func (b *Builder) Build() (*Engine, error) {
 		EnableConfirmFailureLimiter: cfg.PasswordReset.EnableConfirmFailureLimiter,
 		ResetTTL:                    cfg.PasswordReset.ResetTTL,
 		MaxAttempts:                 cfg.PasswordReset.MaxAttempts,
+		WindowMode:                  windowMode,
 	})
 	engine.verificationStore = stores.NewEmailVerificationStore(b.redis, "apv")
 	engine.verificationLimiter = limiters.NewEmailVerificationLimiter(b.redis, limiters.EmailVerificationConfig{
@@ -240,25 +248,30 @@ func (b *Builder) Build() (*Engine, error) {
 		EnableConfirmFailureLimiter: cfg.EmailVerification.EnableConfirmFailureLimiter,
 		VerificationTTL:             cfg.EmailVerification.VerificationTTL,
 		MaxAttempts:                 cfg.EmailVerification.MaxAttempts,
+		WindowMode:                  windowMode,
 	})
 	engine.accountLimiter = limiters.NewAccountCreationLimiter(b.redis, limiters.AccountConfig{
 		EnableLimiter: cfg.Account.EnableCreationLimiter,
 		MaxAttempts:   cfg.Account.AccountCreationMaxAttempts,
 		Cooldown:      cfg.Account.AccountCreationCooldown,
+		WindowMode:    windowMode,
 	})
 	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis, limiters.TOTPLimiterConfig{
 		// Direct TOTP verification paths share the MFA attempt budget.
 		MaxAttempts: cfg.TOTP.MFALoginMaxAttempts,
 		Cooldown:    cfg.TOTP.VerifyAttemptCooldown,
+		WindowMode:  windowMode,
 	})
 	engine.backupLimiter = limiters.NewBackupCodeLimiter(b.redis, limiters.BackupCodeConfig{
 		MaxAttempts: cfg.TOTP.BackupCodeMaxAttempts,
 		Cooldown:    cfg.TOTP.BackupCodeCooldown,
+		WindowMode:  windowMode,
 	})
 	engine.lockoutLimiter = limiters.NewLockoutLimiter(b.redis, limiters.LockoutConfig{
-		Enabled:   cfg.Security.AutoLockoutEnabled,
-		Threshold: cfg.Security.AutoLockoutThreshold,
-		Duration:  cfg.Security.AutoLockoutDuration,
+		Enabled:    cfg.Security.AutoLockoutEnabled,
+		Threshold:  cfg.Security.AutoLockoutThreshold,
+		Duration:   cfg.Security.AutoLockoutDuration,
+		WindowMode: windowMode,
 	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
 	engine.audit = newAuditDispatcher(cfg.Audit, b.auditSink)

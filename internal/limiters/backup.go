@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -17,17 +18,23 @@ var (
 type BackupCodeConfig struct {
 	MaxAttempts int
 	Cooldown    time.Duration
+	// WindowMode selects the counting algorithm (zero value = fixed window).
+	WindowMode window.Mode
 }
 
 type BackupCodeLimiter struct {
-	redis       redis.UniversalClient
+	window      *window.Window
 	maxAttempts int
 	cooldown    time.Duration
 }
 
 func NewBackupCodeLimiter(redisClient redis.UniversalClient, cfg BackupCodeConfig) *BackupCodeLimiter {
+	var w *window.Window
+	if redisClient != nil {
+		w = window.New(redisClient, cfg.WindowMode)
+	}
 	return &BackupCodeLimiter{
-		redis:       redisClient,
+		window:      w,
 		maxAttempts: cfg.MaxAttempts,
 		cooldown:    cfg.Cooldown,
 	}
@@ -38,34 +45,28 @@ func (l *BackupCodeLimiter) key(tenantID, userID string) string {
 }
 
 func (l *BackupCodeLimiter) Check(ctx context.Context, tenantID, userID string) error {
-	if l == nil || l.redis == nil {
+	if l == nil || l.window == nil {
 		return nil
 	}
-	count, err := l.redis.Get(ctx, l.key(tenantID, userID)).Int64()
+	count, err := l.window.Count(ctx, l.key(tenantID, userID), l.cooldown)
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil
-		}
 		return fmt.Errorf("%w: %v", ErrBackupCodeUnavailable, err)
 	}
-	if int(count) >= l.maxAttempts {
+	// count == 0 mirrors the previous missing-key early return, so an
+	// unconfigured MaxAttempts of zero still admits the first check.
+	if count > 0 && int(count) >= l.maxAttempts {
 		return ErrBackupCodeRateLimited
 	}
 	return nil
 }
 
 func (l *BackupCodeLimiter) RecordFailure(ctx context.Context, tenantID, userID string) error {
-	if l == nil || l.redis == nil {
+	if l == nil || l.window == nil {
 		return nil
 	}
-	count, err := l.redis.Incr(ctx, l.key(tenantID, userID)).Result()
+	count, err := l.window.Incr(ctx, l.key(tenantID, userID), l.cooldown)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrBackupCodeUnavailable, err)
-	}
-	if count == 1 {
-		if err := l.redis.Expire(ctx, l.key(tenantID, userID), l.cooldown).Err(); err != nil {
-			return fmt.Errorf("%w: %v", ErrBackupCodeUnavailable, err)
-		}
 	}
 	if int(count) >= l.maxAttempts {
 		return ErrBackupCodeRateLimited
@@ -74,10 +75,10 @@ func (l *BackupCodeLimiter) RecordFailure(ctx context.Context, tenantID, userID 
 }
 
 func (l *BackupCodeLimiter) Reset(ctx context.Context, tenantID, userID string) error {
-	if l == nil || l.redis == nil {
+	if l == nil || l.window == nil {
 		return nil
 	}
-	if err := l.redis.Del(ctx, l.key(tenantID, userID)).Err(); err != nil {
+	if err := l.window.Reset(ctx, l.key(tenantID, userID), l.cooldown); err != nil {
 		return fmt.Errorf("%w: %v", ErrBackupCodeUnavailable, err)
 	}
 	return nil

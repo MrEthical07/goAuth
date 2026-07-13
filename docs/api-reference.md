@@ -474,7 +474,7 @@ These packages are not importable by external Go code but are documented here fo
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `Config` | type | Login-failure limiter configuration (enable toggle, max attempts, cooldown). |
-| `Limiter` | type | Redis-backed fixed-window login-failure limiter. |
+| `Limiter` | type | Redis-backed login-failure limiter (fixed or sliding window). |
 | `New` | func | Creates a `Limiter` from a `Config` and Redis client. |
 | `CheckLogin` | method | Returns whether a login attempt is allowed for a tenant+identifier key. |
 | `IncrementLogin` | method | Records a failed login attempt for a tenant+identifier key. |

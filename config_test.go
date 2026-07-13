@@ -173,6 +173,34 @@ func TestConfigValidateEnums(t *testing.T) {
 			},
 			wantValid: false,
 		},
+		{
+			name: "limiter window mode empty valid",
+			mutate: func(c *Config) {
+				c.Security.LimiterWindowMode = ""
+			},
+			wantValid: true,
+		},
+		{
+			name: "limiter window mode fixed valid",
+			mutate: func(c *Config) {
+				c.Security.LimiterWindowMode = "fixed"
+			},
+			wantValid: true,
+		},
+		{
+			name: "limiter window mode sliding valid",
+			mutate: func(c *Config) {
+				c.Security.LimiterWindowMode = "sliding"
+			},
+			wantValid: true,
+		},
+		{
+			name: "limiter window mode unknown invalid",
+			mutate: func(c *Config) {
+				c.Security.LimiterWindowMode = "leaky-bucket"
+			},
+			wantValid: false,
+		},
 	}
 
 	for _, tc := range tests {

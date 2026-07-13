@@ -97,6 +97,7 @@ values between `0` and 1 minute; `0` means unset.
 | `AutoLockoutEnabled`           | `bool`        | `false`      | Auto-lock after repeated failures |
 | `AutoLockoutThreshold`         | `int`         | 10           | Failures before auto-lock |
 | `AutoLockoutDuration`          | `time.Duration`| 30 min      | Duration of auto-lock |
+| `LimiterWindowMode`            | `string`      | `""` (fixed) | Rate-limiter algorithm for all domains: `"fixed"` or `"sliding"` (removes the 2× boundary burst) |
 
 > **See also:** [security.md](security.md), [rate_limiting.md](rate_limiting.md)
 
@@ -244,6 +245,7 @@ values between `0` and 1 minute; `0` means unset.
 - Signing keys present for Ed25519/RSA; key length ≥ 32 for HS256
 - Argon2 parameters within safe bounds
 - Rate limiter durations > 0 when enabled
+- LimiterWindowMode is `""`, `"fixed"`, or `"sliding"`
 - Account.DefaultRole exists in role manager (checked by Builder)
 - TOTP.Issuer non-empty when TOTP enabled
 - MFA challenge TTL and attempt limits positive
