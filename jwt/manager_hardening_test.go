@@ -325,3 +325,44 @@ func TestParseAccessIATPolicy(t *testing.T) {
 		t.Fatal("expected iat too far in the future to fail")
 	}
 }
+
+func TestNewManagerRejectsMismatchedVerifyKeyForSigningKid(t *testing.T) {
+	pub1, priv1 := newEdKeys(t)
+	pub2, _ := newEdKeys(t)
+
+	_, err := NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodEd25519,
+		PrivateKey:    priv1,
+		PublicKey:     pub1,
+		KeyID:         "k1",
+		VerifyKeys:    map[string][]byte{"k1": pub2},
+	})
+	if err == nil {
+		t.Fatal("expected mismatched ed25519 verify key for signing kid to be rejected")
+	}
+
+	_, err = NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodHS256,
+		PrivateKey:    []byte("signing-secret-0123456789abcdef"),
+		KeyID:         "k1",
+		VerifyKeys:    map[string][]byte{"k1": []byte("different-secret-0123456789abcd")},
+	})
+	if err == nil {
+		t.Fatal("expected mismatched hs256 verify key for signing kid to be rejected")
+	}
+}
+
+func TestNewManagerVerifyOnlyWithoutPrivateKeyStillValid(t *testing.T) {
+	pub, _ := newEdKeys(t)
+
+	if _, err := NewManager(Config{
+		AccessTTL:     time.Minute,
+		SigningMethod: MethodEd25519,
+		PublicKey:     pub,
+		VerifyKeys:    map[string][]byte{"k1": pub},
+	}); err != nil {
+		t.Fatalf("expected verify-only manager to build: %v", err)
+	}
+}

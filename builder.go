@@ -302,6 +302,7 @@ func (b *Builder) Build() (*Engine, error) {
 		RequireIAT:    cfg.JWT.RequireIAT,
 		MaxFutureIAT:  cfg.JWT.MaxFutureIAT,
 		KeyID:         cfg.JWT.KeyID,
+		VerifyKeys:    cloneVerifyKeys(cfg.JWT.VerifyKeys),
 	})
 	if err != nil {
 		return nil, err

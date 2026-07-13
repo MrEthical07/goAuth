@@ -60,6 +60,12 @@ type JWTConfig struct {
 	RequireIAT    bool
 	MaxFutureIAT  time.Duration
 	KeyID         string
+	// VerifyKeys maps key IDs (kid) to verification key material: Ed25519
+	// public keys (raw or PEM) or HS256 secrets. When set, tokens are
+	// verified strictly against this set (a missing or unknown kid is
+	// rejected) and KeyID must name an entry, enabling zero-downtime key
+	// rotation: verify old+new while signing with either. See docs/ops.md.
+	VerifyKeys map[string][]byte
 }
 
 /*
@@ -626,6 +632,18 @@ func cloneConfig(cfg Config) Config {
 	out := cfg
 	out.JWT.PrivateKey = cloneBytes(cfg.JWT.PrivateKey)
 	out.JWT.PublicKey = cloneBytes(cfg.JWT.PublicKey)
+	out.JWT.VerifyKeys = cloneVerifyKeys(cfg.JWT.VerifyKeys)
+	return out
+}
+
+func cloneVerifyKeys(keys map[string][]byte) map[string][]byte {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(keys))
+	for kid, key := range keys {
+		out[kid] = cloneBytes(key)
+	}
 	return out
 }
 
@@ -729,6 +747,25 @@ func (c *Config) Validate() error {
 	}
 	if c.JWT.Audience != "" && strings.TrimSpace(c.JWT.Audience) == "" {
 		return errors.New("JWT Audience must not be empty when configured")
+	}
+	for kid, key := range c.JWT.VerifyKeys {
+		if strings.TrimSpace(kid) == "" {
+			return errors.New("JWT VerifyKeys must not contain an empty kid")
+		}
+		if len(key) == 0 {
+			return errors.New("JWT VerifyKeys must not contain empty key material (kid \"" + kid + "\")")
+		}
+	}
+	if len(c.JWT.VerifyKeys) > 0 {
+		// The engine both signs and verifies. With VerifyKeys set the parser
+		// requires a kid, so an engine minting kid-less tokens (empty KeyID)
+		// would reject every token it issues.
+		if c.JWT.KeyID == "" {
+			return errors.New("JWT VerifyKeys requires KeyID (tokens without a kid would fail the engine's own verification)")
+		}
+		if _, ok := c.JWT.VerifyKeys[c.JWT.KeyID]; !ok {
+			return errors.New("JWT KeyID must be present in VerifyKeys")
+		}
 	}
 
 	// Session
@@ -999,6 +1036,13 @@ func (c *Config) Validate() error {
 		if c.JWT.SigningMethod == "hs256" && len(c.JWT.PrivateKey) < 32 {
 			return errors.New("ProductionMode requires hs256 key length >= 256 bits")
 		}
+		if c.JWT.SigningMethod == "hs256" {
+			for kid, key := range c.JWT.VerifyKeys {
+				if len(key) < 32 {
+					return errors.New("ProductionMode requires hs256 verify key length >= 256 bits (kid \"" + kid + "\")")
+				}
+			}
+		}
 		if c.Password.Memory < 64*1024 {
 			return errors.New("ProductionMode requires Password Memory >= 65536 KB")
 		}
@@ -1201,6 +1245,11 @@ func (c *Config) Lint() LintResult {
 	if c.JWT.SigningMethod == "hs256" {
 		warn(LintWarn, "signing_hs256",
 			"HS256 signing is supported but Ed25519 provides better security properties")
+	}
+
+	if c.JWT.SigningMethod == "ed25519" && c.JWT.KeyID == "" {
+		warn(LintInfo, "keyid_missing",
+			"JWT KeyID is empty; tokens carry no kid header, which complicates future key rotation (set KeyID and VerifyKeys before the first rotation)")
 	}
 
 	// --- Validation mode contradictions ---

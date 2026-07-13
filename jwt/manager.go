@@ -194,6 +194,9 @@ func NewManager(cfg Config) (*Manager, error) {
 			return nil, errors.New("KeyID is not present in VerifyKeys")
 		}
 	}
+	if err := checkSignVerifyConsistency(cfg); err != nil {
+		return nil, err
+	}
 
 	m := &Manager{config: cfg}
 	m.methodAlg = m.getMethod().Alg()
@@ -545,6 +548,39 @@ func (j *Manager) validateClaimsExceptExpiry(claims *AccessClaims) error {
 		return jwt.ErrTokenNotValidYet
 	}
 	return j.validateParsedAccessClaims(claims)
+}
+
+// checkSignVerifyConsistency rejects configs whose VerifyKeys entry for the
+// signing kid does not match the signing key: such a manager would reject
+// every token it issues. Verify-only managers (no PrivateKey) are exempt.
+func checkSignVerifyConsistency(cfg Config) error {
+	if cfg.KeyID == "" || len(cfg.PrivateKey) == 0 {
+		return nil
+	}
+	verifyKey, ok := cfg.VerifyKeys[cfg.KeyID]
+	if !ok {
+		return nil
+	}
+	switch cfg.SigningMethod {
+	case MethodHS256:
+		if !bytes.Equal(verifyKey, cfg.PrivateKey) {
+			return errors.New("VerifyKeys entry for KeyID does not match the hs256 signing key")
+		}
+	case MethodEd25519:
+		priv, err := parseEdPrivateKey(cfg.PrivateKey)
+		if err != nil {
+			return err
+		}
+		pub, err := parseEdPublicKey(verifyKey)
+		if err != nil {
+			return err
+		}
+		derived, ok := priv.Public().(ed25519.PublicKey)
+		if !ok || !bytes.Equal(derived, pub) {
+			return errors.New("VerifyKeys entry for KeyID does not match the ed25519 signing key")
+		}
+	}
+	return nil
 }
 
 func buildAccessParserOptions(cfg Config, methodAlg string) []jwt.ParserOption {
