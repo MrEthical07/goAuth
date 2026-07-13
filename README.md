@@ -13,6 +13,7 @@ Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessi
 - **Three validation modes** — JWT-only (0 Redis ops), Hybrid, Strict (instant revocation)
 - **Remember-me & durable sessions** — per-login `RememberMe` option with a configurable absolute session ceiling (`MaxSessionDuration`)
 - **Refresh token rotation** — atomic Lua CAS with replay detection
+- **Zero-downtime key rotation** — `kid`-based multi-key verification (`JWT.VerifyKeys`) with a documented Ed25519 rotation runbook and `goauth-keygen` tooling
 - **MFA** — TOTP (RFC 6238) + backup codes with rate limiting
 - **Password management** — Argon2id hashing, reset (Token/OTP/UUID strategies), change with reuse detection
 - **Email verification** — enumeration-resistant with Lua CAS consumption

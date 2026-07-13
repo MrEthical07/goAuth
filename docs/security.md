@@ -41,6 +41,7 @@ goAuth assumes attackers may:
 | **Algorithm confusion** | Only configured algorithm accepted | Reject unexpected alg headers |
 | **Clock skew exploitation** | `MaxFutureIAT` cap + `Leeway` ≤ 2 min | `ErrTokenClockSkew` on violations |
 | **Stale tokens** | Version stamps (perm/role/account) in strict mode | Mismatch → session deleted |
+| **Long-lived signing keys** | `JWTConfig.VerifyKeys` overlap rotation ([ops.md §9](ops.md#9-ed25519-key-rotation-runbook)) | Signing kid must match its verify key at `Build()`; unknown/missing `kid` rejected |
 
 ### Session Security
 

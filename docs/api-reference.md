@@ -273,6 +273,8 @@ JWT token creation and parsing.
 | `ParseAccess` | method | Parses and validates an access token string. |
 | `ParseAccessAllowExpired` | method | Parses an access token accepting expiry as the only defect; for cleanup flows (logout), never authorization. |
 | `AccessClaims` | type | JWT claims struct embedded in access tokens. |
+| `GenerateEd25519Key` | func | Generates a raw Ed25519 keypair for provisioning and key rotation. |
+| `Ed25519KeyFingerprint` | func | Stable fingerprint of an Ed25519 public key (raw or PEM); suitable as a `kid`. |
 
 ---
 

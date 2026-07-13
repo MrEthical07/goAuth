@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 	- `middleware.RequireHybrid` — shorthand for `Guard(engine, ModeHybrid)`, parallel to `RequireJWTOnly`/`RequireStrict`.
 	- New advisory lint `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on routes resolved to `ModeStrict`.
 - Sliding-window rate limiting (opt-in): `Security.LimiterWindowMode = "sliding"` switches every limiter domain (login failure, lockout, account creation, TOTP, backup codes, password reset, email verification) to a weighted two-bucket sliding-window counter, removing the fixed-window 2× boundary-burst weakness. Defaults to the existing fixed-window behavior (`""`/`"fixed"`); validated at build time. All limiters now count through a single shared window primitive (`internal/window`).
+- Ed25519 key-rotation tooling:
+	- `Config.JWT.VerifyKeys` (`kid` → verification key map) — exposes the jwt layer's existing multi-key verification on the engine config, enabling zero-downtime signing-key rotation via a verify-overlap ceremony (documented step-by-step in `docs/ops.md`). Build-time guardrails: `VerifyKeys` requires a `KeyID` naming one of its entries, and the entry under the signing kid must match the signing key — misconfigurations that would reject every self-issued token cannot build.
+	- `jwt.GenerateEd25519Key` and `jwt.Ed25519KeyFingerprint` helpers, plus a `cmd/goauth-keygen` CLI (keypair generation in raw-base64 or PEM, `-fingerprint` for kid derivation from existing public keys).
+	- New lint `keyid_missing` (info) — Ed25519 signing without a `KeyID`; setting one from day one avoids a flag day on the first rotation.
 
 ### Changed
 

@@ -21,7 +21,7 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | Sliding-window rate limiter option | P1 | maintainer | done (v0.4.0, unreleased) | Security: eliminates 2× boundary burst vulnerability |
-| Key rotation ceremony tooling | P2 | maintainer | planned (v0.4.0) | Security: safer Ed25519 key rotation in production |
+| Key rotation ceremony tooling | P2 | maintainer | done (v0.4.0, unreleased) | Security: safer Ed25519 key rotation in production |
 | Session binding to TLS channel (channel binding) | P2 | maintainer | planned | Security: prevents session export across TLS sessions |
 
 ---

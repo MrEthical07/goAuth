@@ -29,6 +29,7 @@ Three presets are provided:
 | `RequireIAT`   | `bool`        | `false`     | Reject tokens without `iat` |
 | `MaxFutureIAT` | `time.Duration`| 10 min     | Max future `iat` allowed |
 | `KeyID`        | `string`      | `""`        | `kid` header for key rotation |
+| `VerifyKeys`   | `map[string][]byte` | `nil` | `kid` → verification key set for zero-downtime key rotation; when set, `KeyID` is required and must name an entry. See [ops.md §9](ops.md#9-ed25519-key-rotation-runbook) |
 
 > **See also:** [jwt.md](jwt.md)
 
@@ -243,6 +244,7 @@ values between `0` and 1 minute; `0` means unset.
 - AccessTTL > 0, RefreshTTL ≥ AccessTTL
 - MaxSessionDuration ≥ 0; when set, ≥ 1 minute
 - Signing keys present for Ed25519/RSA; key length ≥ 32 for HS256
+- `VerifyKeys`: non-empty kids and key material; requires `KeyID`, which must name an entry; the entry under the signing kid must match the signing key (checked at `Build()`)
 - Argon2 parameters within safe bounds
 - Rate limiter durations > 0 when enabled
 - LimiterWindowMode is `""`, `"fixed"`, or `"sliding"`
@@ -256,7 +258,7 @@ values between `0` and 1 minute; `0` means unset.
 
 - AccessTTL > 15 min (wide revocation window)
 - ProductionMode disabled (warning only)
-- Missing KeyID (complicates key rotation)
+- `keyid_missing` (info) — Ed25519 signing without a `KeyID` (tokens carry no `kid`, complicating future key rotation)
 - Backup code count < 5
 - `max_session_duration_caps_default` — explicit MaxSessionDuration below the default session lifetime (caps all sessions)
 - `max_session_duration_long` — effective session ceiling > 30 days

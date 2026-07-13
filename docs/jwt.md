@@ -12,6 +12,8 @@ The `jwt` package manages access-token issuance and verification using configure
 | `CreateAccess` | `(uid string, tid string, sid string, mask []byte, permV uint32, roleV uint32, acctV uint32, flags...) (string, error)` | Issue a signed access token |
 | `ParseAccess` | `(tokenStr string) (*AccessClaims, error)` | Verify and parse an access token |
 | `ParseAccessAllowExpired` | `(tokenStr string) (*AccessClaims, error)` | Like `ParseAccess`, but accepts tokens whose **only** defect is expiry. For cleanup flows (logout) — never use it to authorize access |
+| `GenerateEd25519Key` | `func GenerateEd25519Key() (publicKey, privateKey []byte, err error)` | Generate a raw Ed25519 keypair for provisioning/rotation |
+| `Ed25519KeyFingerprint` | `func Ed25519KeyFingerprint(publicKey []byte) (string, error)` | Stable 16-hex-char fingerprint of a public key (raw or PEM); suitable as a `kid` |
 
 ### Config
 
@@ -87,6 +89,14 @@ cfg.PrivateKey = newPrivKey
 cfg.PublicKey = newPubKey
 ```
 
+The same map is exposed on the engine config as `goAuth.JWTConfig.VerifyKeys` and
+passed through by `Builder.Build()`, so rotation is a root-config change — no direct
+`jwt.Manager` wiring needed. The full production ceremony (introduce → flip → retire,
+multi-instance ordering, rollback, compromised-key path) is documented in
+[ops.md §9](ops.md#9-ed25519-key-rotation-runbook). Keypairs and kid fingerprints can
+be generated with `cmd/goauth-keygen` or the `GenerateEd25519Key` /
+`Ed25519KeyFingerprint` helpers.
+
 ## Security Notes
 
 - Ed25519 is strongly recommended over HS256 (asymmetric, no shared secret exposure).
@@ -102,7 +112,8 @@ cfg.PublicKey = newPubKey
 
 ## Edge Cases & Gotchas
 
-- `VerifyKeys` must include the current `KeyID` — validation fails if the signing kid is not in the verify set.
+- `VerifyKeys` must include the current `KeyID` — validation fails if the signing kid is not in the verify set — and the entry registered under the signing kid must match the signing key (`NewManager` rejects a mismatch, which would otherwise make the manager reject every token it issues). Verify-only managers (no `PrivateKey`) are exempt.
+- At the engine level, `goAuth.Config.Validate()` additionally requires a non-empty `KeyID` whenever `VerifyKeys` is set: the engine both signs and verifies, and kid-less tokens would fail its own verification.
 - Root accounts get a forced 2-minute max TTL regardless of `AccessTTL` setting.
 - `ParseAccess` returns `ErrTokenInvalid` for expired tokens (check `token clock skew exceeded` for clock issues).
 - `ParseAccessAllowExpired` still enforces signature, algorithm, kid, issuer, audience, not-before, and iat rules — expiry is the only check it waives. It is wired only into the logout flow; `Validate`/`Refresh` always use the strict `ParseAccess`.
@@ -137,7 +148,7 @@ jwt.NewManager(cfg)
 | Token Issuance | `jwt.Manager.CreateAccess` | Called by `internal/flows/login.go`, `internal/flows/refresh.go` |
 | Token Verification | `jwt.Manager.ParseAccess` | Called by `internal/flows/validate.go` |
 | Logout Token Parse | `jwt.Manager.ParseAccessAllowExpired` | Called by `internal/flows/logout.go` only |
-| Key Rotation | Config-driven (`VerifyKeys` map) | No dedicated flow — config change + restart |
+| Key Rotation | Config-driven (`JWTConfig.VerifyKeys` → `jwt.Config.VerifyKeys`) | No dedicated flow — config change + restart; ceremony in [ops.md §9](ops.md#9-ed25519-key-rotation-runbook) |
 
 ## Testing Evidence
 
