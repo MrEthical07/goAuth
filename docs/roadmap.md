@@ -2,7 +2,7 @@
 
 Planned improvements and future work for goAuth, organized by category and priority.
 
-**Last updated:** 2026-02-19
+**Last updated:** 2026-07-13
 
 ---
 
@@ -20,8 +20,8 @@ Planned improvements and future work for goAuth, organized by category and prior
 
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
-| Sliding-window rate limiter option | P1 | maintainer | planned | Security: eliminates 2× boundary burst vulnerability |
-| Key rotation ceremony tooling | P2 | maintainer | planned | Security: safer Ed25519 key rotation in production |
+| Sliding-window rate limiter option | P1 | maintainer | planned (v0.4.0) | Security: eliminates 2× boundary burst vulnerability |
+| Key rotation ceremony tooling | P2 | maintainer | planned (v0.4.0) | Security: safer Ed25519 key rotation in production |
 | Session binding to TLS channel (channel binding) | P2 | maintainer | planned | Security: prevents session export across TLS sessions |
 
 ---
@@ -41,8 +41,9 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | `Engine.RevokePermission` for dynamic permission changes | P2 | maintainer | planned | API: runtime permission mutation without rebuild |
-| Typed error wrapping with `errors.Is` chains | P2 | maintainer | done | API: better error introspection for callers |
-| WebAuthn / FIDO2 second-factor support | P2 | maintainer | planned | API: modern passwordless MFA option |
+| WebAuthn / FIDO2 second-factor support | P2 | maintainer | planned (v0.4.0) | API: modern passwordless MFA option |
+| SSO / OIDC + OAuth2 social login | P1 | maintainer | planned (v0.4.0) | API: enterprise SSO and consumer social login via external IdPs |
+| Lint warnings for inert/no-op config fields | P2 | maintainer | planned (v0.4.0) | API/DX: surface config knobs that are validated but never read |
 
 ---
 
@@ -72,6 +73,12 @@ Items previously on the roadmap that have been resolved:
 
 | Item | Priority | Resolved In | Impact |
 |------|----------|-------------|--------|
+| Remember-me logins + configurable absolute session ceiling (`MaxSessionDuration`) | P1 | v0.4.0 (unreleased) | Security/API |
+| Hybrid mode aligned with per-route selection design (`RequireHybrid`, explicit-override fix) | P1 | v0.4.0 (unreleased) | Correctness |
+| Graceful logout with expired access tokens | P2 | v0.4.0 (unreleased) | Correctness/DX |
+| Unknown-identifier login timing oracle eliminated | P2 | v0.4.0 (unreleased) | Security |
+| Canonical `AuthError` public error boundary | P1 | v0.3.0 | API |
+| Typed error wrapping with `errors.Is` chains | P2 | v0.3.0 | API |
 | Automatic account lockout after N failures | P1 | v0.1.0 | Security |
 | Max password length DoS prevention | P2 | v0.1.0 | Security |
 | RequireIAT enforcement fix | P2 | v0.1.0 | Security |
