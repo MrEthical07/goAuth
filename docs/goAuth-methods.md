@@ -126,7 +126,7 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 |---|---|---|---|
 | `Logout` | `engine.Logout(ctx, sessionID)` | `ctx`, `sessionID string` | `error`; delete one session in tenant from context |
 | `LogoutInTenant` | `engine.LogoutInTenant(ctx, tenantID, sessionID)` | `ctx`, `tenantID string`, `sessionID string` | `error`; delete one session in explicit tenant |
-| `LogoutByAccessToken` | `engine.LogoutByAccessToken(ctx, tokenStr)` | `ctx`, `tokenStr string` | `error`; parse access token and invalidate its session |
+| `LogoutByAccessToken` | `engine.LogoutByAccessToken(ctx, tokenStr)` | `ctx`, `tokenStr string` | `error`; parse access token and invalidate its session. Expired-but-authentic tokens succeed; only signature/claim failures return `ErrTokenInvalid` |
 | `LogoutAll` | `engine.LogoutAll(ctx, userID)` | `ctx`, `userID string` | `error`; delete all sessions for user in context tenant |
 | `LogoutAllInTenant` | `engine.LogoutAllInTenant(ctx, tenantID, userID)` | `ctx`, `tenantID string`, `userID string` | `error`; delete all sessions for user in explicit tenant |
 | `InvalidateUserSessions` | `engine.InvalidateUserSessions(ctx, userID)` | `ctx`, `userID string` | `error`; alias of `LogoutAll` |

@@ -58,6 +58,9 @@ type Manager struct {
 	fast          *fastJWTState
 	methodAlg     string
 	accessParser  *jwt.Parser
+	// lenientParser skips built-in claims validation; used only by
+	// ParseAccessAllowExpired, which re-applies every claim rule except expiry.
+	lenientParser *jwt.Parser
 	accessKeyFunc jwt.Keyfunc
 }
 
@@ -195,6 +198,8 @@ func NewManager(cfg Config) (*Manager, error) {
 	m := &Manager{config: cfg}
 	m.methodAlg = m.getMethod().Alg()
 	m.accessParser = jwt.NewParser(buildAccessParserOptions(cfg, m.methodAlg)...)
+	m.lenientParser = jwt.NewParser(append(
+		buildAccessParserOptions(cfg, m.methodAlg), jwt.WithoutClaimsValidation())...)
 	m.accessKeyFunc = m.accessTokenKeyFunc
 
 	// Pre-parse and cache the signing key to avoid per-call parsing.
@@ -459,6 +464,87 @@ func (j *Manager) ParseAccess(tokenStr string) (*AccessClaims, error) {
 	}
 
 	return claims, nil
+}
+
+// ParseAccessAllowExpired verifies and parses a JWT access token, accepting
+// tokens whose only defect is expiry. Signature, algorithm, kid, issuer,
+// audience, not-before, and iat checks are all still enforced; any failure
+// other than expiry is rejected exactly like [Manager.ParseAccess].
+//
+// It exists for cleanup-style flows (logout of an already-expired session).
+// Never use it to authorize access.
+//
+//	Docs: docs/jwt.md
+func (j *Manager) ParseAccessAllowExpired(tokenStr string) (*AccessClaims, error) {
+	claims, err := j.ParseAccess(tokenStr)
+	if err == nil {
+		return claims, nil
+	}
+	if !errors.Is(err, jwt.ErrTokenExpired) {
+		return nil, err
+	}
+
+	// The token failed the strict parse due to expiry. Re-parse without
+	// built-in claims validation (signature/alg/kid are still verified),
+	// then re-apply every claim rule except expiry.
+	claims, err = j.parseAccessSkipClaimsValidation(tokenStr)
+	if err != nil {
+		return nil, err
+	}
+	if err := j.validateClaimsExceptExpiry(claims); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func (j *Manager) parseAccessSkipClaimsValidation(tokenStr string) (*AccessClaims, error) {
+	plain := &plainAccessClaims{}
+	token, err := j.lenientParser.ParseWithClaims(tokenStr, plain, j.accessKeyFunc)
+	if err == nil {
+		if !token.Valid {
+			return nil, jwt.ErrTokenInvalidClaims
+		}
+		return (*AccessClaims)(plain), nil
+	}
+
+	if !isLegacyTenantTypeError(err) {
+		return nil, err
+	}
+
+	legacyToken, legacyErr := j.lenientParser.ParseWithClaims(tokenStr, &AccessClaims{}, j.accessKeyFunc)
+	if legacyErr != nil {
+		return nil, legacyErr
+	}
+	claims, ok := legacyToken.Claims.(*AccessClaims)
+	if !ok || !legacyToken.Valid {
+		return nil, jwt.ErrTokenInvalidClaims
+	}
+	return claims, nil
+}
+
+// validateClaimsExceptExpiry mirrors the strict parser's claim rules
+// (issuer, audience, not-before, iat) while deliberately skipping exp.
+func (j *Manager) validateClaimsExceptExpiry(claims *AccessClaims) error {
+	if j.config.Issuer != "" && claims.Issuer != j.config.Issuer {
+		return jwt.ErrTokenInvalidIssuer
+	}
+	if j.config.Audience != "" {
+		found := false
+		for _, aud := range claims.Audience {
+			if aud == j.config.Audience {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return jwt.ErrTokenInvalidAudience
+		}
+	}
+	if claims.NotBefore != nil &&
+		time.Now().Add(j.config.Leeway).Before(claims.NotBefore.Time) {
+		return jwt.ErrTokenNotValidYet
+	}
+	return j.validateParsedAccessClaims(claims)
 }
 
 func buildAccessParserOptions(cfg Config, methodAlg string) []jwt.ParserOption {

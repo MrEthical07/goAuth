@@ -602,13 +602,15 @@ func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string)
 }
 
 // LogoutByAccessToken parses the given access token to extract the session
-// ID and tenant, then destroys that session. Returns [ErrTokenInvalid] when
-// the token cannot be parsed.
+// ID and tenant, then destroys that session. An expired but otherwise
+// authentic token is accepted: the session (if any) is destroyed and nil is
+// returned, since logging out an already-expired session is a success.
+// Returns [ErrTokenInvalid] when the token fails signature or claim checks.
 //
 //	Flow:        Logout (by access token)
 //	Docs:        docs/flows.md#logout, docs/session.md
 //	Performance: 1 JWT parse + 1–2 Redis commands.
-//	Security:    audit-logged.
+//	Security:    audit-logged; expired-token logouts carry expired_token metadata.
 func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error {
 	e.ensureFlowDeps()
 	result := e.flows.LogoutByAccessToken(ctx, tokenStr)
@@ -626,7 +628,13 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 	}
 	e.metricInc(MetricLogout)
 	e.metricInc(MetricSessionInvalidated)
-	e.emitAudit(ctx, auditEventLogoutSession, true, "", result.TenantID, result.SessionID, nil, nil)
+	var meta func() map[string]string
+	if result.TokenExpired {
+		meta = func() map[string]string {
+			return map[string]string{"expired_token": "true"}
+		}
+	}
+	e.emitAudit(ctx, auditEventLogoutSession, true, "", result.TenantID, result.SessionID, nil, meta)
 	return nil
 }
 
@@ -869,10 +877,11 @@ func (e *Engine) initFlowDeps() {
 			RedisNil:                  redis.Nil,
 		},
 		Logout: internalflows.LogoutDeps{
-			ParseAccess:         e.jwtManager.ParseAccess,
-			TenantIDFromContext: tenantIDFromContext,
-			TenantIDFromToken:   tenantIDFromToken,
-			SessionStore:        e.sessionStore,
+			ParseAccessAllowExpired: e.jwtManager.ParseAccessAllowExpired,
+			TenantIDFromContext:     tenantIDFromContext,
+			TenantIDFromToken:       tenantIDFromToken,
+			Now:                     time.Now,
+			SessionStore:            e.sessionStore,
 		},
 		Introspection: internalflows.IntrospectionDeps{
 			SessionStore:                e.sessionStore,

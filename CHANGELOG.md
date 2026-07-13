@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The store-level sliding-renewal clamp now uses the resolved `MaxSessionDuration` ceiling instead of the default session lifetime; per-session expiry is carried entirely by the session's stored `ExpiresAt` (written once at creation, as before). Existing sessions are unaffected.
+- `LogoutByAccessToken` now succeeds for expired-but-authentic access tokens: the token's session (if any) is destroyed and nil is returned, instead of failing with `ErrTokenInvalid`. Signature, algorithm, kid, issuer, audience, not-before, and iat checks are still enforced (new `jwt.Manager.ParseAccessAllowExpired`, wired only into the logout flow — `Validate`/`Refresh` keep the strict parser). Expired-token logouts carry `expired_token: "true"` audit metadata. Callers that matched on `ErrTokenInvalid` when logging out expired sessions will now receive nil.
 - Hybrid validation semantics are now an explicit, documented contract: routes resolved to `ModeHybrid` (inherited or explicit) validate statelessly — signature, claims, and clock-skew checks with zero Redis — and individual routes opt into `ModeStrict` (session-backed revocation/version/status/device checks) or `ModeJWTOnly` per call. This matches the existing runtime behavior of inherited Hybrid; documentation that implied an opportunistic session lookup ("Redis lookup used when available") has been corrected.
 
 ### Fixed

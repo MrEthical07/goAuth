@@ -344,13 +344,21 @@ err := engine.Logout(ctx, tenantID, sessionID)
 
 ### Steps
 
-1. **JWT parse** — extract `sessionID` and `tenantID` from claims.
-2. **Session delete** — same as single logout.
+1. **JWT parse** — `jwt.Manager.ParseAccessAllowExpired(token)`: extract `sessionID` and
+   `tenantID` from claims. Tokens whose **only** defect is expiry are accepted — logging
+   out an already-expired session is a normal logout. Signature, algorithm, kid, issuer,
+   audience, not-before, and iat checks are still enforced; any other failure returns
+   `ErrTokenInvalid`.
+2. **Session delete** — same as single logout (idempotent: an already-deleted session is
+   still a success).
+3. **Audit** — expired-token logouts carry `expired_token: "true"` metadata on the
+   `logout_session` event.
 
 ### Caller Usage
 
 ```go
 err := engine.LogoutByAccessToken(ctx, accessToken)
+// err == nil even if accessToken is expired (but authentic).
 ```
 
 ---

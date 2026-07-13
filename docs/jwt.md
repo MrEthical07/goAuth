@@ -11,6 +11,7 @@ The `jwt` package manages access-token issuance and verification using configure
 | `NewManager` | `func NewManager(cfg Config) (*Manager, error)` | Create a validated JWT manager |
 | `CreateAccess` | `(uid string, tid string, sid string, mask []byte, permV uint32, roleV uint32, acctV uint32, flags...) (string, error)` | Issue a signed access token |
 | `ParseAccess` | `(tokenStr string) (*AccessClaims, error)` | Verify and parse an access token |
+| `ParseAccessAllowExpired` | `(tokenStr string) (*AccessClaims, error)` | Like `ParseAccess`, but accepts tokens whose **only** defect is expiry. For cleanup flows (logout) — never use it to authorize access |
 
 ### Config
 
@@ -104,6 +105,7 @@ cfg.PublicKey = newPubKey
 - `VerifyKeys` must include the current `KeyID` — validation fails if the signing kid is not in the verify set.
 - Root accounts get a forced 2-minute max TTL regardless of `AccessTTL` setting.
 - `ParseAccess` returns `ErrTokenInvalid` for expired tokens (check `token clock skew exceeded` for clock issues).
+- `ParseAccessAllowExpired` still enforces signature, algorithm, kid, issuer, audience, not-before, and iat rules — expiry is the only check it waives. It is wired only into the logout flow; `Validate`/`Refresh` always use the strict `ParseAccess`.
 
 ## Architecture
 
@@ -134,6 +136,7 @@ jwt.NewManager(cfg)
 |------|-------------|------------------|
 | Token Issuance | `jwt.Manager.CreateAccess` | Called by `internal/flows/login.go`, `internal/flows/refresh.go` |
 | Token Verification | `jwt.Manager.ParseAccess` | Called by `internal/flows/validate.go` |
+| Logout Token Parse | `jwt.Manager.ParseAccessAllowExpired` | Called by `internal/flows/logout.go` only |
 | Key Rotation | Config-driven (`VerifyKeys` map) | No dedicated flow — config change + restart |
 
 ## Testing Evidence

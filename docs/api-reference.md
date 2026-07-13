@@ -64,7 +64,7 @@ The root package contains the authentication engine, builder, configuration, typ
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `Logout` | method | Destroys a single session by refresh token. |
-| `LogoutByAccessToken` | method | Destroys a session using the access token's session ID. |
+| `LogoutByAccessToken` | method | Destroys a session using the access token's session ID; accepts expired-but-authentic tokens. |
 | `LogoutAll` | method | Destroys all sessions for a user. |
 | `LogoutInTenant` | method | Destroys a single session scoped to a tenant. |
 | `LogoutAllInTenant` | method | Destroys all sessions for a user within a tenant. |
@@ -271,6 +271,7 @@ JWT token creation and parsing.
 | `NewManager` | func | Creates a `Manager` from a `Config`. |
 | `CreateAccess` | method | Signs a new access token with the given claims. |
 | `ParseAccess` | method | Parses and validates an access token string. |
+| `ParseAccessAllowExpired` | method | Parses an access token accepting expiry as the only defect; for cleanup flows (logout), never authorization. |
 | `AccessClaims` | type | JWT claims struct embedded in access tokens. |
 
 ---

@@ -21,3 +21,7 @@ request context/token identifies session/user scope → targeted Redis deletion(
 
 - Scope-aware invalidation supports per-session and global user revocation.
 - Deletions are best-effort; failures return errors so callers can retry or alert.
+- `LogoutByAccessToken` accepts expired-but-authentic tokens (signature, alg/kid,
+  issuer, audience, not-before, and iat are still enforced) and treats the logout as a
+  success; forged or otherwise invalid tokens return `ErrTokenInvalid` and touch nothing.
+  Expired-token logouts are distinguishable in the audit stream via `expired_token` metadata.
