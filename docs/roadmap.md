@@ -20,8 +20,6 @@ Planned improvements and future work for goAuth, organized by category and prior
 
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
-| Sliding-window rate limiter option | P1 | maintainer | done (v0.4.0, unreleased) | Security: eliminates 2× boundary burst vulnerability |
-| Key rotation ceremony tooling | P2 | maintainer | done (v0.4.0, unreleased) | Security: safer Ed25519 key rotation in production |
 | Session binding to TLS channel (channel binding) | P2 | maintainer | planned | Security: prevents session export across TLS sessions |
 
 ---
@@ -41,9 +39,8 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | `Engine.RevokePermission` for dynamic permission changes | P2 | maintainer | planned | API: runtime permission mutation without rebuild |
-| WebAuthn / FIDO2 second-factor support | P2 | maintainer | done (v0.4.0, unreleased) | API: modern phishing-resistant MFA; passwordless remains future work |
-| SSO / OIDC + OAuth2 social login | P1 | maintainer | deferred → own cycle (v0.5.0) | API: enterprise SSO and consumer social login via external IdPs |
-| Lint warnings for inert/no-op config fields | P2 | maintainer | done (v0.4.0, unreleased) | API/DX: six `*_noop` lint codes surface config knobs that are validated but never read |
+| SSO / OIDC + OAuth2 social login | P1 | maintainer | planned (v0.5.0, own cycle) | API: enterprise SSO and consumer social login via external IdPs |
+| WebAuthn passwordless / usernameless login | P2 | maintainer | planned | API: extend the v0.4.0 second-factor support to full passwordless (credential model already retains the needed flags) |
 
 ### Note: SSO / OIDC + OAuth2 (deferred)
 
@@ -90,10 +87,15 @@ Items previously on the roadmap that have been resolved:
 
 | Item | Priority | Resolved In | Impact |
 |------|----------|-------------|--------|
-| Remember-me logins + configurable absolute session ceiling (`MaxSessionDuration`) | P1 | v0.4.0 (unreleased) | Security/API |
-| Hybrid mode aligned with per-route selection design (`RequireHybrid`, explicit-override fix) | P1 | v0.4.0 (unreleased) | Correctness |
-| Graceful logout with expired access tokens | P2 | v0.4.0 (unreleased) | Correctness/DX |
-| Unknown-identifier login timing oracle eliminated | P2 | v0.4.0 (unreleased) | Security |
+| Remember-me logins + configurable absolute session ceiling (`MaxSessionDuration`) | P1 | v0.4.0 | Security/API |
+| Hybrid mode aligned with per-route selection design (`RequireHybrid`, explicit-override fix) | P1 | v0.4.0 | Correctness |
+| Graceful logout with expired access tokens | P2 | v0.4.0 | Correctness/DX |
+| Unknown-identifier login timing oracle eliminated | P2 | v0.4.0 | Security |
+| Sliding-window rate limiter option (removes 2× boundary burst) | P1 | v0.4.0 | Security |
+| Ed25519 key-rotation tooling (`VerifyKeys`, `goauth-keygen`, rotation runbook) | P2 | v0.4.0 | Security |
+| WebAuthn / FIDO2 second-factor support | P2 | v0.4.0 | API |
+| Lint warnings for inert/no-op config fields (`*_noop` codes) | P2 | v0.4.0 | API/DX |
+| Atomic limiter increments (INCR/EXPIRE orphaned-counter fix) | P2 | v0.4.0 | Correctness |
 | Canonical `AuthError` public error boundary | P1 | v0.3.0 | API |
 | Typed error wrapping with `errors.Is` chains | P2 | v0.3.0 | API |
 | Automatic account lockout after N failures | P1 | v0.1.0 | Security |

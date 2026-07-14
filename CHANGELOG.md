@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.4.0] - 2026-07-14
+
+Minor release (SemVer): every public API change is additive — new config
+fields, new methods, new optional interfaces — with no breaking signature or
+config changes. The two observable behavior changes (expired-token logout now
+succeeds; explicit `ModeHybrid` route overrides no longer error) are fixes
+that align behavior with the documented intent, called out under **Changed**
+and **Fixed** with migration notes in `docs/migrations.md`.
 
 ### Added
 
@@ -50,12 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - Mixed-version rollout: MFA login challenges written by this version use record v2; binaries older than this version cannot decode them during the (≤ 3 minute) challenge TTL window of a rolling deploy.
-
-### Planned
-
-- `DeleteAllForUser` atomicity improvement
-- Grafana dashboard JSON export
-- Helm chart / Docker Compose production template
+- Security caveat: an explicit per-route validation mode always overrides the engine mode — a route validated with `ModeJWTOnly` or `ModeHybrid` skips session-backed checks even on a `ModeStrict` engine. Audit route wiring when adopting per-route modes (see `docs/security.md`).
+- Deferred to a future cycle: SSO / OIDC + OAuth2 social login (see `docs/roadmap.md`).
 
 ---
 
