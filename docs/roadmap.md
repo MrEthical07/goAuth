@@ -2,7 +2,7 @@
 
 Planned improvements and future work for goAuth, organized by category and priority.
 
-**Last updated:** 2026-07-13
+**Last updated:** 2026-07-14
 
 ---
 
@@ -42,8 +42,25 @@ Planned improvements and future work for goAuth, organized by category and prior
 |------|----------|-------|--------|-----------------|
 | `Engine.RevokePermission` for dynamic permission changes | P2 | maintainer | planned | API: runtime permission mutation without rebuild |
 | WebAuthn / FIDO2 second-factor support | P2 | maintainer | done (v0.4.0, unreleased) | API: modern phishing-resistant MFA; passwordless remains future work |
-| SSO / OIDC + OAuth2 social login | P1 | maintainer | planned (v0.4.0) | API: enterprise SSO and consumer social login via external IdPs |
+| SSO / OIDC + OAuth2 social login | P1 | maintainer | deferred → own cycle (v0.5.0) | API: enterprise SSO and consumer social login via external IdPs |
 | Lint warnings for inert/no-op config fields | P2 | maintainer | planned (v0.4.0) | API/DX: surface config knobs that are validated but never read |
+
+### Note: SSO / OIDC + OAuth2 (deferred)
+
+SSO was evaluated during the v0.4.0 cycle and deferred to its own release. It is a
+subsystem rather than a single feature (provider abstraction, JWKS fetch/cache, code
+exchange, ID-token validation, identity linking, and callback orchestration), it adds
+outbound HTTP to third-party IdPs plus new dependencies, and its identity-linking policy
+is a security-sensitive design decision (account-takeover risk on unverified emails) that
+warrants a dedicated design pass. When picked up, it should be split into two phases:
+
+1. **Library-shaped (in scope for the engine):** OIDC ID-token verification (JWKS +
+   `iss`/`aud`/`nonce`/`exp`) and the `ExternalIdentityProvider` linking primitive
+   (following the `WebAuthnCredentialProvider` capability-interface pattern). The host app
+   owns the redirect dance and hands goAuth the result.
+2. **Framework-shaped (optional subpackage):** full OAuth2 authorization-code + PKCE
+   redirect/callback orchestration and per-provider connectors, kept out of the core so the
+   engine stays lean and dependency-light.
 
 ---
 
