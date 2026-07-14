@@ -49,6 +49,9 @@ type Engine struct {
 	backupLimiter       *limiters.BackupCodeLimiter
 	lockoutLimiter      *limiters.LockoutLimiter
 	mfaLoginStore       *stores.MFALoginChallengeStore
+	webauthnRP          *webAuthnRP
+	webauthnSessions    *stores.WebAuthnSessionStore
+	webauthnProvider    WebAuthnCredentialProvider
 	audit               *auditDispatcher
 	metrics             *Metrics
 	passwordHash        *password.Argon2
@@ -904,6 +907,7 @@ func (e *Engine) initFlowDeps() {
 		Login:             e.loginFlowDeps(),
 		PasswordReset:     e.passwordResetFlowDeps(),
 		TOTP:              e.totpFlowDeps(),
+		WebAuthn:          e.webauthnFlowDeps(),
 	}
 	e.flows = internalflows.New(deps)
 }
@@ -2441,6 +2445,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	deps := internalflows.LoginDeps{
 		TOTPEnabled:               cfg.TOTP.Enabled,
 		RequireTOTPForLogin:       cfg.TOTP.RequireForLogin,
+		WebAuthnEnabled:           cfg.WebAuthn.Enabled,
+		WebAuthnRequireForLogin:   cfg.WebAuthn.RequireForLogin,
 		EnforceReplayProtection:   cfg.TOTP.EnforceReplayProtection,
 		RequireVerified:           e != nil && e.shouldRequireVerified(),
 		PendingVerificationStatus: uint8(AccountPendingVerification),
@@ -2478,6 +2484,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			BackupCodeRateLimited:    ErrBackupCodeRateLimited,
 			BackupCodeInvalid:        ErrBackupCodeInvalid,
 			BackupCodesNotConfigured: ErrBackupCodesNotConfigured,
+			WebAuthnCloneDetected:    ErrWebAuthnCloneDetected,
+			WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
+			WebAuthnUnavailable:      ErrWebAuthnUnavailable,
 		},
 		Metrics: internalflows.LoginMetrics{
 			LoginSuccess:     int(MetricLoginSuccess),
@@ -2550,6 +2559,18 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	}
 	if e != nil && e.totp != nil {
 		deps.VerifyTOTPCode = e.totp.VerifyCode
+	}
+	if e != nil && e.webauthnProvider != nil {
+		deps.HasWebAuthnCredentials = func(ctx context.Context, userID string) (bool, error) {
+			creds, err := e.webauthnProvider.GetWebAuthnCredentials(ctx, userID)
+			if err != nil {
+				return false, err
+			}
+			return len(creds) > 0, nil
+		}
+		deps.ConfirmWebAuthnAssertion = func(ctx context.Context, challengeID, userID string, assertionJSON []byte) error {
+			return e.flows.ConfirmWebAuthnAssertion(ctx, challengeID, userID, assertionJSON)
+		}
 	}
 	if e != nil {
 		deps.VerifyBackupCodeInTenant = e.VerifyBackupCodeInTenant
@@ -2690,6 +2711,7 @@ func fromFlowLoginResult(result *internalflows.LoginResult) *LoginResult {
 		MFARequired:  result.MFARequired,
 		MFAType:      result.MFAType,
 		MFASession:   result.MFASession,
+		MFATypes:     result.MFATypes,
 	}
 }
 

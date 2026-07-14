@@ -2,6 +2,11 @@ package goAuth
 
 import (
 	"errors"
+	"fmt"
+	"time"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/rate"
@@ -274,6 +279,19 @@ func (b *Builder) Build() (*Engine, error) {
 		WindowMode: windowMode,
 	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
+	if cfg.WebAuthn.Enabled {
+		provider, ok := b.userProvider.(WebAuthnCredentialProvider)
+		if !ok {
+			return nil, errors.New("WebAuthn is enabled but the user provider does not implement WebAuthnCredentialProvider")
+		}
+		rp, err := newWebAuthnRP(cfg.WebAuthn)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WebAuthn configuration: %w", err)
+		}
+		engine.webauthnRP = rp
+		engine.webauthnProvider = provider
+		engine.webauthnSessions = stores.NewWebAuthnSessionStore(b.redis, "awn")
+	}
 	engine.audit = newAuditDispatcher(cfg.Audit, b.auditSink)
 	engine.metrics = NewMetrics(cfg.Metrics)
 	engine.totp = newTOTPManager(cfg.TOTP)
@@ -313,4 +331,40 @@ func (b *Builder) Build() (*Engine, error) {
 	b.built = true
 
 	return engine, nil
+}
+
+// newWebAuthnRP builds the relying-party handle from the frozen config.
+// Validation of enum values happened in Config.Validate; empty strings fall
+// back to the documented defaults here.
+func newWebAuthnRP(cfg WebAuthnConfig) (*webauthn.WebAuthn, error) {
+	attestation := cfg.AttestationPreference
+	if attestation == "" {
+		attestation = "none"
+	}
+	userVerification := cfg.UserVerification
+	if userVerification == "" {
+		userVerification = "preferred"
+	}
+	ceremonyTTL := cfg.CeremonyTTL
+	if ceremonyTTL <= 0 {
+		ceremonyTTL = 2 * time.Minute
+	}
+	timeout := webauthn.TimeoutConfig{
+		Enforce:    true,
+		Timeout:    ceremonyTTL,
+		TimeoutUVD: ceremonyTTL,
+	}
+	return webauthn.New(&webauthn.Config{
+		RPID:                  cfg.RPID,
+		RPDisplayName:         cfg.RPDisplayName,
+		RPOrigins:             cloneStrings(cfg.RPOrigins),
+		AttestationPreference: protocol.ConveyancePreference(attestation),
+		AuthenticatorSelection: protocol.AuthenticatorSelection{
+			UserVerification: protocol.UserVerificationRequirement(userVerification),
+		},
+		Timeouts: webauthn.TimeoutsConfig{
+			Login:        timeout,
+			Registration: timeout,
+		},
+	})
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
+
 	"github.com/MrEthical07/goAuth/session"
 )
 
@@ -162,4 +164,20 @@ func (s Service) DisableTOTP(ctx context.Context, userID string) error {
 
 func (s Service) VerifyTOTPForUser(ctx context.Context, user TOTPUser, code string) error {
 	return RunVerifyTOTPForUser(ctx, user, code, s.deps.TOTP)
+}
+
+func (s Service) BeginWebAuthnRegistration(ctx context.Context, userID string) ([]byte, string, error) {
+	return RunBeginWebAuthnRegistration(ctx, userID, s.deps.WebAuthn)
+}
+
+func (s Service) FinishWebAuthnRegistration(ctx context.Context, userID, ceremonyID string, responseJSON []byte) (*webauthn.Credential, error) {
+	return RunFinishWebAuthnRegistration(ctx, userID, ceremonyID, responseJSON, s.deps.WebAuthn)
+}
+
+func (s Service) BeginWebAuthnLogin(ctx context.Context, challengeID string) ([]byte, error) {
+	return RunBeginWebAuthnLogin(ctx, challengeID, s.deps.WebAuthn)
+}
+
+func (s Service) ConfirmWebAuthnAssertion(ctx context.Context, challengeID, userID string, assertionJSON []byte) error {
+	return RunConfirmWebAuthnAssertion(ctx, challengeID, userID, assertionJSON, s.deps.WebAuthn)
 }

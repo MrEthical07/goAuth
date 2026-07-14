@@ -16,4 +16,5 @@ type Deps struct {
 	Login             LoginDeps
 	PasswordReset     PasswordResetDeps
 	TOTP              TOTPDeps
+	WebAuthn          WebAuthnDeps
 }

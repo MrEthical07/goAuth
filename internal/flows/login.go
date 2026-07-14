@@ -21,6 +21,7 @@ type LoginResult struct {
 	MFARequired  bool
 	MFAType      string
 	MFASession   string
+	MFATypes     []string
 }
 
 // LoginUserRecord is a flow-local user model used by login/mfa flows.
@@ -94,12 +95,17 @@ type LoginErrors struct {
 	BackupCodeRateLimited    error
 	BackupCodeInvalid        error
 	BackupCodesNotConfigured error
+	WebAuthnCloneDetected    error
+	WebAuthnCeremonyExpired  error
+	WebAuthnUnavailable      error
 }
 
 // LoginDeps captures login+mfa dependencies.
 type LoginDeps struct {
 	TOTPEnabled               bool
 	RequireTOTPForLogin       bool
+	WebAuthnEnabled           bool
+	WebAuthnRequireForLogin   bool
 	EnforceReplayProtection   bool
 	RequireVerified           bool
 	PendingVerificationStatus uint8
@@ -147,6 +153,10 @@ type LoginDeps struct {
 	CreateMFALoginChallenge func(context.Context, string, string, bool) (string, error)
 	IssueLoginSessionTokens func(context.Context, string, LoginUserRecord, string, bool) (string, string, error)
 	EnforceSessionHardening func(context.Context, string, string) error
+
+	// WebAuthn second-factor hooks (nil when the feature is disabled).
+	HasWebAuthnCredentials   func(context.Context, string) (bool, error)
+	ConfirmWebAuthnAssertion func(context.Context, string, string, []byte) error
 
 	GetRoleMask        func(string) (interface{}, bool)
 	NewSessionID       func() (string, error)
@@ -406,6 +416,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, err
 	}
 
+	mfaTypes := make([]string, 0, 2)
 	if deps.TOTPEnabled && deps.RequireTOTPForLogin {
 		record, err := deps.GetTOTPSecret(ctx, user.UserID)
 		if err != nil {
@@ -414,24 +425,40 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 			return nil, deps.Errors.MFALoginUnavailable
 		}
 		if record != nil && record.Enabled && len(record.Secret) > 0 {
-			challengeID, err := deps.CreateMFALoginChallenge(ctx, user.UserID, tenantID, opts.RememberMe)
-			if err != nil {
-				deps.MetricInc(deps.Metrics.MFALoginFailure)
-				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, tenantID, "", err, nil)
-				return nil, err
-			}
-			deps.MetricInc(deps.Metrics.MFALoginRequired)
-			deps.EmitAudit(ctx, deps.Events.MFARequired, true, user.UserID, tenantID, "", nil, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			return &LoginResult{
-				MFARequired: true,
-				MFAType:     "totp",
-				MFASession:  challengeID,
-			}, nil
+			mfaTypes = append(mfaTypes, "totp")
 		}
+	}
+	if deps.WebAuthnEnabled && deps.WebAuthnRequireForLogin && deps.HasWebAuthnCredentials != nil {
+		has, err := deps.HasWebAuthnCredentials(ctx, user.UserID)
+		if err != nil {
+			deps.MetricInc(deps.Metrics.MFALoginFailure)
+			deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, tenantID, "", deps.Errors.MFALoginUnavailable, nil)
+			return nil, deps.Errors.MFALoginUnavailable
+		}
+		if has {
+			// Phishing-resistant factor first: webauthn is the preferred type.
+			mfaTypes = append([]string{"webauthn"}, mfaTypes...)
+		}
+	}
+	if len(mfaTypes) > 0 {
+		challengeID, err := deps.CreateMFALoginChallenge(ctx, user.UserID, tenantID, opts.RememberMe)
+		if err != nil {
+			deps.MetricInc(deps.Metrics.MFALoginFailure)
+			deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, tenantID, "", err, nil)
+			return nil, err
+		}
+		deps.MetricInc(deps.Metrics.MFALoginRequired)
+		deps.EmitAudit(ctx, deps.Events.MFARequired, true, user.UserID, tenantID, "", nil, func() map[string]string {
+			return map[string]string{
+				"identifier": username,
+			}
+		})
+		return &LoginResult{
+			MFARequired: true,
+			MFAType:     mfaTypes[0],
+			MFATypes:    mfaTypes,
+			MFASession:  challengeID,
+		}, nil
 	}
 
 	access, refresh, err := deps.IssueLoginSessionTokens(ctx, username, user, tenantID, opts.RememberMe)
@@ -466,7 +493,9 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		deps.MapMFAStoreError = func(error) error { return deps.Errors.MFALoginUnavailable }
 	}
 
-	if !deps.TOTPEnabled || !deps.RequireTOTPForLogin {
+	totpConfigured := deps.TOTPEnabled && deps.RequireTOTPForLogin
+	webauthnConfigured := deps.WebAuthnEnabled && deps.WebAuthnRequireForLogin
+	if !totpConfigured && !webauthnConfigured {
 		return nil, deps.Errors.TOTPFeatureDisabled
 	}
 	if deps.GetMFAChallenge == nil ||
@@ -532,28 +561,15 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, deps.Errors.AccountUnverified
 	}
 
-	totpRecord, err := deps.GetTOTPSecret(ctx, user.UserID)
-	if err != nil {
-		deps.MetricInc(deps.Metrics.MFALoginFailure)
-		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
-		return nil, deps.Errors.MFALoginUnavailable
-	}
-	if totpRecord == nil || !totpRecord.Enabled || len(totpRecord.Secret) == 0 {
-		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
-		deps.MetricInc(deps.Metrics.MFALoginFailure)
-		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginInvalid, func() map[string]string {
-			return map[string]string{
-				"reason": "totp_disabled_or_missing",
-			}
-		})
-		return nil, deps.Errors.MFALoginInvalid
-	}
-	if code == "" {
-		return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
-	}
-
 	switch strings.ToLower(strings.TrimSpace(mfaType)) {
 	case "", "totp":
+		totpRecord, terr := loadLoginTOTPRecord(ctx, challengeID, user.UserID, record.TenantID, deps)
+		if terr != nil {
+			return nil, terr
+		}
+		if code == "" {
+			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+		}
 		ok, counter, verr := deps.VerifyTOTPCode(totpRecord.Secret, code, deps.Now())
 		if verr != nil || !ok {
 			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
@@ -573,6 +589,12 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 			}
 		}
 	case "backup":
+		if _, terr := loadLoginTOTPRecord(ctx, challengeID, user.UserID, record.TenantID, deps); terr != nil {
+			return nil, terr
+		}
+		if code == "" {
+			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+		}
 		if berr := deps.VerifyBackupCodeInTenant(ctx, record.TenantID, user.UserID, code); berr != nil {
 			switch {
 			case errors.Is(berr, deps.Errors.BackupCodeRateLimited):
@@ -581,6 +603,45 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
 			default:
 				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginUnavailable, deps)
+			}
+		}
+	case "webauthn":
+		if !webauthnConfigured || deps.ConfirmWebAuthnAssertion == nil {
+			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+		}
+		if code == "" {
+			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+		}
+		if werr := deps.ConfirmWebAuthnAssertion(ctx, challengeID, user.UserID, []byte(code)); werr != nil {
+			switch {
+			case errors.Is(werr, deps.Errors.WebAuthnCloneDetected):
+				// A cloned authenticator is a compromise signal, not a typo:
+				// destroy the challenge instead of consuming an attempt.
+				_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
+				deps.MetricInc(deps.Metrics.MFAReplayAttempt)
+				deps.MetricInc(deps.Metrics.MFALoginFailure)
+				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", werr, func() map[string]string {
+					return map[string]string{
+						"reason": "webauthn_clone_detected",
+					}
+				})
+				return nil, werr
+			case errors.Is(werr, deps.Errors.WebAuthnCeremonyExpired):
+				// No verification happened; surface "call BeginWebAuthnLogin
+				// (again)" without consuming a challenge attempt.
+				deps.MetricInc(deps.Metrics.MFALoginFailure)
+				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", werr, func() map[string]string {
+					return map[string]string{
+						"reason": "webauthn_ceremony_expired",
+					}
+				})
+				return nil, werr
+			case errors.Is(werr, deps.Errors.WebAuthnUnavailable):
+				deps.MetricInc(deps.Metrics.MFALoginFailure)
+				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
+				return nil, deps.Errors.MFALoginUnavailable
+			default:
+				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
 			}
 		}
 	default:
@@ -617,6 +678,36 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		AccessToken:  access,
 		RefreshToken: refresh,
 	}, nil
+}
+
+// loadLoginTOTPRecord fetches and gates the user's TOTP record for the
+// totp/backup confirm paths, preserving the pre-webauthn error semantics:
+// store errors are unavailable (attempt kept), disabled/missing TOTP deletes
+// the challenge and reports invalid.
+func loadLoginTOTPRecord(
+	ctx context.Context,
+	challengeID string,
+	userID string,
+	tenantID string,
+	deps LoginDeps,
+) (*LoginTOTPRecord, error) {
+	totpRecord, err := deps.GetTOTPSecret(ctx, userID)
+	if err != nil {
+		deps.MetricInc(deps.Metrics.MFALoginFailure)
+		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", deps.Errors.MFALoginUnavailable, nil)
+		return nil, deps.Errors.MFALoginUnavailable
+	}
+	if totpRecord == nil || !totpRecord.Enabled || len(totpRecord.Secret) == 0 {
+		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
+		deps.MetricInc(deps.Metrics.MFALoginFailure)
+		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", deps.Errors.MFALoginInvalid, func() map[string]string {
+			return map[string]string{
+				"reason": "totp_disabled_or_missing",
+			}
+		})
+		return nil, deps.Errors.MFALoginInvalid
+	}
+	return totpRecord, nil
 }
 
 func runFailLoginMFAAttempt(
