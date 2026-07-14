@@ -1,1 +1,6 @@
 # fingerprint format: GO-ID|module|path|line
+# GO-2026-5932: advisory that golang.org/x/crypto/openpgp is unmaintained and
+# unsafe by design; it affects every x/crypto version and has no fixed release.
+# goAuth imports only x/crypto/argon2 — no openpgp package is imported or
+# reachable, so the module-level finding is accepted.
+GO-2026-5932|golang.org/x/crypto|-|0

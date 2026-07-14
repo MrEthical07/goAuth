@@ -78,6 +78,7 @@ func main() {
 }
 
 func printFingerprint(path string) error {
+	// #nosec G304 -- reading a user-named public-key file is this CLI's purpose.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err

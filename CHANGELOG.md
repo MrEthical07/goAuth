@@ -54,6 +54,11 @@ and **Fixed** with migration notes in `docs/migrations.md`.
 - Limiter increments are now atomic (single Lua script instead of `INCR` followed by `EXPIRE`): a crash between the two commands could previously leave a counter key without a TTL, rate-limiting that identifier until manual cleanup.
 - Explicit `ModeHybrid` route overrides (e.g. `middleware.Guard(engine, ModeHybrid)`, `Validate(ctx, token, ModeHybrid)`) no longer fail with `ErrInvalidRouteMode`; they resolve to the stateless Hybrid path. An explicit route mode always wins over the engine default. The `ValidationMode` zero value remains invalid (`ModeJWTOnly` is `1`).
 
+### Dependencies
+
+- Added `github.com/go-webauthn/webauthn` (WebAuthn ceremony verification) and its transitive dependencies; test-only `github.com/descope/virtualwebauthn`.
+- Bumped `golang.org/x/crypto` to v0.54.0 and pinned the `go1.26.5` toolchain to clear known stdlib advisories (GO-2026-4970, GO-2026-5856) in the security scanner gate. No OIDC/OAuth2 dependencies were added (SSO is deferred).
+
 ### Notes
 
 - Mixed-version rollout: MFA login challenges written by this version use record v2; binaries older than this version cannot decode them during the (≤ 3 minute) challenge TTL window of a rolling deploy.
