@@ -5,6 +5,10 @@
 cpu.out
 mem.out
 
+# Security / perf scanner artifacts
+.security-reports/
+benchmarks/bench_candidate.txt
+
 # IDE
 .idea/
 .vscode/
