@@ -22,7 +22,7 @@ func BenchmarkValidateJWTOnly(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := engine.Validate(context.Background(), access, ModeInherit); err != nil {
 			b.Fatalf("validate failed: %v", err)
 		}
@@ -40,7 +40,7 @@ func BenchmarkValidateStrict(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := engine.Validate(context.Background(), access, ModeInherit); err != nil {
 			b.Fatalf("validate failed: %v", err)
 		}
@@ -58,7 +58,7 @@ func BenchmarkRefresh(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, nextRefresh, err := engine.Refresh(context.Background(), refresh)
 		if err != nil {
 			b.Fatalf("refresh failed: %v", err)
@@ -73,7 +73,7 @@ func BenchmarkLogin(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		access, _, err := engine.Login(context.Background(), "alice", "correct-password-123")
 		if err != nil {
 			b.Fatalf("login failed: %v", err)
@@ -259,7 +259,7 @@ func BenchmarkRefreshRealRedis(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, nextRefresh, err := engine.Refresh(context.Background(), refresh)
 		if err != nil {
 			b.Fatalf("refresh failed: %v", err)
@@ -279,7 +279,7 @@ func BenchmarkValidateStrictRealRedis(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := engine.Validate(context.Background(), access, ModeInherit); err != nil {
 			b.Fatalf("validate failed: %v", err)
 		}

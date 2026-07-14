@@ -10,7 +10,7 @@ func BenchmarkPermissionRegistryBitLookup(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, ok := engine.registry.Bit("perm.read"); !ok {
 			b.Fatal("permission bit missing")
 		}
@@ -28,7 +28,7 @@ func BenchmarkPermissionEngineHasPermission(b *testing.B) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if !engine.HasPermission(mask, "perm.read") {
 			b.Fatal("expected permission grant")
 		}
