@@ -53,6 +53,7 @@ func (c *Config) Lint() LintResult
 | `refresh_ttl_long` | INFO | `JWT.RefreshTTL > 14d` |
 | `iat_not_required` | INFO | `JWT.RequireIAT == false` |
 | `signing_hs256` | WARN | `JWT.SigningMethod == "hs256"` |
+| `keyid_missing` | INFO | Ed25519 signing with empty `JWT.KeyID` (tokens carry no `kid`; complicates future key rotation) |
 | `jwtonly_device_binding` | HIGH | JWT-only mode + device binding enabled |
 | `jwtonly_single_session` | HIGH | JWT-only mode + single-session enforcement |
 | `jwtonly_perm_version` | WARN | JWT-only mode + permission version check |
@@ -66,8 +67,23 @@ func (c *Config) Lint() LintResult
 | `audit_disabled` | WARN | Audit disabled |
 | `totp_skew_wide` | WARN | TOTP skew > 1 |
 | `argon2_memory_low` | WARN | Argon2 memory < 64 MB |
+| `security_ip_binding_noop` | WARN | `Security.EnableIPBinding` is set but never read (use `DeviceBinding.*`) |
+| `security_ip_signal_noop` | WARN | `Security.EnableIPSignal` is set but never read |
+| `cookie_settings_noop` | INFO | `RequireSecureCookies`/`SameSitePolicy`/`CSRFProtection` set; the engine never issues cookies |
+| `cache_lru_noop` | WARN | `Cache.LRUEnabled` is set but no in-memory session cache is implemented |
+| `database_config_noop` | INFO | `Database.Address` is set but `DatabaseConfig` is never read (use `Builder.WithRedis`) |
+| `tenant_header_noop` | INFO | `MultiTenant.TenantHeader` is set with multi-tenancy enabled but is never read (tenant comes from `WithTenantID(ctx)`) |
 
-Summary: 4 INFO, 10 WARN, 4 HIGH.
+Summary: 8 INFO, 13 WARN, 4 HIGH.
+
+### No-op knob warnings
+
+Several config fields are accepted for backward compatibility but are not read
+by the engine (`Security.EnableIPBinding`, `Security.EnableIPSignal`, the
+cookie/CSRF knobs, `CacheConfig`, `DatabaseConfig`, `MultiTenant.TenantHeader`).
+The `*_noop` lint codes fire when such a knob is enabled so integrators do not
+assume a protection is active. They will be removed or wired up in a future
+major/minor release; see `docs/config.md` for per-field notes.
 
 ## Examples
 

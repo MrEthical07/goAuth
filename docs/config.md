@@ -83,15 +83,18 @@ values between `0` and 1 minute; `0` means unset.
 | Field                          | Type          | Default       | Description |
 |--------------------------------|---------------|--------------|-------------|
 | `ProductionMode`               | `bool`        | `false`      | Enable production security checks |
-| `EnableIPBinding`              | `bool`        | `false`      | Bind sessions to client IP |
+| `EnableIPBinding`              | `bool`        | `false`      | **No-op** — never read by the engine; IP binding is controlled by `DeviceBinding.*` (lint: `security_ip_binding_noop`) |
 | `EnableUserAgentBinding`       | `bool`        | `true`       | Bind sessions to User-Agent |
 | `EnableLoginFailureLimiter`    | `bool`        | `true`       | Enable login-failure limiter |
-| `EnableIPSignal`               | `bool`        | `false`      | Include client IP as a signal in audit/anomaly paths |
+| `EnableIPSignal`               | `bool`        | `false`      | **No-op** — never read by the engine (lint: `security_ip_signal_noop`) |
 | `EnforceRefreshRotation`       | `bool`        | `true`       | Require token rotation on refresh |
 | `EnforceRefreshReuseDetection` | `bool`        | `true`       | Invalidate session on token reuse |
 | `MaxLoginAttempts`             | `int`         | 5            | Failed logins before cooldown |
 | `LoginCooldownDuration`        | `time.Duration`| 15 min      | Cooldown after max login attempts |
 | `StrictMode`                   | `bool`        | `false`      | Force strict validation globally |
+| `RequireSecureCookies`         | `bool`        | `true`       | **No-op** — the engine never issues cookies; enforce at the HTTP layer (lint: `cookie_settings_noop`) |
+| `SameSitePolicy`               | `http.SameSite`| `Strict`    | **No-op** — the engine never issues cookies; enforce at the HTTP layer (lint: `cookie_settings_noop`) |
+| `CSRFProtection`               | `bool`        | `true`       | **No-op** — no CSRF machinery exists in the engine; enforce at the HTTP layer (lint: `cookie_settings_noop`) |
 | `EnablePermissionVersionCheck` | `bool`        | `true`       | Check permission version on validate |
 | `EnableRoleVersionCheck`       | `bool`        | `true`       | Check role version on validate |
 | `EnableAccountVersionCheck`    | `bool`        | `true`       | Check account version on validate |
@@ -236,8 +239,18 @@ values between `0` and 1 minute; `0` means unset.
 | Field             | Type   | Default         | Description |
 |-------------------|--------|-----------------|-------------|
 | `Enabled`         | `bool` | `false`         | Enable tenant isolation |
-| `TenantHeader`    | `string`| `"X-Tenant-ID"`| HTTP header for tenant ID |
+| `TenantHeader`    | `string`| `"X-Tenant-ID"`| **No-op** — never read by the engine or middleware; tenant scoping comes only from `WithTenantID(ctx)` (lint: `tenant_header_noop`) |
 | `EnforceIsolation`| `bool` | `true`          | Strict tenant boundary enforcement |
+
+## No-op sections: Cache (`Config.Cache`) and Database (`Config.Database`)
+
+Both structs are accepted for backward compatibility but are **never read by the
+engine**:
+
+- `CacheConfig` (`LRUEnabled`, `Size`) — no in-memory session cache is
+  implemented (lint: `cache_lru_noop`).
+- `DatabaseConfig` — superseded by `Builder.WithRedis`, which is the only way
+  Redis is wired (lint: `database_config_noop` when `Address` is set).
 
 ## Validation Mode (`Config.ValidationMode`)
 

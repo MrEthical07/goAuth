@@ -219,19 +219,31 @@ SECURITY CONFIG
 //
 //	Docs: docs/security.md, docs/config.md
 type SecurityConfig struct {
-	ProductionMode               bool
+	ProductionMode bool
+
+	// EnableIPBinding is a no-op: the engine never reads it. IP binding is
+	// controlled by DeviceBinding.Enabled with EnforceIPBinding/DetectIPChange.
+	// Enabling it produces the security_ip_binding_noop lint warning.
 	EnableIPBinding              bool
 	EnableUserAgentBinding       bool
 	EnableLoginFailureLimiter    bool
+
+	// EnableIPSignal is a no-op: the engine never reads it. Enabling it
+	// produces the security_ip_signal_noop lint warning.
 	EnableIPSignal               bool
 	EnforceRefreshRotation       bool
 	EnforceRefreshReuseDetection bool
 	MaxLoginAttempts             int
 	LoginCooldownDuration        time.Duration
 	StrictMode                   bool
-	RequireSecureCookies         bool
-	SameSitePolicy               http.SameSite
-	CSRFProtection               bool
+
+	// RequireSecureCookies, SameSitePolicy, and CSRFProtection are no-ops:
+	// the engine is transport-agnostic and never issues cookies, so nothing
+	// reads them. Enforce cookie flags and CSRF policy at the HTTP layer.
+	// Enabling any of them produces the cookie_settings_noop lint warning.
+	RequireSecureCookies bool
+	SameSitePolicy       http.SameSite
+	CSRFProtection       bool
 	EnablePermissionVersionCheck bool
 	EnableRoleVersionCheck       bool
 	EnableAccountVersionCheck    bool
@@ -373,7 +385,12 @@ MULTI TENANT CONFIG
 //
 //	Docs: docs/config.md
 type MultiTenantConfig struct {
-	Enabled          bool
+	Enabled bool
+
+	// TenantHeader is a no-op: the engine never reads it, and the shipped
+	// middleware does not extract it. Tenant scoping comes exclusively from
+	// [WithTenantID] on the request context. Setting it with Enabled produces
+	// the tenant_header_noop lint warning.
 	TenantHeader     string
 	EnforceIsolation bool
 }
@@ -384,8 +401,9 @@ DATABASE CONFIG
 ====================================
 */
 
-// DatabaseConfig holds Redis connection parameters (currently unused;
-// prefer [Builder.WithRedis]).
+// DatabaseConfig holds Redis connection parameters. It is a no-op: the
+// engine never reads it — Redis is wired exclusively via [Builder.WithRedis].
+// Setting an Address produces the database_config_noop lint warning.
 type DatabaseConfig struct {
 	Address                   string
 	Password                  string
@@ -416,7 +434,9 @@ CACHE CONFIG
 ====================================
 */
 
-// CacheConfig controls optional in-memory caching of session data.
+// CacheConfig is a no-op: no in-memory session cache is implemented and the
+// engine never reads it (it is validated for shape only). Enabling LRUEnabled
+// produces the cache_lru_noop lint warning.
 type CacheConfig struct {
 	LRUEnabled bool
 	Size       int
@@ -1410,6 +1430,39 @@ func (c *Config) Lint() LintResult {
 	if c.resolvedMaxSessionDuration() > 30*24*time.Hour {
 		warn(LintWarn, "max_session_duration_long",
 			"Effective MaxSessionDuration > 30d keeps remember-me sessions alive unusually long; consider a shorter ceiling")
+	}
+
+	// --- No-op configuration knobs ---
+	// These fields are accepted (and some are validated) but never read by the
+	// engine. Warn so integrators don't believe a protection is active.
+	if c.Security.EnableIPBinding {
+		warn(LintWarn, "security_ip_binding_noop",
+			"Security.EnableIPBinding is not read by the engine; IP binding is controlled by DeviceBinding.Enabled with EnforceIPBinding/DetectIPChange")
+	}
+
+	if c.Security.EnableIPSignal {
+		warn(LintWarn, "security_ip_signal_noop",
+			"Security.EnableIPSignal is not read by the engine; no IP-signal feature is implemented")
+	}
+
+	if c.Security.RequireSecureCookies || c.Security.CSRFProtection || c.Security.SameSitePolicy != 0 {
+		warn(LintInfo, "cookie_settings_noop",
+			"RequireSecureCookies/SameSitePolicy/CSRFProtection are not read by the engine; it never issues cookies — enforce cookie flags and CSRF policy at the HTTP layer")
+	}
+
+	if c.Cache.LRUEnabled {
+		warn(LintWarn, "cache_lru_noop",
+			"Cache.LRUEnabled is set but no in-memory session cache is implemented; the setting is not read by the engine")
+	}
+
+	if c.Database.Address != "" {
+		warn(LintInfo, "database_config_noop",
+			"DatabaseConfig is not read by the engine; configure Redis via Builder.WithRedis")
+	}
+
+	if c.MultiTenant.Enabled && c.MultiTenant.TenantHeader != "" {
+		warn(LintInfo, "tenant_header_noop",
+			"MultiTenant.TenantHeader is not read by the engine or middleware; tenant scoping comes only from WithTenantID(ctx) — extract the header in your HTTP layer")
 	}
 
 	// --- Production readiness ---

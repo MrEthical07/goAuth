@@ -43,7 +43,7 @@ Planned improvements and future work for goAuth, organized by category and prior
 | `Engine.RevokePermission` for dynamic permission changes | P2 | maintainer | planned | API: runtime permission mutation without rebuild |
 | WebAuthn / FIDO2 second-factor support | P2 | maintainer | done (v0.4.0, unreleased) | API: modern phishing-resistant MFA; passwordless remains future work |
 | SSO / OIDC + OAuth2 social login | P1 | maintainer | deferred → own cycle (v0.5.0) | API: enterprise SSO and consumer social login via external IdPs |
-| Lint warnings for inert/no-op config fields | P2 | maintainer | planned (v0.4.0) | API/DX: surface config knobs that are validated but never read |
+| Lint warnings for inert/no-op config fields | P2 | maintainer | done (v0.4.0, unreleased) | API/DX: six `*_noop` lint codes surface config knobs that are validated but never read |
 
 ### Note: SSO / OIDC + OAuth2 (deferred)
 

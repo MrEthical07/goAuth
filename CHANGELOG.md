@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 	- `Config.JWT.VerifyKeys` (`kid` → verification key map) — exposes the jwt layer's existing multi-key verification on the engine config, enabling zero-downtime signing-key rotation via a verify-overlap ceremony (documented step-by-step in `docs/ops.md`). Build-time guardrails: `VerifyKeys` requires a `KeyID` naming one of its entries, and the entry under the signing kid must match the signing key — misconfigurations that would reject every self-issued token cannot build.
 	- `jwt.GenerateEd25519Key` and `jwt.Ed25519KeyFingerprint` helpers, plus a `cmd/goauth-keygen` CLI (keypair generation in raw-base64 or PEM, `-fingerprint` for kid derivation from existing public keys).
 	- New lint `keyid_missing` (info) — Ed25519 signing without a `KeyID`; setting one from day one avoids a flag day on the first rotation.
+- Lint warnings for no-op config knobs — several fields are accepted (and validated) but never read by the engine; `Config.Lint()` now says so instead of letting integrators believe a protection is active: `security_ip_binding_noop` (warn), `security_ip_signal_noop` (warn), `cache_lru_noop` (warn), `cookie_settings_noop` (info), `database_config_noop` (info), `tenant_header_noop` (info). The fields themselves are unchanged (backward compatible); doc comments and `docs/config.md` now mark each one **no-op**.
 
 ### Changed
 

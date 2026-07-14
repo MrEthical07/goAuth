@@ -220,6 +220,84 @@ func TestLint_NoWarningForGoodArgon2(t *testing.T) {
 	}
 }
 
+func TestLint_NoOpKnobs(t *testing.T) {
+	cases := []struct {
+		name     string
+		mutate   func(*Config)
+		code     string
+		severity LintSeverity
+	}{
+		{"security_ip_binding", func(c *Config) { c.Security.EnableIPBinding = true }, "security_ip_binding_noop", LintWarn},
+		{"security_ip_signal", func(c *Config) { c.Security.EnableIPSignal = true }, "security_ip_signal_noop", LintWarn},
+		{"cache_lru", func(c *Config) { c.Cache.LRUEnabled = true }, "cache_lru_noop", LintWarn},
+		{"database_address", func(c *Config) { c.Database.Address = "localhost:6379" }, "database_config_noop", LintInfo},
+		{"tenant_header", func(c *Config) { c.MultiTenant.Enabled = true }, "tenant_header_noop", LintInfo},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			tc.mutate(&cfg)
+			found := false
+			for _, w := range cfg.Lint() {
+				if w.Code != tc.code {
+					continue
+				}
+				found = true
+				if w.Severity != tc.severity {
+					t.Errorf("%s should be %s, got %s", tc.code, tc.severity, w.Severity)
+				}
+			}
+			if !found {
+				t.Fatalf("expected %s warning", tc.code)
+			}
+		})
+	}
+}
+
+func TestLint_NoOpKnobsSilentWhenUnset(t *testing.T) {
+	cfg := defaultConfig()
+	codes := cfg.Lint().Codes()
+	for _, code := range []string{
+		"security_ip_binding_noop",
+		"security_ip_signal_noop",
+		"cache_lru_noop",
+		"database_config_noop",
+		"tenant_header_noop",
+	} {
+		if containsCode(codes, code) {
+			t.Errorf("default config should not produce %s", code)
+		}
+	}
+}
+
+func TestLint_CookieSettingsNoOpOnDefaults(t *testing.T) {
+	// defaultConfig ships RequireSecureCookies/CSRFProtection enabled even
+	// though the engine never issues cookies; the advisory lint fires at INFO
+	// so integrators learn cookie/CSRF policy is theirs to enforce.
+	cfg := defaultConfig()
+	found := false
+	for _, w := range cfg.Lint() {
+		if w.Code != "cookie_settings_noop" {
+			continue
+		}
+		found = true
+		if w.Severity != LintInfo {
+			t.Errorf("cookie_settings_noop should be INFO, got %s", w.Severity)
+		}
+	}
+	if !found {
+		t.Fatal("expected cookie_settings_noop warning")
+	}
+
+	cfg.Security.RequireSecureCookies = false
+	cfg.Security.CSRFProtection = false
+	cfg.Security.SameSitePolicy = 0
+	if containsCode(cfg.Lint().Codes(), "cookie_settings_noop") {
+		t.Error("cookie_settings_noop should not fire when all cookie knobs are unset")
+	}
+}
+
 func TestLint_SeverityAssignment(t *testing.T) {
 	// HIGH: contradictory mode settings
 	cfg := defaultConfig()
