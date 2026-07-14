@@ -2,10 +2,16 @@ package goAuth
 
 import (
 	"errors"
+	"fmt"
+	"time"
+
+	"github.com/go-webauthn/webauthn/protocol"
+	"github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/rate"
 	"github.com/MrEthical07/goAuth/internal/stores"
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/MrEthical07/goAuth/jwt"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/MrEthical07/goAuth/permission"
@@ -144,6 +150,10 @@ func (b *Builder) Build() (*Engine, error) {
 		return nil, err
 	}
 
+	// Freeze the effective session ceiling: an unset MaxSessionDuration
+	// resolves to its per-mode default here so runtime paths never see zero.
+	cfg.Session.MaxSessionDuration = cfg.resolvedMaxSessionDuration()
+
 	if len(b.permissions) == 0 {
 		return nil, errors.New("permissions must be provided")
 	}
@@ -217,11 +227,17 @@ func (b *Builder) Build() (*Engine, error) {
 		sessionStore: store,
 	}
 
+	windowMode := window.Fixed
+	if cfg.Security.LimiterWindowMode == "sliding" {
+		windowMode = window.Sliding
+	}
+
 	engine.userProvider = b.userProvider
 	engine.rateLimiter = rate.New(b.redis, rate.Config{
 		EnableLoginFailureLimiter: cfg.Security.EnableLoginFailureLimiter,
 		MaxLoginAttempts:          cfg.Security.MaxLoginAttempts,
 		LoginCooldownDuration:     cfg.Security.LoginCooldownDuration,
+		WindowMode:                windowMode,
 	})
 	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
 	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{
@@ -229,6 +245,7 @@ func (b *Builder) Build() (*Engine, error) {
 		EnableConfirmFailureLimiter: cfg.PasswordReset.EnableConfirmFailureLimiter,
 		ResetTTL:                    cfg.PasswordReset.ResetTTL,
 		MaxAttempts:                 cfg.PasswordReset.MaxAttempts,
+		WindowMode:                  windowMode,
 	})
 	engine.verificationStore = stores.NewEmailVerificationStore(b.redis, "apv")
 	engine.verificationLimiter = limiters.NewEmailVerificationLimiter(b.redis, limiters.EmailVerificationConfig{
@@ -236,27 +253,45 @@ func (b *Builder) Build() (*Engine, error) {
 		EnableConfirmFailureLimiter: cfg.EmailVerification.EnableConfirmFailureLimiter,
 		VerificationTTL:             cfg.EmailVerification.VerificationTTL,
 		MaxAttempts:                 cfg.EmailVerification.MaxAttempts,
+		WindowMode:                  windowMode,
 	})
 	engine.accountLimiter = limiters.NewAccountCreationLimiter(b.redis, limiters.AccountConfig{
 		EnableLimiter: cfg.Account.EnableCreationLimiter,
 		MaxAttempts:   cfg.Account.AccountCreationMaxAttempts,
 		Cooldown:      cfg.Account.AccountCreationCooldown,
+		WindowMode:    windowMode,
 	})
 	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis, limiters.TOTPLimiterConfig{
 		// Direct TOTP verification paths share the MFA attempt budget.
 		MaxAttempts: cfg.TOTP.MFALoginMaxAttempts,
 		Cooldown:    cfg.TOTP.VerifyAttemptCooldown,
+		WindowMode:  windowMode,
 	})
 	engine.backupLimiter = limiters.NewBackupCodeLimiter(b.redis, limiters.BackupCodeConfig{
 		MaxAttempts: cfg.TOTP.BackupCodeMaxAttempts,
 		Cooldown:    cfg.TOTP.BackupCodeCooldown,
+		WindowMode:  windowMode,
 	})
 	engine.lockoutLimiter = limiters.NewLockoutLimiter(b.redis, limiters.LockoutConfig{
-		Enabled:   cfg.Security.AutoLockoutEnabled,
-		Threshold: cfg.Security.AutoLockoutThreshold,
-		Duration:  cfg.Security.AutoLockoutDuration,
+		Enabled:    cfg.Security.AutoLockoutEnabled,
+		Threshold:  cfg.Security.AutoLockoutThreshold,
+		Duration:   cfg.Security.AutoLockoutDuration,
+		WindowMode: windowMode,
 	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
+	if cfg.WebAuthn.Enabled {
+		provider, ok := b.userProvider.(WebAuthnCredentialProvider)
+		if !ok {
+			return nil, errors.New("WebAuthn is enabled but the user provider does not implement WebAuthnCredentialProvider")
+		}
+		rp, err := newWebAuthnRP(cfg.WebAuthn)
+		if err != nil {
+			return nil, fmt.Errorf("invalid WebAuthn configuration: %w", err)
+		}
+		engine.webauthnRP = rp
+		engine.webauthnProvider = provider
+		engine.webauthnSessions = stores.NewWebAuthnSessionStore(b.redis, "awn")
+	}
 	engine.audit = newAuditDispatcher(cfg.Audit, b.auditSink)
 	engine.metrics = NewMetrics(cfg.Metrics)
 	engine.totp = newTOTPManager(cfg.TOTP)
@@ -285,6 +320,7 @@ func (b *Builder) Build() (*Engine, error) {
 		RequireIAT:    cfg.JWT.RequireIAT,
 		MaxFutureIAT:  cfg.JWT.MaxFutureIAT,
 		KeyID:         cfg.JWT.KeyID,
+		VerifyKeys:    cloneVerifyKeys(cfg.JWT.VerifyKeys),
 	})
 	if err != nil {
 		return nil, err
@@ -295,4 +331,40 @@ func (b *Builder) Build() (*Engine, error) {
 	b.built = true
 
 	return engine, nil
+}
+
+// newWebAuthnRP builds the relying-party handle from the frozen config.
+// Validation of enum values happened in Config.Validate; empty strings fall
+// back to the documented defaults here.
+func newWebAuthnRP(cfg WebAuthnConfig) (*webauthn.WebAuthn, error) {
+	attestation := cfg.AttestationPreference
+	if attestation == "" {
+		attestation = "none"
+	}
+	userVerification := cfg.UserVerification
+	if userVerification == "" {
+		userVerification = "preferred"
+	}
+	ceremonyTTL := cfg.CeremonyTTL
+	if ceremonyTTL <= 0 {
+		ceremonyTTL = 2 * time.Minute
+	}
+	timeout := webauthn.TimeoutConfig{
+		Enforce:    true,
+		Timeout:    ceremonyTTL,
+		TimeoutUVD: ceremonyTTL,
+	}
+	return webauthn.New(&webauthn.Config{
+		RPID:                  cfg.RPID,
+		RPDisplayName:         cfg.RPDisplayName,
+		RPOrigins:             cloneStrings(cfg.RPOrigins),
+		AttestationPreference: protocol.ConveyancePreference(attestation),
+		AuthenticatorSelection: protocol.AuthenticatorSelection{
+			UserVerification: protocol.UserVerificationRequirement(userVerification),
+		},
+		Timeouts: webauthn.TimeoutsConfig{
+			Login:        timeout,
+			Registration: timeout,
+		},
+	})
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
+
 	"github.com/MrEthical07/goAuth/session"
 )
 
@@ -46,8 +48,8 @@ func (s Service) CreateAccount(ctx context.Context, req AccountCreateRequest) (*
 	return RunCreateAccount(ctx, req, s.deps.Account)
 }
 
-func (s Service) IssueAccountSessionTokens(ctx context.Context, user AccountUserRecord) (string, string, error) {
-	return RunIssueAccountSessionTokens(ctx, user, s.deps.AccountSession)
+func (s Service) IssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, rememberMe bool) (string, string, error) {
+	return RunIssueAccountSessionTokens(ctx, user, rememberMe, s.deps.AccountSession)
 }
 
 func (s Service) UpdateAccountStatusAndInvalidate(ctx context.Context, userID string, status uint8) error {
@@ -110,16 +112,16 @@ func (s Service) GetLoginAttempts(ctx context.Context, identifier string) (int, 
 	return RunGetLoginAttempts(ctx, identifier, s.deps.Introspection)
 }
 
-func (s Service) LoginWithResult(ctx context.Context, username, password string) (*LoginResult, error) {
-	return RunLoginWithResult(ctx, username, password, s.deps.Login)
+func (s Service) LoginWithResult(ctx context.Context, username, password string, opts LoginOptions) (*LoginResult, error) {
+	return RunLoginWithResult(ctx, username, password, opts, s.deps.Login)
 }
 
 func (s Service) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType string) (*LoginResult, error) {
 	return RunConfirmLoginMFAWithType(ctx, challengeID, code, mfaType, s.deps.Login)
 }
 
-func (s Service) CreateMFALoginChallenge(ctx context.Context, userID, tenantID string) (string, error) {
-	return RunCreateMFALoginChallenge(ctx, userID, tenantID, s.deps.Login)
+func (s Service) CreateMFALoginChallenge(ctx context.Context, userID, tenantID string, rememberMe bool) (string, error) {
+	return RunCreateMFALoginChallenge(ctx, userID, tenantID, rememberMe, s.deps.Login)
 }
 
 func (s Service) IssueLoginSessionTokens(
@@ -127,8 +129,9 @@ func (s Service) IssueLoginSessionTokens(
 	username string,
 	user LoginUserRecord,
 	tenantID string,
+	rememberMe bool,
 ) (string, string, error) {
-	return RunIssueLoginSessionTokens(ctx, username, user, tenantID, s.deps.Login)
+	return RunIssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, s.deps.Login)
 }
 
 func (s Service) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {
@@ -161,4 +164,20 @@ func (s Service) DisableTOTP(ctx context.Context, userID string) error {
 
 func (s Service) VerifyTOTPForUser(ctx context.Context, user TOTPUser, code string) error {
 	return RunVerifyTOTPForUser(ctx, user, code, s.deps.TOTP)
+}
+
+func (s Service) BeginWebAuthnRegistration(ctx context.Context, userID string) ([]byte, string, error) {
+	return RunBeginWebAuthnRegistration(ctx, userID, s.deps.WebAuthn)
+}
+
+func (s Service) FinishWebAuthnRegistration(ctx context.Context, userID, ceremonyID string, responseJSON []byte) (*webauthn.Credential, error) {
+	return RunFinishWebAuthnRegistration(ctx, userID, ceremonyID, responseJSON, s.deps.WebAuthn)
+}
+
+func (s Service) BeginWebAuthnLogin(ctx context.Context, challengeID string) ([]byte, error) {
+	return RunBeginWebAuthnLogin(ctx, challengeID, s.deps.WebAuthn)
+}
+
+func (s Service) ConfirmWebAuthnAssertion(ctx context.Context, challengeID, userID string, assertionJSON []byte) error {
+	return RunConfirmWebAuthnAssertion(ctx, challengeID, userID, assertionJSON, s.deps.WebAuthn)
 }

@@ -45,8 +45,24 @@ The root package contains the authentication engine, builder, configuration, typ
 | `LoginWithTOTP` | method | Authenticates with password + TOTP code in a single call. |
 | `LoginWithBackupCode` | method | Authenticates with password + backup code in a single call. |
 | `LoginWithResult` | method | Authenticates and returns a `LoginResult` indicating MFA challenge status. |
+| `LoginWithOptions` | method | Like `LoginWithResult` with per-login options (`LoginOptions`, e.g. remember-me). |
+| `LoginOptions` | struct | Per-login options; `RememberMe` requests a durable session up to `Session.MaxSessionDuration`. |
 | `ConfirmLoginMFA` | method | Completes a pending MFA challenge with a TOTP code. |
-| `ConfirmLoginMFAWithType` | method | Completes a pending MFA challenge with a specified code type (TOTP or backup). |
+| `ConfirmLoginMFAWithType` | method | Completes a pending MFA challenge with a specified factor type (`totp`, `backup`, or `webauthn`). |
+
+### WebAuthn / FIDO2
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `BeginWebAuthnRegistration` | method | Starts a credential-registration ceremony; returns options JSON + ceremony ID. |
+| `FinishWebAuthnRegistration` | method | Verifies the attestation response and persists the credential. |
+| `ListWebAuthnCredentials` | method | Lists the user's registered credentials. |
+| `RemoveWebAuthnCredential` | method | Deletes one of the user's credentials. |
+| `BeginWebAuthnLogin` | method | Returns assertion options JSON for a pending MFA challenge. |
+| `WebAuthnConfig` | type | Relying-party and ceremony configuration (`Config.WebAuthn`). |
+| `WebAuthnCredential` | struct | Stored credential record (provider persistence shape). |
+| `WebAuthnCredentialProvider` | interface | Optional `UserProvider` capability for credential storage. |
+| `WebAuthnRegistrationChallenge` | struct | Ceremony ID + options JSON returned by `BeginWebAuthnRegistration`. |
 
 ### Token Lifecycle
 
@@ -62,7 +78,7 @@ The root package contains the authentication engine, builder, configuration, typ
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `Logout` | method | Destroys a single session by refresh token. |
-| `LogoutByAccessToken` | method | Destroys a session using the access token's session ID. |
+| `LogoutByAccessToken` | method | Destroys a session using the access token's session ID; accepts expired-but-authentic tokens. |
 | `LogoutAll` | method | Destroys all sessions for a user. |
 | `LogoutInTenant` | method | Destroys a single session scoped to a tenant. |
 | `LogoutAllInTenant` | method | Destroys all sessions for a user within a tenant. |
@@ -269,7 +285,10 @@ JWT token creation and parsing.
 | `NewManager` | func | Creates a `Manager` from a `Config`. |
 | `CreateAccess` | method | Signs a new access token with the given claims. |
 | `ParseAccess` | method | Parses and validates an access token string. |
+| `ParseAccessAllowExpired` | method | Parses an access token accepting expiry as the only defect; for cleanup flows (logout), never authorization. |
 | `AccessClaims` | type | JWT claims struct embedded in access tokens. |
+| `GenerateEd25519Key` | func | Generates a raw Ed25519 keypair for provisioning and key rotation. |
+| `Ed25519KeyFingerprint` | func | Stable fingerprint of an Ed25519 public key (raw or PEM); suitable as a `kid`. |
 
 ---
 
@@ -385,6 +404,7 @@ HTTP middleware for token validation.
 |--------|------|-------------|
 | `Guard` | func | Returns middleware that validates via the engine's configured validation mode. |
 | `RequireJWTOnly` | func | Returns middleware that validates using JWT-only (0 Redis calls). |
+| `RequireHybrid` | func | Returns middleware that validates in Hybrid mode — stateless JWT validation (0 Redis calls). |
 | `RequireStrict` | func | Returns middleware that validates with full session verification (1 Redis GET). |
 | `AuthResultFromContext` | func | Extracts the `AuthResult` set by any guard middleware. |
 
@@ -470,7 +490,7 @@ These packages are not importable by external Go code but are documented here fo
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `Config` | type | Login-failure limiter configuration (enable toggle, max attempts, cooldown). |
-| `Limiter` | type | Redis-backed fixed-window login-failure limiter. |
+| `Limiter` | type | Redis-backed login-failure limiter (fixed or sliding window). |
 | `New` | func | Creates a `Limiter` from a `Config` and Redis client. |
 | `CheckLogin` | method | Returns whether a login attempt is allowed for a tenant+identifier key. |
 | `IncrementLogin` | method | Records a failed login attempt for a tenant+identifier key. |

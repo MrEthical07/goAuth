@@ -66,6 +66,12 @@ const (
 	CodeSystemUnavailableMFABackup         AuthCode = "SYSTEM_UNAVAILABLE_MFA_BACKUP"
 	CodeAuthMFABackupNotConfigured         AuthCode = "AUTH_MFA_BACKUP_NOT_CONFIGURED"
 	CodeAuthMFABackupRegenRequiresTOTP     AuthCode = "AUTH_MFA_BACKUP_REGEN_REQUIRES_TOTP"
+	CodeAuthWebAuthnDisabled               AuthCode = "AUTH_WEBAUTHN_DISABLED"
+	CodeAuthWebAuthnInvalid                AuthCode = "AUTH_WEBAUTHN_INVALID"
+	CodeAuthWebAuthnCeremonyExpired        AuthCode = "AUTH_WEBAUTHN_CEREMONY_EXPIRED"
+	CodeAuthWebAuthnCloneDetected          AuthCode = "AUTH_WEBAUTHN_CLONE_DETECTED"
+	CodeAuthWebAuthnCredentialNotFound     AuthCode = "AUTH_WEBAUTHN_CREDENTIAL_NOT_FOUND"
+	CodeSystemUnavailableWebAuthn          AuthCode = "SYSTEM_UNAVAILABLE_WEBAUTHN"
 	CodeAuthSessionExpired                 AuthCode = "AUTH_SESSION_EXPIRED"
 	CodeAuthInvalidToken                   AuthCode = "AUTH_INVALID_TOKEN"
 	CodeAuthInvalidTokenClockSkew          AuthCode = "AUTH_INVALID_TOKEN_CLOCK_SKEW"
@@ -223,6 +229,18 @@ var (
 	ErrBackupCodesNotConfigured = NewAuthError(CategoryAuthState, string(CodeAuthMFABackupNotConfigured), "backup codes not configured")
 	// ErrBackupCodeRegenerationRequiresTOTP is an exported constant or variable used by the authentication engine.
 	ErrBackupCodeRegenerationRequiresTOTP = NewAuthError(CategoryAuthState, string(CodeAuthMFABackupRegenRequiresTOTP), "backup code regeneration requires totp")
+	// ErrWebAuthnDisabled is returned when a WebAuthn method is called but Config.WebAuthn is not enabled.
+	ErrWebAuthnDisabled = NewAuthError(CategoryAuthState, string(CodeAuthWebAuthnDisabled), "webauthn disabled")
+	// ErrWebAuthnInvalid is returned when a WebAuthn attestation/assertion response fails verification.
+	ErrWebAuthnInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthWebAuthnInvalid), "webauthn response invalid")
+	// ErrWebAuthnCeremonyExpired is returned when the ceremony session is missing, expired, or already consumed.
+	ErrWebAuthnCeremonyExpired = NewAuthError(CategoryAuthState, string(CodeAuthWebAuthnCeremonyExpired), "webauthn ceremony expired")
+	// ErrWebAuthnCloneDetected is returned when an assertion's signature counter regresses (possible cloned authenticator).
+	ErrWebAuthnCloneDetected = NewAuthError(CategoryAuthAbuse, string(CodeAuthWebAuthnCloneDetected), "webauthn cloned authenticator detected")
+	// ErrWebAuthnCredentialNotFound is returned when removing or asserting with an unknown credential.
+	ErrWebAuthnCredentialNotFound = NewAuthError(CategoryAuthState, string(CodeAuthWebAuthnCredentialNotFound), "webauthn credential not found")
+	// ErrWebAuthnUnavailable is returned when the WebAuthn ceremony/credential backend is unreachable.
+	ErrWebAuthnUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableWebAuthn), "webauthn unavailable")
 	// ErrSessionNotFound is an exported constant or variable used by the authentication engine.
 	ErrSessionNotFound = NewAuthError(CategoryAuthState, string(CodeAuthSessionExpired), "session not found or expired")
 	// ErrTokenInvalid is an exported constant or variable used by the authentication engine.

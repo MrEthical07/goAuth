@@ -41,6 +41,7 @@ goAuth assumes attackers may:
 | **Algorithm confusion** | Only configured algorithm accepted | Reject unexpected alg headers |
 | **Clock skew exploitation** | `MaxFutureIAT` cap + `Leeway` ≤ 2 min | `ErrTokenClockSkew` on violations |
 | **Stale tokens** | Version stamps (perm/role/account) in strict mode | Mismatch → session deleted |
+| **Long-lived signing keys** | `JWTConfig.VerifyKeys` overlap rotation ([ops.md §9](ops.md#9-ed25519-key-rotation-runbook)) | Signing kid must match its verify key at `Build()`; unknown/missing `kid` rejected |
 
 ### Session Security
 
@@ -50,6 +51,14 @@ goAuth assumes attackers may:
 | **Session fixation** | New session ID on every login | Unique `crypto/rand` 16-byte IDs |
 | **Session hijacking** | IP + UA binding (enforce or detect) | `ErrDeviceBindingRejected` or anomaly audit |
 | **Stale sessions** | Strict mode + version drift checks | Version mismatch → session deleted |
+
+> **Route-mode overrides are not bounded by the engine mode.** An explicit per-route
+> mode (`Validate(ctx, token, ModeJWTOnly)` / `ModeHybrid`, or the corresponding
+> middleware) always wins over the engine default, including on a `ModeStrict` engine —
+> such routes skip Redis-backed revocation, version, status, and device checks until
+> the access token expires. Route modes are chosen in code and are never influenced by
+> the request, so this is a deliberate developer decision; audit route-mode overrides
+> like any other authorization rule.
 
 ### MFA Security
 

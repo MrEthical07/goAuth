@@ -23,6 +23,7 @@ type Config struct {
 	SessionHardening  SessionHardeningConfig
 	DeviceBinding     DeviceBindingConfig
 	TOTP              TOTPConfig
+	WebAuthn          WebAuthnConfig
 	Password          PasswordConfig
 	PasswordReset     PasswordResetConfig
 	EmailVerification EmailVerificationConfig
@@ -60,6 +61,12 @@ type JWTConfig struct {
 	RequireIAT    bool
 	MaxFutureIAT  time.Duration
 	KeyID         string
+	// VerifyKeys maps key IDs (kid) to verification key material: Ed25519
+	// public keys (raw or PEM) or HS256 secrets. When set, tokens are
+	// verified strictly against this set (a missing or unknown kid is
+	// rejected) and KeyID must name an entry, enabling zero-downtime key
+	// rotation: verify old+new while signing with either. See docs/ops.md.
+	VerifyKeys map[string][]byte
 }
 
 /*
@@ -75,10 +82,21 @@ type SessionConfig struct {
 	RedisPrefix             string
 	SlidingExpiration       bool
 	AbsoluteSessionLifetime time.Duration
-	JitterEnabled           bool
-	JitterRange             time.Duration
-	MaxSessionSize          int
-	SessionEncoding         string // "binary" (default) or "msgpack"
+	// MaxSessionDuration is the absolute ceiling for any session's lifetime.
+	// Remember-me sessions (see LoginOptions) live up to this value; sliding
+	// renewal can never extend a session beyond it. Zero means unset: the
+	// ceiling is resolved at Build time to a per-validation-mode default
+	// (ModeStrict → 24h, ModeHybrid/ModeJWTOnly → 7d), raised if needed so it
+	// never falls below the effective default session lifetime
+	// (min(RefreshTTL, AbsoluteSessionLifetime)). When set explicitly, it
+	// also caps non-remember-me sessions.
+	//
+	//	Docs: docs/session.md, docs/config.md
+	MaxSessionDuration time.Duration
+	JitterEnabled      bool
+	JitterRange        time.Duration
+	MaxSessionSize     int
+	SessionEncoding    string // "binary" (default) or "msgpack"
 }
 
 /*
@@ -201,16 +219,28 @@ SECURITY CONFIG
 //
 //	Docs: docs/security.md, docs/config.md
 type SecurityConfig struct {
-	ProductionMode               bool
-	EnableIPBinding              bool
-	EnableUserAgentBinding       bool
-	EnableLoginFailureLimiter    bool
+	ProductionMode bool
+
+	// EnableIPBinding is a no-op: the engine never reads it. IP binding is
+	// controlled by DeviceBinding.Enabled with EnforceIPBinding/DetectIPChange.
+	// Enabling it produces the security_ip_binding_noop lint warning.
+	EnableIPBinding           bool
+	EnableUserAgentBinding    bool
+	EnableLoginFailureLimiter bool
+
+	// EnableIPSignal is a no-op: the engine never reads it. Enabling it
+	// produces the security_ip_signal_noop lint warning.
 	EnableIPSignal               bool
 	EnforceRefreshRotation       bool
 	EnforceRefreshReuseDetection bool
 	MaxLoginAttempts             int
 	LoginCooldownDuration        time.Duration
 	StrictMode                   bool
+
+	// RequireSecureCookies, SameSitePolicy, and CSRFProtection are no-ops:
+	// the engine is transport-agnostic and never issues cookies, so nothing
+	// reads them. Enforce cookie flags and CSRF policy at the HTTP layer.
+	// Enabling any of them produces the cookie_settings_noop lint warning.
 	RequireSecureCookies         bool
 	SameSitePolicy               http.SameSite
 	CSRFProtection               bool
@@ -220,6 +250,15 @@ type SecurityConfig struct {
 	AutoLockoutEnabled           bool
 	AutoLockoutThreshold         int
 	AutoLockoutDuration          time.Duration // 0 = manual unlock only
+
+	// LimiterWindowMode selects the rate-limiter counting algorithm for all
+	// limiter domains: "fixed" (or empty, the default) keeps classic
+	// fixed-window counters; "sliding" opts into a weighted sliding-window
+	// approximation that removes the fixed-window 2x boundary-burst weakness.
+	// Validated at Build time.
+	//
+	//	Docs: docs/rate_limiting.md
+	LimiterWindowMode string
 }
 
 // SessionHardeningConfig controls session limits: max per user/tenant,
@@ -283,6 +322,61 @@ type TOTPConfig struct {
 
 /*
 ====================================
+WEBAUTHN CONFIG
+====================================
+*/
+
+// WebAuthnConfig controls WebAuthn/FIDO2 second-factor support.
+//
+// When Enabled, the user provider must also implement
+// [WebAuthnCredentialProvider] (checked at [Builder.Build]). The engine is
+// transport-agnostic: it exchanges CredentialCreation/CredentialRequest
+// options and authenticator responses as raw JSON with the caller.
+//
+//	Docs: docs/webauthn.md, docs/config.md
+type WebAuthnConfig struct {
+	// Enabled turns the WebAuthn surface on. Default: false.
+	Enabled bool
+
+	// RPID is the Relying Party ID — generally the site's effective domain
+	// without scheme or port (e.g. "example.com"). Required when Enabled.
+	RPID string
+
+	// RPDisplayName is the human-readable Relying Party name shown by
+	// authenticators. Required when Enabled.
+	RPDisplayName string
+
+	// RPOrigins lists the exact origins permitted to complete ceremonies
+	// (e.g. "https://app.example.com"). Required when Enabled.
+	RPOrigins []string
+
+	// AttestationPreference is the attestation conveyance preference:
+	// "none" (default), "indirect", "direct", or "enterprise". Keep "none"
+	// unless you have a concrete attestation policy.
+	AttestationPreference string
+
+	// UserVerification is the user-verification requirement for ceremonies:
+	// "preferred" (default), "required", or "discouraged".
+	UserVerification string
+
+	// CeremonyTTL bounds how long a begun ceremony (registration or login
+	// assertion) stays completable. 0 applies the default of 2 minutes.
+	CeremonyTTL time.Duration
+
+	// RequireForLogin gates login behind a WebAuthn assertion for users who
+	// have at least one registered credential (mirrors TOTP.RequireForLogin).
+	// Users without credentials log in normally. Default: false.
+	RequireForLogin bool
+
+	// RejectClonedAuthenticators fails assertions whose signature counter
+	// regressed (a cloned-authenticator signal) instead of merely auditing.
+	// Default: true (set by DefaultConfig; the zero value of this struct
+	// leaves it false only when the whole feature is disabled).
+	RejectClonedAuthenticators bool
+}
+
+/*
+====================================
 MULTI TENANT CONFIG
 ====================================
 */
@@ -291,7 +385,12 @@ MULTI TENANT CONFIG
 //
 //	Docs: docs/config.md
 type MultiTenantConfig struct {
-	Enabled          bool
+	Enabled bool
+
+	// TenantHeader is a no-op: the engine never reads it, and the shipped
+	// middleware does not extract it. Tenant scoping comes exclusively from
+	// [WithTenantID] on the request context. Setting it with Enabled produces
+	// the tenant_header_noop lint warning.
 	TenantHeader     string
 	EnforceIsolation bool
 }
@@ -302,8 +401,9 @@ DATABASE CONFIG
 ====================================
 */
 
-// DatabaseConfig holds Redis connection parameters (currently unused;
-// prefer [Builder.WithRedis]).
+// DatabaseConfig holds Redis connection parameters. It is a no-op: the
+// engine never reads it — Redis is wired exclusively via [Builder.WithRedis].
+// Setting an Address produces the database_config_noop lint warning.
 type DatabaseConfig struct {
 	Address                   string
 	Password                  string
@@ -334,7 +434,9 @@ CACHE CONFIG
 ====================================
 */
 
-// CacheConfig controls optional in-memory caching of session data.
+// CacheConfig is a no-op: no in-memory session cache is implemented and the
+// engine never reads it (it is validated for shape only). Enabling LRUEnabled
+// produces the cache_lru_noop lint warning.
 type CacheConfig struct {
 	LRUEnabled bool
 	Size       int
@@ -497,6 +599,14 @@ func defaultConfig() Config {
 			RequireForPasswordReset:     false,
 			RequireTOTPForPasswordReset: false,
 		},
+		WebAuthn: WebAuthnConfig{
+			Enabled:                    false,
+			AttestationPreference:      "none",
+			UserVerification:           "preferred",
+			CeremonyTTL:                2 * time.Minute,
+			RequireForLogin:            false,
+			RejectClonedAuthenticators: true,
+		},
 		MultiTenant: MultiTenantConfig{
 			Enabled:          false,
 			TenantHeader:     "X-Tenant-ID",
@@ -606,6 +716,28 @@ func cloneConfig(cfg Config) Config {
 	out := cfg
 	out.JWT.PrivateKey = cloneBytes(cfg.JWT.PrivateKey)
 	out.JWT.PublicKey = cloneBytes(cfg.JWT.PublicKey)
+	out.JWT.VerifyKeys = cloneVerifyKeys(cfg.JWT.VerifyKeys)
+	out.WebAuthn.RPOrigins = cloneStrings(cfg.WebAuthn.RPOrigins)
+	return out
+}
+
+func cloneStrings(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	out := make([]string, len(s))
+	copy(out, s)
+	return out
+}
+
+func cloneVerifyKeys(keys map[string][]byte) map[string][]byte {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(keys))
+	for kid, key := range keys {
+		out[kid] = cloneBytes(key)
+	}
 	return out
 }
 
@@ -616,6 +748,51 @@ func cloneBytes(b []byte) []byte {
 	out := make([]byte, len(b))
 	copy(out, b)
 	return out
+}
+
+/*
+====================================
+SESSION LIFETIME RESOLUTION
+====================================
+*/
+
+const (
+	// maxSessionDurationDefaultStrict is the fallback session ceiling for ModeStrict.
+	maxSessionDurationDefaultStrict = 24 * time.Hour
+	// maxSessionDurationDefault is the fallback session ceiling for ModeHybrid/ModeJWTOnly.
+	maxSessionDurationDefault = 7 * 24 * time.Hour
+	// minMaxSessionDuration is the smallest accepted explicit MaxSessionDuration.
+	minMaxSessionDuration = time.Minute
+)
+
+// effectiveDefaultSessionLifetime is the lifetime a non-remember-me session
+// receives before the MaxSessionDuration ceiling is applied:
+// min(RefreshTTL, AbsoluteSessionLifetime).
+func (c *Config) effectiveDefaultSessionLifetime() time.Duration {
+	lifetime := c.Session.AbsoluteSessionLifetime
+	if c.JWT.RefreshTTL > 0 && c.JWT.RefreshTTL < lifetime {
+		return c.JWT.RefreshTTL
+	}
+	return lifetime
+}
+
+// resolvedMaxSessionDuration returns the effective absolute session ceiling.
+// An explicit MaxSessionDuration wins. When unset, the per-mode default
+// (ModeStrict → 24h, others → 7d) applies, raised to the effective default
+// session lifetime when that is longer — otherwise upgrading would silently
+// shorten sessions for configs that predate this field.
+func (c *Config) resolvedMaxSessionDuration() time.Duration {
+	if c.Session.MaxSessionDuration > 0 {
+		return c.Session.MaxSessionDuration
+	}
+	def := maxSessionDurationDefault
+	if c.ValidationMode == ModeStrict {
+		def = maxSessionDurationDefaultStrict
+	}
+	if base := c.effectiveDefaultSessionLifetime(); base > def {
+		return base
+	}
+	return def
 }
 
 /*
@@ -665,6 +842,25 @@ func (c *Config) Validate() error {
 	if c.JWT.Audience != "" && strings.TrimSpace(c.JWT.Audience) == "" {
 		return errors.New("JWT Audience must not be empty when configured")
 	}
+	for kid, key := range c.JWT.VerifyKeys {
+		if strings.TrimSpace(kid) == "" {
+			return errors.New("JWT VerifyKeys must not contain an empty kid")
+		}
+		if len(key) == 0 {
+			return errors.New("JWT VerifyKeys must not contain empty key material (kid \"" + kid + "\")")
+		}
+	}
+	if len(c.JWT.VerifyKeys) > 0 {
+		// The engine both signs and verifies. With VerifyKeys set the parser
+		// requires a kid, so an engine minting kid-less tokens (empty KeyID)
+		// would reject every token it issues.
+		if c.JWT.KeyID == "" {
+			return errors.New("JWT VerifyKeys requires KeyID (tokens without a kid would fail the engine's own verification)")
+		}
+		if _, ok := c.JWT.VerifyKeys[c.JWT.KeyID]; !ok {
+			return errors.New("JWT KeyID must be present in VerifyKeys")
+		}
+	}
 
 	// Session
 	if c.Session.MaxSessionSize <= 0 {
@@ -673,6 +869,13 @@ func (c *Config) Validate() error {
 
 	if c.Session.AbsoluteSessionLifetime <= 0 {
 		return errors.New("Session AbsoluteSessionLifetime must be > 0")
+	}
+
+	if c.Session.MaxSessionDuration < 0 {
+		return errors.New("Session MaxSessionDuration must be >= 0 (0 = unset, resolved at build)")
+	}
+	if c.Session.MaxSessionDuration > 0 && c.Session.MaxSessionDuration < minMaxSessionDuration {
+		return errors.New("Session MaxSessionDuration must be >= 1m when set")
 	}
 
 	if c.Session.JitterRange < 0 {
@@ -811,6 +1014,12 @@ func (c *Config) Validate() error {
 	if c.Security.LoginCooldownDuration <= 0 {
 		return errors.New("LoginCooldownDuration must be > 0")
 	}
+	switch c.Security.LimiterWindowMode {
+	case "", "fixed", "sliding":
+		// valid
+	default:
+		return errors.New("LimiterWindowMode must be \"fixed\" or \"sliding\"")
+	}
 	if !c.Security.EnforceRefreshRotation {
 		return errors.New("EnforceRefreshRotation must be true")
 	}
@@ -896,6 +1105,43 @@ func (c *Config) Validate() error {
 		return errors.New("TOTP RequireBackupForLogin requires TOTP Enabled")
 	}
 
+	// WebAuthn
+	if c.WebAuthn.Enabled {
+		if strings.TrimSpace(c.WebAuthn.RPID) == "" {
+			return errors.New("WebAuthn RPID is required when WebAuthn is enabled")
+		}
+		if strings.TrimSpace(c.WebAuthn.RPDisplayName) == "" {
+			return errors.New("WebAuthn RPDisplayName is required when WebAuthn is enabled")
+		}
+		if len(c.WebAuthn.RPOrigins) == 0 {
+			return errors.New("WebAuthn RPOrigins is required when WebAuthn is enabled")
+		}
+		for _, origin := range c.WebAuthn.RPOrigins {
+			if strings.TrimSpace(origin) == "" {
+				return errors.New("WebAuthn RPOrigins must not contain empty origins")
+			}
+		}
+		switch c.WebAuthn.AttestationPreference {
+		case "", "none", "indirect", "direct", "enterprise":
+		default:
+			return errors.New("WebAuthn AttestationPreference must be none, indirect, direct, or enterprise")
+		}
+		switch c.WebAuthn.UserVerification {
+		case "", "preferred", "required", "discouraged":
+		default:
+			return errors.New("WebAuthn UserVerification must be preferred, required, or discouraged")
+		}
+		if c.WebAuthn.CeremonyTTL < 0 {
+			return errors.New("WebAuthn CeremonyTTL must be >= 0 (0 = default)")
+		}
+		if c.WebAuthn.CeremonyTTL > 0 && (c.WebAuthn.CeremonyTTL < 10*time.Second || c.WebAuthn.CeremonyTTL > 10*time.Minute) {
+			return errors.New("WebAuthn CeremonyTTL must be between 10s and 10m when set")
+		}
+	}
+	if c.WebAuthn.RequireForLogin && !c.WebAuthn.Enabled {
+		return errors.New("WebAuthn RequireForLogin requires WebAuthn Enabled")
+	}
+
 	switch c.ValidationMode {
 	case ModeJWTOnly, ModeHybrid, ModeStrict:
 		// valid
@@ -920,6 +1166,13 @@ func (c *Config) Validate() error {
 		}
 		if c.JWT.SigningMethod == "hs256" && len(c.JWT.PrivateKey) < 32 {
 			return errors.New("ProductionMode requires hs256 key length >= 256 bits")
+		}
+		if c.JWT.SigningMethod == "hs256" {
+			for kid, key := range c.JWT.VerifyKeys {
+				if len(key) < 32 {
+					return errors.New("ProductionMode requires hs256 verify key length >= 256 bits (kid \"" + kid + "\")")
+				}
+			}
 		}
 		if c.Password.Memory < 64*1024 {
 			return errors.New("ProductionMode requires Password Memory >= 65536 KB")
@@ -1125,6 +1378,11 @@ func (c *Config) Lint() LintResult {
 			"HS256 signing is supported but Ed25519 provides better security properties")
 	}
 
+	if c.JWT.SigningMethod == "ed25519" && c.JWT.KeyID == "" {
+		warn(LintInfo, "keyid_missing",
+			"JWT KeyID is empty; tokens carry no kid header, which complicates future key rotation (set KeyID and VerifyKeys before the first rotation)")
+	}
+
 	// --- Validation mode contradictions ---
 	if c.ValidationMode == ModeJWTOnly && c.DeviceBinding.Enabled {
 		warn(LintHigh, "jwtonly_device_binding",
@@ -1139,6 +1397,12 @@ func (c *Config) Lint() LintResult {
 	if c.ValidationMode == ModeJWTOnly && c.Security.EnablePermissionVersionCheck {
 		warn(LintWarn, "jwtonly_perm_version",
 			"ValidationMode is JWTOnly with PermissionVersionCheck; version checks use embedded claim values only and won't catch real-time revocations")
+	}
+
+	if c.ValidationMode == ModeHybrid &&
+		(c.DeviceBinding.EnforceIPBinding || c.DeviceBinding.EnforceUserAgentBinding) {
+		warn(LintInfo, "hybrid_enforcement_strict_routes_only",
+			"ValidationMode is Hybrid with enforced device binding; enforcement runs only on routes validated in ModeStrict — Hybrid-resolved routes are stateless and skip device checks")
 	}
 
 	// --- Abuse protection ---
@@ -1156,6 +1420,49 @@ func (c *Config) Lint() LintResult {
 	if c.Session.AbsoluteSessionLifetime < c.JWT.RefreshTTL {
 		warn(LintHigh, "session_shorter_than_refresh",
 			"AbsoluteSessionLifetime < RefreshTTL; sessions will expire before refresh tokens, causing unexpected refresh failures")
+	}
+
+	if c.Session.MaxSessionDuration > 0 && c.Session.MaxSessionDuration < c.effectiveDefaultSessionLifetime() {
+		warn(LintWarn, "max_session_duration_caps_default",
+			"MaxSessionDuration < min(RefreshTTL, AbsoluteSessionLifetime); ALL sessions (not just remember-me) will be capped at MaxSessionDuration")
+	}
+
+	if c.resolvedMaxSessionDuration() > 30*24*time.Hour {
+		warn(LintWarn, "max_session_duration_long",
+			"Effective MaxSessionDuration > 30d keeps remember-me sessions alive unusually long; consider a shorter ceiling")
+	}
+
+	// --- No-op configuration knobs ---
+	// These fields are accepted (and some are validated) but never read by the
+	// engine. Warn so integrators don't believe a protection is active.
+	if c.Security.EnableIPBinding {
+		warn(LintWarn, "security_ip_binding_noop",
+			"Security.EnableIPBinding is not read by the engine; IP binding is controlled by DeviceBinding.Enabled with EnforceIPBinding/DetectIPChange")
+	}
+
+	if c.Security.EnableIPSignal {
+		warn(LintWarn, "security_ip_signal_noop",
+			"Security.EnableIPSignal is not read by the engine; no IP-signal feature is implemented")
+	}
+
+	if c.Security.RequireSecureCookies || c.Security.CSRFProtection || c.Security.SameSitePolicy != 0 {
+		warn(LintInfo, "cookie_settings_noop",
+			"RequireSecureCookies/SameSitePolicy/CSRFProtection are not read by the engine; it never issues cookies — enforce cookie flags and CSRF policy at the HTTP layer")
+	}
+
+	if c.Cache.LRUEnabled {
+		warn(LintWarn, "cache_lru_noop",
+			"Cache.LRUEnabled is set but no in-memory session cache is implemented; the setting is not read by the engine")
+	}
+
+	if c.Database.Address != "" {
+		warn(LintInfo, "database_config_noop",
+			"DatabaseConfig is not read by the engine; configure Redis via Builder.WithRedis")
+	}
+
+	if c.MultiTenant.Enabled && c.MultiTenant.TenantHeader != "" {
+		warn(LintInfo, "tenant_header_noop",
+			"MultiTenant.TenantHeader is not read by the engine or middleware; tenant scoping comes only from WithTenantID(ctx) — extract the header in your HTTP layer")
 	}
 
 	// --- Production readiness ---

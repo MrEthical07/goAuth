@@ -2,8 +2,8 @@
 
 Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessions + rotating refresh tokens + bitmask RBAC.
 
-[![Go Tests](https://img.shields.io/badge/tests-266%20passing-brightgreen)]()
-[![Go Version](https://img.shields.io/badge/go-1.24%2B-blue)]()
+[![Go Tests](https://img.shields.io/badge/tests-336%20passing-brightgreen)]()
+[![Go Version](https://img.shields.io/badge/go-1.25%2B-blue)]()
 [![Race Detector](https://img.shields.io/badge/race%20detector-clean-brightgreen)]()
 
 ---
@@ -11,12 +11,14 @@ Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessi
 ## Features
 
 - **Three validation modes** — JWT-only (0 Redis ops), Hybrid, Strict (instant revocation)
+- **Remember-me & durable sessions** — per-login `RememberMe` option with a configurable absolute session ceiling (`MaxSessionDuration`)
 - **Refresh token rotation** — atomic Lua CAS with replay detection
-- **MFA** — TOTP (RFC 6238) + backup codes with rate limiting
+- **Zero-downtime key rotation** — `kid`-based multi-key verification (`JWT.VerifyKeys`) with a documented Ed25519 rotation runbook and `goauth-keygen` tooling
+- **MFA** — TOTP (RFC 6238) + backup codes with rate limiting, plus WebAuthn/FIDO2 second factor (security keys, passkeys) with single-use ceremonies and clone detection
 - **Password management** — Argon2id hashing, reset (Token/OTP/UUID strategies), change with reuse detection
 - **Email verification** — enumeration-resistant with Lua CAS consumption
 - **Permission system** — 64/128/256/512-bit frozen bitmasks, O(1) checks
-- **Rate limiting** — 7-domain fixed-window limiters + auto-lockout
+- **Rate limiting** — 7-domain limiters + auto-lockout; fixed-window default with an opt-in sliding-window mode (`Security.LimiterWindowMode = "sliding"`) that removes the 2× boundary burst
 - **Device binding** — IP/UA fingerprint enforcement or anomaly detection
 - **Audit + Metrics** — 44 counters, latency histogram, Prometheus + OpenTelemetry exporters
 - **Multi-tenancy** — tenant-scoped sessions, counters, and rate limits
@@ -72,6 +74,14 @@ func main() {
     }
     fmt.Println("Access:", access[:20]+"...")
 
+    // Remember-me login: session lives up to Config.Session.MaxSessionDuration
+    durable, err := engine.LoginWithOptions(context.Background(),
+        "alice@example.com", "password", goAuth.LoginOptions{RememberMe: true})
+    if err != nil {
+        log.Fatal(err)
+    }
+    _ = durable
+
     // Validate
     result, err := engine.ValidateAccess(context.Background(), access)
     if err != nil {
@@ -94,14 +104,14 @@ See [examples/http-minimal](examples/http-minimal) for a complete HTTP server wi
 go get github.com/MrEthical07/goAuth
 ```
 
-**Requirements:** Go 1.24+, Redis 6+
+**Requirements:** Go 1.25+, Redis 6+
 
 ## Validation Modes
 
 | Mode | Redis Ops | Use Case |
 |------|-----------|----------|
 | `ModeJWTOnly` | 0 | Stateless microservices, dashboards |
-| `ModeHybrid` | 0–1 | Most applications (default) |
+| `ModeHybrid` | 0 (Strict routes add 1) | Most applications (default); routes opt into Strict or JWT-only per call |
 | `ModeStrict` | 1 | Financial, healthcare, compliance |
 
 ```go
@@ -166,7 +176,7 @@ go test -tags=integration ./test/...
 go test -run '^$' -bench . -benchmem ./...
 ```
 
-266 tests, 4 fuzz targets, 13 benchmarks. Race-detector clean.
+336 tests, 4 fuzz targets, 18 benchmarks. Race-detector clean.
 
 ## License
 

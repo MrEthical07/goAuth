@@ -14,6 +14,12 @@ import (
 
 const (
 	mfaLoginRecordVersion1 = 1
+	// mfaLoginRecordVersion2 appends a flags byte (bit 0 = remember-me) after
+	// the v1 layout. Decoding accepts both versions; v1 records read as
+	// remember-me = false.
+	mfaLoginRecordVersion2 = 2
+
+	mfaLoginFlagRememberMe = 1 << 0
 )
 
 var (
@@ -24,10 +30,11 @@ var (
 )
 
 type MFALoginChallenge struct {
-	UserID    string
-	TenantID  string
-	ExpiresAt int64
-	Attempts  uint16
+	UserID     string
+	TenantID   string
+	ExpiresAt  int64
+	Attempts   uint16
+	RememberMe bool
 }
 
 type MFALoginChallengeStore struct {
@@ -180,7 +187,7 @@ func (s *MFALoginChallengeStore) RecordFailure(
 
 func encodeMFALoginChallenge(record *MFALoginChallenge) ([]byte, error) {
 	var buf bytes.Buffer
-	buf.WriteByte(mfaLoginRecordVersion1)
+	buf.WriteByte(mfaLoginRecordVersion2)
 
 	if err := binary.Write(&buf, binary.BigEndian, record.Attempts); err != nil {
 		return nil, err
@@ -201,6 +208,12 @@ func encodeMFALoginChallenge(record *MFALoginChallenge) ([]byte, error) {
 	}
 	buf.WriteString(record.TenantID)
 
+	var flags byte
+	if record.RememberMe {
+		flags |= mfaLoginFlagRememberMe
+	}
+	buf.WriteByte(flags)
+
 	return buf.Bytes(), nil
 }
 
@@ -211,7 +224,7 @@ func decodeMFALoginChallenge(data []byte) (*MFALoginChallenge, error) {
 	if err != nil {
 		return nil, err
 	}
-	if version != mfaLoginRecordVersion1 {
+	if version != mfaLoginRecordVersion1 && version != mfaLoginRecordVersion2 {
 		return nil, errors.New("invalid mfa challenge version")
 	}
 
@@ -242,6 +255,14 @@ func decodeMFALoginChallenge(data []byte) (*MFALoginChallenge, error) {
 		return nil, err
 	}
 	record.TenantID = string(tenant)
+
+	if version >= mfaLoginRecordVersion2 {
+		flags, err := reader.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		record.RememberMe = flags&mfaLoginFlagRememberMe != 0
+	}
 
 	return record, nil
 }

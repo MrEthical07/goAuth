@@ -1,89 +1,107 @@
 # Release Readiness Assessment
 
-Date: 2026-04-06  
-Branch: fix/dualratelimit  
-Release Target: v0.3.0  
+Date: 2026-07-14
+Branch: feature/v0.4.0-auth-suite
+Release Target: v0.4.0
 Status: Ready for release
 
 ---
 
 ## Summary
 
-v0.3.0 is a breaking release that finalizes the new limiter architecture, canonical AuthError boundary normalization, and expanded guardrail coverage.
-
-All release-critical tests pass on this branch, and migration guidance is now documented.
+v0.4.0 is a backward-compatible minor release: every public API change is
+additive, and the only behavior changes are deliberate, documented fixes
+(expired-token logout now succeeds; explicit `ModeHybrid` route overrides no
+longer error). It ships remember-me durable sessions, the hybrid per-route
+validation model, graceful expired-token logout, an opt-in sliding-window rate
+limiter, Ed25519 key-rotation tooling, WebAuthn/FIDO2 second-factor support,
+and no-op-config lint warnings.
 
 ---
 
-## Breaking Scope (v0.3.0)
+## Scope (v0.4.0)
 
-1. Canonical public error model is now enforced at engine boundaries:
-   - Exported Engine methods now return normalized AuthError-compatible failures.
-   - Unknown internal errors collapse to ErrSystemInternal.
-   - Availability/dependency failures collapse to ErrSystemUnavailable or domain-specific unavailable sentinels.
-2. Refresh-throttle path removed:
-   - Security.EnableRefreshThrottle, Security.MaxRefreshAttempts, Security.RefreshCooldownDuration removed.
-   - ErrRefreshRateLimited and MetricRefreshRateLimited removed.
-3. Config field migration required:
-   - Security.EnableIPThrottle -> Security.EnableLoginFailureLimiter
-   - PasswordReset and EmailVerification toggles split into request and confirm-failure limiter toggles.
-   - Account creation limiter toggles consolidated under Account.EnableCreationLimiter.
-4. Limiter keyspace moved to tenant-scoped rl:* prefixes.
-5. Runtime limiter wrappers now apply fail-open behavior for limiter backend failures with audit+metrics signals.
+1. Remember-me + configurable durable sessions — `Session.MaxSessionDuration`,
+   `LoginOptions`/`LoginWithOptions`, `CreateAccountRequest.RememberMe`;
+   existing signatures and session lifetimes unchanged.
+2. Hybrid mode aligned with its per-route design — explicit `ModeHybrid`
+   overrides valid, `middleware.RequireHybrid`, stateless resolved-Hybrid
+   semantics documented as the contract.
+3. Logout with expired-but-authentic access tokens succeeds (was
+   `ErrTokenInvalid`); forged/invalid tokens still rejected.
+4. Sliding-window rate limiting (opt-in via `Security.LimiterWindowMode`),
+   all seven limiter domains, shared atomic window primitive.
+5. Ed25519 key rotation — `JWT.VerifyKeys` on the engine config, build-time
+   guardrails, `jwt.GenerateEd25519Key`/`Ed25519KeyFingerprint`,
+   `cmd/goauth-keygen`, documented rotation runbook.
+6. WebAuthn/FIDO2 second factor — registration + login ceremonies,
+   `WebAuthnCredentialProvider` capability interface, single-use TTL'd
+   ceremony sessions, clone detection.
+7. Login timing-oracle fix (unknown identifiers), atomic limiter increments,
+   and `*_noop` lint warnings for config knobs the engine never reads.
+
+Deferred: SSO/OIDC + OAuth2 social login (see docs/roadmap.md — moved to its
+own cycle).
+
+---
+
+## Compatibility & migration notes
+
+- No public signature changes; all additions are new methods, fields, or
+  config. Existing configs resolve to identical session lifetimes (the
+  `MaxSessionDuration` default is raised to the effective current lifetime).
+- Behavior changes callers may observe:
+  - `LogoutByAccessToken` on an expired-but-authentic token now returns nil
+    (was `ErrTokenInvalid`).
+  - `Validate`/`Guard` with an explicit `ModeHybrid` route mode now validates
+    statelessly (previously always `ErrInvalidRouteMode`/401). An explicit
+    route mode always wins over the engine mode — a route override can
+    downgrade a Strict engine; review route wiring (see docs/security.md).
+- Mixed-version rollout caveat: MFA login challenges written by v0.4.0 use
+  record v2; older binaries cannot decode them during the ≤ 3 minute
+  challenge TTL window of a rolling deploy.
 
 ---
 
 ## Verification Gates
 
-### Full test suite
-
-Command:
+### Full test suite (local, Windows)
 
 ```bash
 go test ./...
 ```
 
-Result: PASS
+Result: PASS — all 12 packages (engine root, internal, flows, stores, window,
+jwt, otel/prometheus exporters, password, permission, session, test).
 
-Key package outcomes:
+### Race detector
 
-- ok github.com/MrEthical07/goAuth
-- ok github.com/MrEthical07/goAuth/internal
-- ok github.com/MrEthical07/goAuth/jwt
-- ok github.com/MrEthical07/goAuth/metrics/export/otel
-- ok github.com/MrEthical07/goAuth/metrics/export/prometheus
-- ok github.com/MrEthical07/goAuth/password
-- ok github.com/MrEthical07/goAuth/permission
-- ok github.com/MrEthical07/goAuth/session
-- ok github.com/MrEthical07/goAuth/test
+`go test -race ./...` is enforced by the `go-race` CI workflow (Linux); local
+race builds are unavailable on the release machine. CI must be green before
+tagging.
 
 ### Boundary guardrails
-
-The static and runtime boundary guardrails are present and passing in targeted runs:
 
 ```bash
 go test ./... -run "TestEngineErrorBoundaryStatic|TestEngineErrorBoundaryRuntime"
 ```
 
-Result: PASS
+Result: PASS (included in the full-suite run).
 
----
+### Dependency audit
 
-## Documentation Status
-
-Release docs were updated for v0.3.0:
-
-- CHANGELOG updated with v0.3.0 breaking release notes.
-- docs/migrations updated with v0.3.0 migration mapping and rollout guidance.
-- docs/error-model added and linked from core documentation.
-- Existing docs for config, rate limiting, engine behavior, flows, security, and API reference were aligned with the new semantics.
+New in v0.4.0: `github.com/go-webauthn/webauthn` (+ transitives) and
+test-only `github.com/descope/virtualwebauthn`. No OIDC/OAuth2 dependencies.
 
 ---
 
 ## Release Checklist
 
-- [x] Breaking changes documented in changelog
-- [x] Migration guide updated for renamed/removed config fields
-- [x] Public error-boundary contract documented and test-enforced
-- [x] Full repository test suite passes
-- [x] Release branch is ready for commit and tag v0.3.0
+- [x] All v0.4.0 features implemented with tests and docs
+- [x] CHANGELOG moved from [Unreleased] to [0.4.0] with migration notes
+- [x] Behavior changes and rollout caveats documented
+- [x] Docs reconciled against the v0.4.0 code (config, flows, middleware,
+      jwt, ops, security, webauthn, rate limiting, api-reference, examples)
+- [x] Full local test suite passes
+- [ ] `go-race` and all other CI workflows green on the release branch
+- [ ] Annotated tag `v0.4.0` created after merge to `main`

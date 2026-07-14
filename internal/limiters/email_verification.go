@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -19,16 +20,18 @@ type EmailVerificationConfig struct {
 	EnableConfirmFailureLimiter bool
 	VerificationTTL             time.Duration
 	MaxAttempts                 int
+	// WindowMode selects the counting algorithm (zero value = fixed window).
+	WindowMode window.Mode
 }
 
 type EmailVerificationLimiter struct {
-	redis  redis.UniversalClient
+	window *window.Window
 	config EmailVerificationConfig
 }
 
 func NewEmailVerificationLimiter(redisClient redis.UniversalClient, cfg EmailVerificationConfig) *EmailVerificationLimiter {
 	return &EmailVerificationLimiter{
-		redis:  redisClient,
+		window: window.New(redisClient, cfg.WindowMode),
 		config: cfg,
 	}
 }
@@ -37,7 +40,7 @@ func (l *EmailVerificationLimiter) CheckRequest(ctx context.Context, tenantID, i
 	if !l.config.EnableRequestLimiter || identifier == "" {
 		return nil
 	}
-	if err := l.enforceFixedWindow(ctx, verificationRequestIdentifierKey(tenantID, identifier)); err != nil {
+	if err := l.enforceWindow(ctx, verificationRequestIdentifierKey(tenantID, identifier)); err != nil {
 		return err
 	}
 	return nil
@@ -47,22 +50,16 @@ func (l *EmailVerificationLimiter) CheckConfirm(ctx context.Context, tenantID, v
 	if !l.config.EnableConfirmFailureLimiter || verificationID == "" {
 		return nil
 	}
-	if err := l.enforceFixedWindow(ctx, verificationConfirmIdentifierKey(tenantID, verificationID)); err != nil {
+	if err := l.enforceWindow(ctx, verificationConfirmIdentifierKey(tenantID, verificationID)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (l *EmailVerificationLimiter) enforceFixedWindow(ctx context.Context, key string) error {
-	count, err := l.redis.Incr(ctx, key).Result()
+func (l *EmailVerificationLimiter) enforceWindow(ctx context.Context, key string) error {
+	count, err := l.window.Incr(ctx, key, l.config.VerificationTTL)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrVerificationLimiterUnavailable, err)
-	}
-
-	if count == 1 {
-		if err := l.redis.Expire(ctx, key, l.config.VerificationTTL).Err(); err != nil {
-			return fmt.Errorf("%w: %v", ErrVerificationLimiterUnavailable, err)
-		}
 	}
 
 	if count > int64(l.config.MaxAttempts) {

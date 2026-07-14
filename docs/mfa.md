@@ -2,7 +2,7 @@
 
 ## Purpose
 
-goAuth supports TOTP (Time-Based One-Time Password, RFC 6238) and backup codes as second-factor authentication mechanisms. MFA is integrated into the login flow and can be required globally or per-user.
+goAuth supports TOTP (Time-Based One-Time Password, RFC 6238), backup codes, and WebAuthn/FIDO2 (see [webauthn.md](webauthn.md)) as second-factor authentication mechanisms. MFA is integrated into the login flow and can be required globally or per-user.
 
 ## Primitives
 
@@ -45,11 +45,17 @@ type TOTPSetup struct {
 type LoginResult struct {
     AccessToken  string
     RefreshToken string
-    MFARequired  bool    // true if MFA step needed
-    MFAType      string  // "totp" or "backup_code"
-    MFASession   string  // challenge ID for ConfirmLoginMFA
+    MFARequired  bool     // true if MFA step needed
+    MFAType      string   // preferred factor: "webauthn" or "totp"
+    MFASession   string   // challenge ID for ConfirmLoginMFA
+    MFATypes     []string // every factor the user can answer with
 }
 ```
+
+`ConfirmLoginMFAWithType` accepts `"totp"`, `"backup"`, or `"webauthn"` (the code
+argument carries the raw assertion response JSON for webauthn — see
+[webauthn.md](webauthn.md)). When a user has both WebAuthn credentials and TOTP,
+`MFATypes` lists both and `MFAType` prefers `"webauthn"` (phishing-resistant first).
 
 ## Strategies
 
@@ -95,6 +101,11 @@ if result.MFARequired {
     accessToken := final.AccessToken
 }
 ```
+
+A remember-me login (`LoginWithOptions` with `LoginOptions{RememberMe: true}`)
+stores the flag with the MFA challenge, so the session issued by
+`ConfirmLoginMFA` is durable without any change to the confirm call — see
+[session.md](session.md#session-lifetimes--remember-me).
 
 ## Security Notes
 

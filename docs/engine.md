@@ -25,6 +25,7 @@ The `Engine` is the runtime API surface of goAuth. It orchestrates all authentic
 |-----------|-----------|---------|
 | `Login` | `(ctx, username, password string)` | `(accessToken, refreshToken string, err error)` |
 | `LoginWithResult` | `(ctx, username, password string)` | `(*LoginResult, error)` — includes MFA challenge info |
+| `LoginWithOptions` | `(ctx, username, password string, opts LoginOptions)` | `(*LoginResult, error)` — like `LoginWithResult` with per-login options (e.g. `RememberMe`) |
 | `LoginWithTOTP` | `(ctx, username, password, totpCode string)` | `(accessToken, refreshToken string, err error)` |
 | `LoginWithBackupCode` | `(ctx, username, password, backupCode string)` | `(accessToken, refreshToken string, err error)` |
 | `ConfirmLoginMFA` | `(ctx, challengeID, code string)` | `(*LoginResult, error)` |
@@ -66,7 +67,7 @@ See [error-model.md](error-model.md) for the full code/sentinel registry and HTT
 | Strategy | Config Knob | Description |
 |----------|------------|-------------|
 | JWT-Only validation | `ValidationMode = ModeJWTOnly` | Token-only, no Redis call |
-| Hybrid validation | `ValidationMode = ModeHybrid` | JWT + optional Redis session check |
+| Hybrid validation | `ValidationMode = ModeHybrid` | Stateless JWT by default; routes opt into Strict or JWT-only per call |
 | Strict validation | `ValidationMode = ModeStrict` | JWT + mandatory Redis session check |
 | Per-route override | `RouteMode` param on `Validate()` | Override global mode for specific routes |
 
@@ -97,6 +98,16 @@ if result.MFARequired {
     // Prompt user for TOTP code, then:
     finalResult, err := engine.ConfirmLoginMFA(ctx, result.MFASession, totpCode)
 }
+```
+
+### Remember-me (durable session)
+
+```go
+// Session lives up to Config.Session.MaxSessionDuration instead of the
+// shorter default lifetime. If MFA is required, the remember-me choice is
+// carried by the challenge and honored by ConfirmLoginMFA.
+result, err := engine.LoginWithOptions(ctx, "alice@example.com", "password",
+    goAuth.LoginOptions{RememberMe: true})
 ```
 
 ## Security Notes

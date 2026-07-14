@@ -49,7 +49,12 @@ See [error-model.md](error-model.md) for the complete category, code, and sentin
 
 ## Login (without MFA) {#login-without-mfa}
 
-**Entry points:** `Engine.Login`, `Engine.LoginWithResult`
+**Entry points:** `Engine.Login`, `Engine.LoginWithResult`, `Engine.LoginWithOptions`
+
+`LoginWithOptions` accepts `LoginOptions{RememberMe: true}` to request a durable
+session: the session is created with the `Config.Session.MaxSessionDuration`
+ceiling instead of the shorter default lifetime
+(`min(RefreshTTL, AbsoluteSessionLifetime)`). All other steps are identical.
 
 ### Steps
 
@@ -59,7 +64,7 @@ See [error-model.md](error-model.md) for the complete category, code, and sentin
 4. **Account status check** — reject `Disabled` / `Locked` / `Deleted` accounts with appropriate sentinel errors.
 5. **Email verification check** — if `RequireForLogin`, reject `PendingVerification` with `ErrAccountUnverified`.
 6. **Password verify** — `password.Argon2.Verify(password, storedHash)`. On mismatch, increment login counter (`rate.Limiter.IncrementLogin`) and auto-lockout counter (`LockoutLimiter.Record`), return `ErrInvalidCredentials`.
-7. **MFA check** — if TOTP is enabled for user and no inline MFA code provided, return `ErrMFALoginRequired` (or `LoginResult.MFARequired=true`).
+7. **MFA check** — if a required second factor applies to the user (TOTP enabled for the user, and/or `WebAuthn.RequireForLogin` with registered credentials) and no inline MFA code was provided, return `ErrMFALoginRequired` (or `LoginResult.MFARequired=true` with `MFATypes` listing the available factors, webauthn preferred).
 8. **Role/mask resolution** — `RoleStore.GetRole`, `RoleManager.GetMask`.
 9. **Session creation** — `session.Store.Save(ctx, session, ttl)` (Redis: SET+SADD+INCR pipeline = ~3 commands).
 10. **JWT issuance** — `jwt.Manager.CreateAccess(...)`.
@@ -151,9 +156,12 @@ access, refresh, err := engine.LoginWithTOTP(ctx, "alice@example.com", "password
 1. **Challenge lookup** — `MFALoginChallengeStore.Get(ctx, challengeID)`.
 2. **Attempt check** — reject if max attempts exceeded (`ErrMFALoginAttemptsExceeded`).
 3. **Expiry check** — reject if challenge TTL elapsed (`ErrMFALoginExpired`).
-4. **Code verify** — TOTP or backup code depending on `mfaType`.
+4. **Factor verify** — TOTP, backup code, or WebAuthn assertion depending on `mfaType`
+   (`"webauthn"` consumes the single-use ceremony session begun by
+   `Engine.BeginWebAuthnLogin`; see [webauthn.md](webauthn.md)).
 5. **Challenge consume** — `MFALoginChallengeStore.Delete`.
-6. **Session creation** — same as Login steps 8–15.
+6. **Session creation** — same as Login steps 8–15. The remember-me flag stored
+   with the challenge (from `LoginWithOptions`) selects the session lifetime.
 
 ### Modules
 
@@ -256,7 +264,7 @@ newAccess, newRefresh, err := engine.Refresh(ctx, oldRefreshToken)
    b. **Version checks** — compare `PermissionVersion`, `RoleVersion`, `AccountVersion` between token and session. Mismatch → delete session, return `ErrUnauthorized`.
    c. **Account status check** — reject non-active status.
    d. **Device binding** — `RunValidateDeviceBinding` if enabled.
-5. **Hybrid path** (mode=2): JWT-only by default; callers opt into strict per-route via `Validate(ctx, token, ModeStrict)`.
+5. **Hybrid path** (mode=2): stateless, identical to JWT-only — **0 Redis ops**; callers opt into strict per-route via `Validate(ctx, token, ModeStrict)` or `middleware.RequireStrict`. An explicit route mode (including `ModeHybrid` itself) always wins over the engine default.
 6. **Latency observation** — `metrics.Observe(MetricValidateLatency, duration)`.
 7. Return `*AuthResult`.
 
@@ -338,13 +346,21 @@ err := engine.Logout(ctx, tenantID, sessionID)
 
 ### Steps
 
-1. **JWT parse** — extract `sessionID` and `tenantID` from claims.
-2. **Session delete** — same as single logout.
+1. **JWT parse** — `jwt.Manager.ParseAccessAllowExpired(token)`: extract `sessionID` and
+   `tenantID` from claims. Tokens whose **only** defect is expiry are accepted — logging
+   out an already-expired session is a normal logout. Signature, algorithm, kid, issuer,
+   audience, not-before, and iat checks are still enforced; any other failure returns
+   `ErrTokenInvalid`.
+2. **Session delete** — same as single logout (idempotent: an already-deleted session is
+   still a success).
+3. **Audit** — expired-token logouts carry `expired_token: "true"` metadata on the
+   `logout_session` event.
 
 ### Caller Usage
 
 ```go
 err := engine.LogoutByAccessToken(ctx, accessToken)
+// err == nil even if accessToken is expired (but authentic).
 ```
 
 ---

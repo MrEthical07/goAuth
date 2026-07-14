@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -19,16 +20,18 @@ type PasswordResetConfig struct {
 	EnableConfirmFailureLimiter bool
 	ResetTTL                    time.Duration
 	MaxAttempts                 int
+	// WindowMode selects the counting algorithm (zero value = fixed window).
+	WindowMode window.Mode
 }
 
 type PasswordResetLimiter struct {
-	redis  redis.UniversalClient
+	window *window.Window
 	config PasswordResetConfig
 }
 
 func NewPasswordResetLimiter(redisClient redis.UniversalClient, cfg PasswordResetConfig) *PasswordResetLimiter {
 	return &PasswordResetLimiter{
-		redis:  redisClient,
+		window: window.New(redisClient, cfg.WindowMode),
 		config: cfg,
 	}
 }
@@ -37,7 +40,7 @@ func (l *PasswordResetLimiter) CheckRequest(ctx context.Context, tenantID, ident
 	if !l.config.EnableRequestLimiter || identifier == "" {
 		return nil
 	}
-	if err := l.enforceFixedWindow(ctx, requestIdentifierKey(tenantID, identifier)); err != nil {
+	if err := l.enforceWindow(ctx, requestIdentifierKey(tenantID, identifier)); err != nil {
 		return err
 	}
 	return nil
@@ -47,7 +50,7 @@ func (l *PasswordResetLimiter) CheckConfirm(ctx context.Context, tenantID, reset
 	if !l.config.EnableConfirmFailureLimiter || resetID == "" {
 		return nil
 	}
-	if err := l.enforceFixedWindow(ctx, confirmIdentifierKey(tenantID, resetID)); err != nil {
+	if err := l.enforceWindow(ctx, confirmIdentifierKey(tenantID, resetID)); err != nil {
 		return err
 	}
 	return nil
@@ -57,16 +60,10 @@ func (l *PasswordResetLimiter) Cooldown() time.Duration {
 	return l.config.ResetTTL
 }
 
-func (l *PasswordResetLimiter) enforceFixedWindow(ctx context.Context, key string) error {
-	count, err := l.redis.Incr(ctx, key).Result()
+func (l *PasswordResetLimiter) enforceWindow(ctx context.Context, key string) error {
+	count, err := l.window.Incr(ctx, key, l.config.ResetTTL)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
-	}
-
-	if count == 1 {
-		if err := l.redis.Expire(ctx, key, l.config.ResetTTL).Err(); err != nil {
-			return fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
-		}
 	}
 
 	if count > int64(l.config.MaxAttempts) {

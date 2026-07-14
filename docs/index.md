@@ -30,6 +30,7 @@ Per-module guides covering primitives, usage examples, configuration, strategies
 | [password.md](password.md) | Password hashing: Argon2id implementation |
 | [middleware.md](middleware.md) | HTTP middleware: JWT-only, hybrid, strict guards |
 | [mfa.md](mfa.md) | Multi-factor authentication: TOTP + backup codes |
+| [webauthn.md](webauthn.md) | WebAuthn/FIDO2: phishing-resistant second factor, registration + assertion ceremonies |
 | [password_reset.md](password_reset.md) | Password reset lifecycle: strategies, flows, rate limiting |
 | [email_verification.md](email_verification.md) | Email verification lifecycle: strategies, flows |
 | [rate_limiting.md](rate_limiting.md) | Rate limiting: login-failure limiter and per-flow abuse limiters |

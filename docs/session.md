@@ -67,9 +67,33 @@ Supports decoding v1–v5 with forward migration (missing fields get safe defaul
 
 | Feature | Config Knob | Description |
 |---------|------------|-------------|
-| Sliding expiry | `SessionConfig.SlidingExpiration` | Extend TTL on each read |
+| Sliding expiry | `SessionConfig.SlidingExpiration` | Extend TTL on each read, up to the session ceiling |
+| Session ceiling | `SessionConfig.MaxSessionDuration` | Absolute lifetime cap; remember-me sessions live up to it |
 | Jitter | `SessionConfig.JitterEnabled` + `JitterRange` | Randomize TTL to avoid thundering herd |
 | Binary encoding | Default (`SessionConfig.SessionEncoding = "binary"`) | Compact wire format |
+
+## Session Lifetimes & Remember-Me
+
+Every session's absolute expiry is written **once** at creation
+(`Session.ExpiresAt = CreatedAt + lifetime`) and is never rewritten afterwards.
+Sliding renewal and refresh rotation extend the Redis TTL only *up to* that
+stored expiry (additionally clamped by `CreatedAt + MaxSessionDuration` at the
+store level), so no session can outlive its ceiling regardless of how often it
+is used or refreshed.
+
+The lifetime assigned at creation depends on the remember-me flag:
+
+| Login | Lifetime |
+|-------|----------|
+| Default (`Engine.Login`, `LoginWithResult`, …) | `min(JWT.RefreshTTL, Session.AbsoluteSessionLifetime)`, capped at `MaxSessionDuration` |
+| Remember-me (`Engine.LoginWithOptions` with `LoginOptions{RememberMe: true}`) | `Session.MaxSessionDuration` (or its per-mode default) |
+
+When MFA is required, the remember-me choice made at step 1 is stored with the
+MFA challenge and honored when `ConfirmLoginMFA` issues the session. Auto-login
+during account creation honors `CreateAccountRequest.RememberMe` the same way.
+
+See [config.md](config.md) for how an unset `MaxSessionDuration` resolves to a
+per-validation-mode default (Strict → 24 h, Hybrid/JWTOnly → 7 d).
 
 ## Examples
 
@@ -151,6 +175,7 @@ The store is injected into the engine and consumed by login, refresh, validate, 
 
 - **Session schema v5**: New fields (`AccountVersion`, `Status`) are auto-populated with safe defaults when decoding older schemas. No manual migration needed.
 - **Sliding expiration**: Enabling sliding expiration on an existing deployment extends session lifetimes on next read. Disable and re-enable carefully if strict TTL enforcement is required.
+- **MaxSessionDuration (v0.4.0)**: sessions created before the field existed keep their stored `ExpiresAt` and are unaffected. To force-shorten *existing* sessions operationally, set `MaxSessionDuration` explicitly below their remaining lifetime — the store-level clamp (`CreatedAt + MaxSessionDuration`) expires them on next strict read.
 - **Prefix changes**: Changing the Redis key prefix creates a new namespace. Old sessions become orphaned and expire naturally.
 
 ## See Also

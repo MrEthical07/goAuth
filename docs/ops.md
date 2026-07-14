@@ -11,6 +11,7 @@ Production-readiness checklist and recommended operational settings for goAuth.
 | `JWT.AccessTTL` | **5 min** | 1–15 min | Short-lived tokens limit exposure window. Production mode enforces ≤ 15 min. |
 | `JWT.RefreshTTL` | **7 days** | 1–30 days | Matches session lifetime. HighSecurity preset uses 24 h. |
 | `Session.AbsoluteSessionLifetime` | **7 days** | 1–30 days | Should match or exceed `RefreshTTL`. |
+| `Session.MaxSessionDuration` | **unset** (mode default) | 1–30 days | Absolute session ceiling; governs remember-me. Unset resolves to 24 h (Strict) / 7 d (Hybrid, JWTOnly), never below the default lifetime. |
 | `TOTP.MFALoginChallengeTTL` | **3 min** | 1–5 min | MFA challenge window must be tight. |
 | `PasswordReset.ResetTTL` | **15 min** | 5–15 min | OTP mode enforces ≤ 15 min. |
 
@@ -78,7 +79,7 @@ For public-facing APIs, keep the login failure limiter enabled unconditionally. 
 | Mode | When to use | Redis cost |
 |------|-------------|------------|
 | `ModeJWTOnly` | Read-heavy, low-sensitivity routes (dashboards, search) | 0 ops |
-| `ModeHybrid` (default) | Most applications; strict on sensitive routes | 0–1 ops/request |
+| `ModeHybrid` (default) | Most applications; stateless by default, strict on sensitive routes | 0 ops (Hybrid-resolved routes); 1 op on `ModeStrict` routes |
 | `ModeStrict` | Financial, healthcare, compliance-critical apps | 1 op/request |
 
 Use per-route overrides: `middleware.Guard(engine, goAuth.ModeStrict)` for sensitive routes, `middleware.RequireJWTOnly(engine)` for lightweight ones.
@@ -90,6 +91,7 @@ Use per-route overrides: `middleware.Guard(engine, goAuth.ModeStrict)` for sensi
 - [ ] Set `Security.ProductionMode = true`
 - [ ] Use Ed25519 signing (default) — avoid HS256 unless required
 - [ ] Pre-generate and securely store signing keys (don't rely on ephemeral keys)
+- [ ] Set `JWT.KeyID` + `JWT.VerifyKeys` from day one so future key rotations need no flag day (see §9)
 - [ ] Set `noeviction` policy on Redis
 - [ ] Enable `JWT.RequireIAT = true`
 - [ ] Keep `Security.EnableLoginFailureLimiter = true` for public APIs
@@ -126,3 +128,71 @@ if warnings := cfg.Lint(); len(warnings) > 0 {
 ```
 
 `Lint()` checks include: excessive leeway, long access TTLs, JWT-only mode with device binding, disabled login-failure limiting, and more. Unlike `Validate()`, `Lint()` never returns an error — only advisory warnings.
+
+---
+
+## 9. Ed25519 Key-Rotation Runbook
+
+goAuth verifies tokens against `JWT.VerifyKeys` (a `kid → public key` map) when it is
+set, so rotation is a config-driven overlap: verify old + new keys while flipping which
+key signs. Each step is a config change + rolling restart — keys are immutable after
+`Build()`, by design. There is no downtime and no token rejection during the overlap.
+
+### Baseline (do this before you ever need to rotate)
+
+Deploy every instance with an explicit key ID from day one:
+
+```go
+cfg.JWT.PrivateKey = k1Priv
+cfg.JWT.PublicKey  = k1Pub
+cfg.JWT.KeyID      = "k1"                       // e.g. goauth-keygen fingerprint
+cfg.JWT.VerifyKeys = map[string][]byte{"k1": k1Pub}
+```
+
+Tokens now carry a `kid` header. `Config.Lint()` emits `keyid_missing` (info) when an
+Ed25519 config has no `KeyID`.
+
+### Ceremony
+
+1. **Generate the new key.** `go run ./cmd/goauth-keygen` prints a keypair plus a
+   suggested kid (a stable public-key fingerprint), or call
+   `jwt.GenerateEd25519Key()` / `jwt.Ed25519KeyFingerprint()` from provisioning code.
+2. **Introduce k2 as verify-only.** Roll out **all** instances with
+   `VerifyKeys: {"k1": k1Pub, "k2": k2Pub}`, still signing with k1
+   (`KeyID: "k1"`). Wait until every instance runs this config — an instance that
+   cannot verify k2 yet must never receive a k2-signed token.
+3. **Flip signing to k2.** Roll out `PrivateKey: k2Priv`, `PublicKey: k2Pub`,
+   `KeyID: "k2"`, keeping `VerifyKeys: {"k1": ..., "k2": ...}`. During the rollout both
+   generations mint valid tokens and every instance verifies both keys.
+4. **Retire k1.** After at least `AccessTTL + Leeway` has elapsed since the last
+   instance stopped signing with k1 (every k1 access token has expired), remove `"k1"`
+   from `VerifyKeys`. Refresh tokens are opaque and key-independent — only the access-token
+   lifetime gates retirement. From now on k1 tokens fail verification (`unknown kid`).
+
+### Rollback
+
+Steps 2 and 3 are independently reversible: reverting the config restores the previous
+behavior because the retiring key stays in `VerifyKeys` until step 4. After step 4,
+re-adding `"k1"` to `VerifyKeys` re-accepts stragglers (harmless if the key was not
+compromised).
+
+**Compromised key:** skip the overlap. Remove the compromised kid from `VerifyKeys` and
+flip signing in a single deploy; in-flight tokens signed with it are rejected immediately
+(by design). Clients recover via refresh, which issues tokens under the new key.
+
+### First rotation for fleets without `kid`
+
+Tokens minted before `KeyID` was set carry no `kid` header, and once `VerifyKeys` is
+configured the parser rejects kid-less tokens. Adopt the baseline config first (set
+`KeyID` + single-entry `VerifyKeys`), wait one full `AccessTTL + Leeway` for kid-less
+tokens to expire, then run the ceremony above.
+
+### Guardrails (enforced at `Build()`)
+
+- `VerifyKeys` set with an empty `KeyID` is rejected — the engine would mint kid-less
+  tokens that fail its own verification.
+- `KeyID` must name an entry in `VerifyKeys`, and that entry must match the signing key
+  (derived-public-key comparison), so a rotation typo cannot ship an engine that rejects
+  every token it issues.
+- Every `VerifyKeys` entry must be a valid Ed25519 public key (raw or PEM); kids must be
+  non-empty.

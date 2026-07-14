@@ -2,6 +2,7 @@ package flows
 
 import (
 	"context"
+	"time"
 
 	"github.com/MrEthical07/goAuth/jwt"
 )
@@ -13,16 +14,22 @@ type LogoutSessionStore interface {
 
 // LogoutDeps captures logout flow dependencies.
 type LogoutDeps struct {
-	ParseAccess         func(string) (*jwt.AccessClaims, error)
-	TenantIDFromContext func(context.Context) string
-	TenantIDFromToken   func(string) string
-	SessionStore        LogoutSessionStore
+	// ParseAccessAllowExpired accepts authentic tokens whose only defect is
+	// expiry, so an expired session can still be logged out gracefully.
+	ParseAccessAllowExpired func(string) (*jwt.AccessClaims, error)
+	TenantIDFromContext     func(context.Context) string
+	TenantIDFromToken       func(string) string
+	Now                     func() time.Time
+	SessionStore            LogoutSessionStore
 }
 
 type LogoutByAccessResult struct {
 	TenantID  string
 	SessionID string
-	Err       error
+	// TokenExpired reports that the access token was expired but otherwise
+	// authentic; surfaced as audit metadata, not as an error.
+	TokenExpired bool
+	Err          error
 }
 
 func RunLogoutInTenant(ctx context.Context, tenantID, sessionID string, deps LogoutDeps) error {
@@ -34,7 +41,7 @@ func RunLogoutAllInTenant(ctx context.Context, tenantID, userID string, deps Log
 }
 
 func RunLogoutByAccessToken(ctx context.Context, tokenStr string, deps LogoutDeps) LogoutByAccessResult {
-	claims, err := deps.ParseAccess(tokenStr)
+	claims, err := deps.ParseAccessAllowExpired(tokenStr)
 	if err != nil {
 		return LogoutByAccessResult{
 			TenantID: deps.TenantIDFromContext(ctx),
@@ -42,10 +49,17 @@ func RunLogoutByAccessToken(ctx context.Context, tokenStr string, deps LogoutDep
 		}
 	}
 
+	now := time.Now
+	if deps.Now != nil {
+		now = deps.Now
+	}
+	expired := claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(now())
+
 	tenantID := deps.TenantIDFromToken(claims.TID)
 	return LogoutByAccessResult{
-		TenantID:  tenantID,
-		SessionID: claims.SID,
-		Err:       deps.SessionStore.Delete(ctx, tenantID, claims.SID),
+		TenantID:     tenantID,
+		SessionID:    claims.SID,
+		TokenExpired: expired,
+		Err:          deps.SessionStore.Delete(ctx, tenantID, claims.SID),
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -23,10 +24,12 @@ var (
 type TOTPLimiterConfig struct {
 	MaxAttempts int
 	Cooldown    time.Duration
+	// WindowMode selects the counting algorithm (zero value = fixed window).
+	WindowMode window.Mode
 }
 
 type TOTPLimiter struct {
-	redis       redis.UniversalClient
+	window      *window.Window
 	maxAttempts int64
 	cooldown    time.Duration
 }
@@ -42,7 +45,11 @@ func NewTOTPLimiter(redisClient redis.UniversalClient, cfg TOTPLimiterConfig) *T
 	if cd <= 0 {
 		cd = defaultTOTPCooldown
 	}
-	return &TOTPLimiter{redis: redisClient, maxAttempts: int64(max), cooldown: cd}
+	return &TOTPLimiter{
+		window:      window.New(redisClient, cfg.WindowMode),
+		maxAttempts: int64(max),
+		cooldown:    cd,
+	}
 }
 
 func (l *TOTPLimiter) key(tenantID, userID string) string {
@@ -50,11 +57,8 @@ func (l *TOTPLimiter) key(tenantID, userID string) string {
 }
 
 func (l *TOTPLimiter) Check(ctx context.Context, tenantID, userID string) error {
-	count, err := l.redis.Get(ctx, l.key(tenantID, userID)).Int64()
+	count, err := l.window.Count(ctx, l.key(tenantID, userID), l.cooldown)
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil
-		}
 		return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 	}
 	if count >= l.maxAttempts {
@@ -64,14 +68,9 @@ func (l *TOTPLimiter) Check(ctx context.Context, tenantID, userID string) error 
 }
 
 func (l *TOTPLimiter) RecordFailure(ctx context.Context, tenantID, userID string) error {
-	count, err := l.redis.Incr(ctx, l.key(tenantID, userID)).Result()
+	count, err := l.window.Incr(ctx, l.key(tenantID, userID), l.cooldown)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
-	}
-	if count == 1 {
-		if err := l.redis.Expire(ctx, l.key(tenantID, userID), l.cooldown).Err(); err != nil {
-			return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
-		}
 	}
 	if count >= l.maxAttempts {
 		return ErrTOTPRateLimited
@@ -80,7 +79,7 @@ func (l *TOTPLimiter) RecordFailure(ctx context.Context, tenantID, userID string
 }
 
 func (l *TOTPLimiter) Reset(ctx context.Context, tenantID, userID string) error {
-	if err := l.redis.Del(ctx, l.key(tenantID, userID)).Err(); err != nil {
+	if err := l.window.Reset(ctx, l.key(tenantID, userID), l.cooldown); err != nil {
 		return fmt.Errorf("%w: %v", ErrTOTPUnavailable, err)
 	}
 	return nil

@@ -16,7 +16,10 @@ Verifies access tokens and enforces route-level authorization using precompiled 
 Bearer token parse → JWT signature/claims validation → mode-specific backend checks:
 
 - `ModeJWTOnly`: token-only checks.
-- `ModeHybrid`: token-only for lightweight routes, Redis checks when configured strictness requires it.
+- `ModeHybrid`: token-only (stateless, zero Redis) for routes resolved to Hybrid;
+  individual routes opt into `ModeStrict` (Redis-backed checks) or `ModeJWTOnly`
+  via the `Validate` route mode or middleware. An explicit route mode always wins
+  over the engine default.
 - `ModeStrict`: Redis/session check for every request.
 
 Then permission bit checks are evaluated with O(1) mask operations.

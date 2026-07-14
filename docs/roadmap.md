@@ -2,7 +2,7 @@
 
 Planned improvements and future work for goAuth, organized by category and priority.
 
-**Last updated:** 2026-02-19
+**Last updated:** 2026-07-14
 
 ---
 
@@ -20,8 +20,6 @@ Planned improvements and future work for goAuth, organized by category and prior
 
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
-| Sliding-window rate limiter option | P1 | maintainer | planned | Security: eliminates 2× boundary burst vulnerability |
-| Key rotation ceremony tooling | P2 | maintainer | planned | Security: safer Ed25519 key rotation in production |
 | Session binding to TLS channel (channel binding) | P2 | maintainer | planned | Security: prevents session export across TLS sessions |
 
 ---
@@ -41,8 +39,25 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | `Engine.RevokePermission` for dynamic permission changes | P2 | maintainer | planned | API: runtime permission mutation without rebuild |
-| Typed error wrapping with `errors.Is` chains | P2 | maintainer | done | API: better error introspection for callers |
-| WebAuthn / FIDO2 second-factor support | P2 | maintainer | planned | API: modern passwordless MFA option |
+| SSO / OIDC + OAuth2 social login | P1 | maintainer | planned (v0.5.0, own cycle) | API: enterprise SSO and consumer social login via external IdPs |
+| WebAuthn passwordless / usernameless login | P2 | maintainer | planned | API: extend the v0.4.0 second-factor support to full passwordless (credential model already retains the needed flags) |
+
+### Note: SSO / OIDC + OAuth2 (deferred)
+
+SSO was evaluated during the v0.4.0 cycle and deferred to its own release. It is a
+subsystem rather than a single feature (provider abstraction, JWKS fetch/cache, code
+exchange, ID-token validation, identity linking, and callback orchestration), it adds
+outbound HTTP to third-party IdPs plus new dependencies, and its identity-linking policy
+is a security-sensitive design decision (account-takeover risk on unverified emails) that
+warrants a dedicated design pass. When picked up, it should be split into two phases:
+
+1. **Library-shaped (in scope for the engine):** OIDC ID-token verification (JWKS +
+   `iss`/`aud`/`nonce`/`exp`) and the `ExternalIdentityProvider` linking primitive
+   (following the `WebAuthnCredentialProvider` capability-interface pattern). The host app
+   owns the redirect dance and hands goAuth the result.
+2. **Framework-shaped (optional subpackage):** full OAuth2 authorization-code + PKCE
+   redirect/callback orchestration and per-provider connectors, kept out of the core so the
+   engine stays lean and dependency-light.
 
 ---
 
@@ -72,6 +87,17 @@ Items previously on the roadmap that have been resolved:
 
 | Item | Priority | Resolved In | Impact |
 |------|----------|-------------|--------|
+| Remember-me logins + configurable absolute session ceiling (`MaxSessionDuration`) | P1 | v0.4.0 | Security/API |
+| Hybrid mode aligned with per-route selection design (`RequireHybrid`, explicit-override fix) | P1 | v0.4.0 | Correctness |
+| Graceful logout with expired access tokens | P2 | v0.4.0 | Correctness/DX |
+| Unknown-identifier login timing oracle eliminated | P2 | v0.4.0 | Security |
+| Sliding-window rate limiter option (removes 2× boundary burst) | P1 | v0.4.0 | Security |
+| Ed25519 key-rotation tooling (`VerifyKeys`, `goauth-keygen`, rotation runbook) | P2 | v0.4.0 | Security |
+| WebAuthn / FIDO2 second-factor support | P2 | v0.4.0 | API |
+| Lint warnings for inert/no-op config fields (`*_noop` codes) | P2 | v0.4.0 | API/DX |
+| Atomic limiter increments (INCR/EXPIRE orphaned-counter fix) | P2 | v0.4.0 | Correctness |
+| Canonical `AuthError` public error boundary | P1 | v0.3.0 | API |
+| Typed error wrapping with `errors.Is` chains | P2 | v0.3.0 | API |
 | Automatic account lockout after N failures | P1 | v0.1.0 | Security |
 | Max password length DoS prevention | P2 | v0.1.0 | Security |
 | RequireIAT enforcement fix | P2 | v0.1.0 | Security |

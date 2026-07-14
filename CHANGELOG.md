@@ -7,14 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.4.0] - 2026-07-14
 
-### Planned
+Minor release (SemVer): every public API change is additive — new config
+fields, new methods, new optional interfaces — with no breaking signature or
+config changes. The two observable behavior changes (expired-token logout now
+succeeds; explicit `ModeHybrid` route overrides no longer error) are fixes
+that align behavior with the documented intent, called out under **Changed**
+and **Fixed** with migration notes in `docs/migrations.md`.
 
-- Sliding-window rate limiter option (see [roadmap](docs/roadmap.md))
-- `DeleteAllForUser` atomicity improvement
-- Grafana dashboard JSON export
-- Helm chart / Docker Compose production template
+### Added
+
+- Remember-me and configurable durable sessions:
+	- `Config.Session.MaxSessionDuration` — absolute session ceiling beyond which no session can be created or extended, regardless of sliding renewal. Unset (0) resolves at `Builder.Build()` to a per-validation-mode default (24 h for `ModeStrict`, 7 days for `ModeHybrid`/`ModeJWTOnly`), raised to the effective default session lifetime (`min(RefreshTTL, AbsoluteSessionLifetime)`) when that is longer, so existing configurations keep their exact session lifetimes. Validated at build time (0 or ≥ 1 minute).
+	- `LoginOptions` and `Engine.LoginWithOptions` — per-login remember-me flag; remember-me sessions are created with the `MaxSessionDuration` lifetime, default logins keep the existing shorter lifetime. Existing `Login`/`LoginWithResult`/`LoginWithTOTP`/`LoginWithBackupCode` signatures are unchanged and behave as remember-me = false.
+	- `CreateAccountRequest.RememberMe` — additive field; applies the durable lifetime to `AutoLogin` sessions.
+	- Remember-me survives the MFA hop: the flag is persisted with the MFA login challenge (record version 2, backward-compatible decode of v1 records) and honored by `ConfirmLoginMFA`/`ConfirmLoginMFAWithType` without signature changes.
+	- New lint warnings: `max_session_duration_caps_default` (explicit ceiling below the default session lifetime caps all sessions) and `max_session_duration_long` (effective ceiling > 30 days).
+- Hybrid validation mode aligned with its intended per-route design:
+	- `middleware.RequireHybrid` — shorthand for `Guard(engine, ModeHybrid)`, parallel to `RequireJWTOnly`/`RequireStrict`.
+	- New advisory lint `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on routes resolved to `ModeStrict`.
+- Sliding-window rate limiting (opt-in): `Security.LimiterWindowMode = "sliding"` switches every limiter domain (login failure, lockout, account creation, TOTP, backup codes, password reset, email verification) to a weighted two-bucket sliding-window counter, removing the fixed-window 2× boundary-burst weakness. Defaults to the existing fixed-window behavior (`""`/`"fixed"`); validated at build time. All limiters now count through a single shared window primitive (`internal/window`).
+- WebAuthn / FIDO2 second-factor support (security keys, platform authenticators, passkeys as a second factor):
+	- `Config.WebAuthn` — relying-party settings (`RPID`, `RPDisplayName`, `RPOrigins`), attestation (default `"none"`) and user-verification preferences, `CeremonyTTL`, `RequireForLogin`, and `RejectClonedAuthenticators`; validated at build time.
+	- `WebAuthnCredentialProvider` — optional capability interface detected on the `UserProvider` via type assertion at `Builder.Build()`; existing `UserProvider` implementations are unaffected, and enabling WebAuthn without the capability fails the build. Credentials persist through goAuth-owned `WebAuthnCredential` records (no library types in the public API).
+	- Registration ceremonies: `Engine.BeginWebAuthnRegistration` / `FinishWebAuthnRegistration`, plus `ListWebAuthnCredentials` / `RemoveWebAuthnCredential`. The engine exchanges raw CredentialCreation/CredentialRequest JSON with the caller and stays transport-agnostic.
+	- Login integration: with `WebAuthn.RequireForLogin`, users holding registered credentials get an MFA challenge answered via `Engine.BeginWebAuthnLogin` + the existing `ConfirmLoginMFAWithType(..., "webauthn")` — no signature changes. `LoginResult` gains an additive `MFATypes []string`; `MFAType` prefers `"webauthn"` over `"totp"` when both are available (TOTP-only deployments see identical behavior). Remember-me survives the WebAuthn hop.
+	- Security posture: ceremony sessions are single-use (atomic `GETDEL`, new `awn:` Redis keys) and TTL-bounded; origin/RPID enforced per config; signature-counter regression fails the login with `ErrWebAuthnCloneDetected` and destroys the challenge; failed assertions consume MFA challenge attempts like wrong TOTP codes, while ceremony-expired failures do not (no verification happened).
+	- New sentinels: `ErrWebAuthnDisabled`, `ErrWebAuthnInvalid`, `ErrWebAuthnCeremonyExpired`, `ErrWebAuthnCloneDetected`, `ErrWebAuthnCredentialNotFound`, `ErrWebAuthnUnavailable`.
+	- New dependency: `github.com/go-webauthn/webauthn` (ceremony verification); tests use `github.com/descope/virtualwebauthn` (test-only authenticator emulator).
+- Ed25519 key-rotation tooling:
+	- `Config.JWT.VerifyKeys` (`kid` → verification key map) — exposes the jwt layer's existing multi-key verification on the engine config, enabling zero-downtime signing-key rotation via a verify-overlap ceremony (documented step-by-step in `docs/ops.md`). Build-time guardrails: `VerifyKeys` requires a `KeyID` naming one of its entries, and the entry under the signing kid must match the signing key — misconfigurations that would reject every self-issued token cannot build.
+	- `jwt.GenerateEd25519Key` and `jwt.Ed25519KeyFingerprint` helpers, plus a `cmd/goauth-keygen` CLI (keypair generation in raw-base64 or PEM, `-fingerprint` for kid derivation from existing public keys).
+	- New lint `keyid_missing` (info) — Ed25519 signing without a `KeyID`; setting one from day one avoids a flag day on the first rotation.
+- Lint warnings for no-op config knobs — several fields are accepted (and validated) but never read by the engine; `Config.Lint()` now says so instead of letting integrators believe a protection is active: `security_ip_binding_noop` (warn), `security_ip_signal_noop` (warn), `cache_lru_noop` (warn), `cookie_settings_noop` (info), `database_config_noop` (info), `tenant_header_noop` (info). The fields themselves are unchanged (backward compatible); doc comments and `docs/config.md` now mark each one **no-op**.
+
+### Changed
+
+- The store-level sliding-renewal clamp now uses the resolved `MaxSessionDuration` ceiling instead of the default session lifetime; per-session expiry is carried entirely by the session's stored `ExpiresAt` (written once at creation, as before). Existing sessions are unaffected.
+- `LogoutByAccessToken` now succeeds for expired-but-authentic access tokens: the token's session (if any) is destroyed and nil is returned, instead of failing with `ErrTokenInvalid`. Signature, algorithm, kid, issuer, audience, not-before, and iat checks are still enforced (new `jwt.Manager.ParseAccessAllowExpired`, wired only into the logout flow — `Validate`/`Refresh` keep the strict parser). Expired-token logouts carry `expired_token: "true"` audit metadata. Callers that matched on `ErrTokenInvalid` when logging out expired sessions will now receive nil.
+- Hybrid validation semantics are now an explicit, documented contract: routes resolved to `ModeHybrid` (inherited or explicit) validate statelessly — signature, claims, and clock-skew checks with zero Redis — and individual routes opt into `ModeStrict` (session-backed revocation/version/status/device checks) or `ModeJWTOnly` per call. This matches the existing runtime behavior of inherited Hybrid; documentation that implied an opportunistic session lookup ("Redis lookup used when available") has been corrected.
+
+### Fixed
+
+- Login timing oracle on unknown identifiers: the user-not-found path now performs the same dummy Argon2 verification as the wrong-password path, closing a username-enumeration side channel.
+- Limiter increments are now atomic (single Lua script instead of `INCR` followed by `EXPIRE`): a crash between the two commands could previously leave a counter key without a TTL, rate-limiting that identifier until manual cleanup.
+- Explicit `ModeHybrid` route overrides (e.g. `middleware.Guard(engine, ModeHybrid)`, `Validate(ctx, token, ModeHybrid)`) no longer fail with `ErrInvalidRouteMode`; they resolve to the stateless Hybrid path. An explicit route mode always wins over the engine default. The `ValidationMode` zero value remains invalid (`ModeJWTOnly` is `1`).
+
+### Dependencies
+
+- Added `github.com/go-webauthn/webauthn` (WebAuthn ceremony verification) and its transitive dependencies; test-only `github.com/descope/virtualwebauthn`.
+- Bumped `golang.org/x/crypto` to v0.54.0 and pinned the `go1.26.5` toolchain to clear known stdlib advisories (GO-2026-4970, GO-2026-5856) in the security scanner gate. No OIDC/OAuth2 dependencies were added (SSO is deferred).
+
+### Notes
+
+- Mixed-version rollout: MFA login challenges written by this version use record v2; binaries older than this version cannot decode them during the (≤ 3 minute) challenge TTL window of a rolling deploy.
+- Security caveat: an explicit per-route validation mode always overrides the engine mode — a route validated with `ModeJWTOnly` or `ModeHybrid` skips session-backed checks even on a `ModeStrict` engine. Audit route wiring when adopting per-route modes (see `docs/security.md`).
+- Deferred to a future cycle: SSO / OIDC + OAuth2 social login (see `docs/roadmap.md`).
 
 ---
 

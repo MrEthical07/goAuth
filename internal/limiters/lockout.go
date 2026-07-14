@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -14,6 +15,9 @@ type LockoutConfig struct {
 	Enabled   bool
 	Threshold int
 	Duration  time.Duration // 0 = manual unlock only
+	// WindowMode selects the counting algorithm (zero value = fixed window).
+	// With Duration = 0 the counter never expires regardless of mode.
+	WindowMode window.Mode
 }
 
 var (
@@ -24,13 +28,13 @@ var (
 // LockoutLimiter tracks persistent failed login attempts and triggers
 // account lockout when the configured threshold is reached.
 type LockoutLimiter struct {
-	redis  redis.UniversalClient
+	window *window.Window
 	config LockoutConfig
 }
 
 // NewLockoutLimiter creates a new lockout limiter.
 func NewLockoutLimiter(redisClient redis.UniversalClient, cfg LockoutConfig) *LockoutLimiter {
-	return &LockoutLimiter{redis: redisClient, config: cfg}
+	return &LockoutLimiter{window: window.New(redisClient, cfg.WindowMode), config: cfg}
 }
 
 func (l *LockoutLimiter) key(tenantID, userID string) string {
@@ -44,17 +48,12 @@ func (l *LockoutLimiter) RecordFailure(ctx context.Context, tenantID, userID str
 		return false, nil
 	}
 
-	count, err := l.redis.Incr(ctx, l.key(tenantID, userID)).Result()
+	// Duration acts as a rolling window for counting failures; zero means the
+	// counter never expires (manual unlock only) — the window primitive falls
+	// back to a plain INCR in that case.
+	count, err := l.window.Incr(ctx, l.key(tenantID, userID), l.config.Duration)
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrLockoutUnavailable, err)
-	}
-
-	if count == 1 && l.config.Duration > 0 {
-		// Set TTL on first failure so counter auto-resets after lockout duration.
-		// This acts as a rolling window for counting failures.
-		if err := l.redis.Expire(ctx, l.key(tenantID, userID), l.config.Duration).Err(); err != nil {
-			return false, fmt.Errorf("%w: %v", ErrLockoutUnavailable, err)
-		}
 	}
 
 	return count >= int64(l.config.Threshold), nil
@@ -66,7 +65,7 @@ func (l *LockoutLimiter) Reset(ctx context.Context, tenantID, userID string) err
 		return nil
 	}
 
-	if err := l.redis.Del(ctx, l.key(tenantID, userID)).Err(); err != nil {
+	if err := l.window.Reset(ctx, l.key(tenantID, userID), l.config.Duration); err != nil {
 		return fmt.Errorf("%w: %v", ErrLockoutUnavailable, err)
 	}
 	return nil
@@ -78,11 +77,8 @@ func (l *LockoutLimiter) GetFailureCount(ctx context.Context, tenantID, userID s
 		return 0, nil
 	}
 
-	count, err := l.redis.Get(ctx, l.key(tenantID, userID)).Int64()
+	count, err := l.window.Count(ctx, l.key(tenantID, userID), l.config.Duration)
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return 0, nil
-		}
 		return 0, fmt.Errorf("%w: %v", ErrLockoutUnavailable, err)
 	}
 	return int(count), nil

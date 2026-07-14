@@ -150,6 +150,19 @@ type TOTPRecord struct {
 	LastUsedCounter int64
 }
 
+// LoginOptions carries per-login options for [Engine.LoginWithOptions].
+//
+// RememberMe requests a durable session that may live up to
+// [Config.Session.MaxSessionDuration] (or its per-mode default). When false,
+// the session uses the shorter default lifetime. The flag survives the MFA
+// hop: a challenge started via LoginWithOptions keeps it through
+// [Engine.ConfirmLoginMFA].
+//
+//	Docs: docs/session.md, docs/flows.md#login-without-mfa
+type LoginOptions struct {
+	RememberMe bool
+}
+
 // LoginResult is returned by [Engine.LoginWithResult] and
 // [Engine.ConfirmLoginMFA]. It includes tokens when authentication
 // succeeds, or MFA metadata when a second factor is required.
@@ -160,12 +173,74 @@ type LoginResult struct {
 	MFARequired bool
 	MFAType     string
 	MFASession  string
+	// MFATypes lists every second factor the user can complete the challenge
+	// with (e.g. "webauthn", "totp"). MFAType is always MFATypes[0], the
+	// preferred factor. Empty when MFARequired is false.
+	MFATypes []string
 }
 
 // BackupCodeRecord stores the SHA-256 hash of a single backup code.
 // The plaintext is never persisted.
 type BackupCodeRecord struct {
 	Hash [32]byte
+}
+
+// WebAuthnCredential is a stored WebAuthn/FIDO2 credential record.
+// It is goAuth's own persistence shape: providers store and return it
+// without importing any WebAuthn library types.
+//
+// CredentialID and PublicKey are opaque byte strings produced during
+// registration and must be persisted byte-exact. The flag fields capture
+// the authenticator state at registration/last use and are required for
+// spec-mandated validation (backup-eligibility consistency); SignCount
+// supports cloned-authenticator detection.
+//
+//	Docs: docs/webauthn.md
+type WebAuthnCredential struct {
+	CredentialID    []byte
+	PublicKey       []byte
+	AttestationType string
+	Transports      []string
+	UserPresent     bool
+	UserVerified    bool
+	BackupEligible  bool
+	BackupState     bool
+	AAGUID          []byte
+	SignCount       uint32
+	Attachment      string
+	CreatedAt       time.Time
+	LastUsedAt      time.Time
+}
+
+// WebAuthnCredentialProvider is an optional capability interface a
+// [UserProvider] can additionally implement to enable WebAuthn support.
+// It is detected via type assertion at [Builder.Build]; when
+// [Config.WebAuthn] is enabled and the user provider does not implement
+// it, Build fails. Existing UserProvider implementations are unaffected.
+//
+//	Docs: docs/webauthn.md
+type WebAuthnCredentialProvider interface {
+	// GetWebAuthnCredentials returns every credential registered for the
+	// user (empty slice when none).
+	GetWebAuthnCredentials(ctx context.Context, userID string) ([]WebAuthnCredential, error)
+	// AddWebAuthnCredential persists a newly registered credential.
+	AddWebAuthnCredential(ctx context.Context, userID string, credential WebAuthnCredential) error
+	// UpdateWebAuthnCredentialSignCount stores the authenticator's new
+	// signature counter (and implies last-used) after a successful assertion.
+	UpdateWebAuthnCredentialSignCount(ctx context.Context, userID string, credentialID []byte, signCount uint32) error
+	// RemoveWebAuthnCredential deletes the credential with the given ID.
+	// Removing an unknown credential must return an error.
+	RemoveWebAuthnCredential(ctx context.Context, userID string, credentialID []byte) error
+}
+
+// WebAuthnRegistrationChallenge is returned by
+// [Engine.BeginWebAuthnRegistration]. OptionsJSON is the
+// CredentialCreationOptions JSON to pass to the browser's
+// navigator.credentials.create call; CeremonyID identifies the pending
+// ceremony and must be echoed to [Engine.FinishWebAuthnRegistration].
+type WebAuthnRegistrationChallenge struct {
+	CeremonyID  string
+	OptionsJSON []byte
 }
 
 // CreateUserInput is the input for [UserProvider.CreateUser].
@@ -182,11 +257,14 @@ type CreateUserInput struct {
 
 // CreateAccountRequest is the input for [Engine.CreateAccount].
 // Identifier and Password are required; Role defaults to
-// [Config.Account.DefaultRole] when empty.
+// [Config.Account.DefaultRole] when empty. RememberMe only applies when
+// [Config.Account.AutoLogin] is enabled and requests a durable session for
+// the auto-issued tokens (see [LoginOptions]).
 type CreateAccountRequest struct {
 	Identifier string
 	Password   string
 	Role       string
+	RememberMe bool
 }
 
 // CreateAccountResult is returned by [Engine.CreateAccount]. It includes
