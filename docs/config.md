@@ -147,6 +147,22 @@ values between `0` and 1 minute; `0` means unset.
 
 > **See also:** [mfa.md](mfa.md)
 
+## WebAuthn (`Config.WebAuthn`)
+
+| Field                        | Type            | Default       | Description |
+|------------------------------|-----------------|---------------|-------------|
+| `Enabled`                    | `bool`          | `false`       | Enable WebAuthn/FIDO2 second factor (user provider must implement `WebAuthnCredentialProvider`) |
+| `RPID`                       | `string`        | —             | Relying Party ID (effective domain). Required when enabled |
+| `RPDisplayName`              | `string`        | —             | Human-readable RP name. Required when enabled |
+| `RPOrigins`                  | `[]string`      | —             | Exact origins allowed to complete ceremonies. Required when enabled |
+| `AttestationPreference`      | `string`        | `"none"`      | `none`, `indirect`, `direct`, or `enterprise` |
+| `UserVerification`           | `string`        | `"preferred"` | `preferred`, `required`, or `discouraged` |
+| `CeremonyTTL`                | `time.Duration` | 2 min         | Ceremony lifetime (10s–10m when set) |
+| `RequireForLogin`            | `bool`          | `false`       | Gate login behind an assertion for users with registered credentials |
+| `RejectClonedAuthenticators` | `bool`          | `true`        | Fail assertions whose signature counter regressed |
+
+> **See also:** [webauthn.md](webauthn.md)
+
 ## Password Reset (`Config.PasswordReset`)
 
 | Field                    | Type              | Default         | Description |
@@ -251,6 +267,7 @@ values between `0` and 1 minute; `0` means unset.
 - Account.DefaultRole exists in role manager (checked by Builder)
 - TOTP.Issuer non-empty when TOTP enabled
 - MFA challenge TTL and attempt limits positive
+- WebAuthn (when enabled): RPID/RPDisplayName/RPOrigins present, valid attestation and user-verification enums, CeremonyTTL within 10s–10m; `RequireForLogin` requires `Enabled`
 
 ## Config Linting
 

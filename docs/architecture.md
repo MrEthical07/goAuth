@@ -14,6 +14,10 @@ goAuth is a low-latency authentication guard that combines short-lived JWT acces
 - **middleware package:** HTTP request guards for JWT-only/hybrid/strict checks.
 - **refresh package:** refresh-token parsing and rotation helpers.
 - **metrics exporters:** Prometheus and OpenTelemetry adapters.
+- **WebAuthn subsystem (root + internal):** registration/assertion ceremonies as a
+  second factor, built on `github.com/go-webauthn/webauthn` (the one heavyweight
+  dependency; attestation defaults to `none`). Credential storage is delegated to an
+  optional `WebAuthnCredentialProvider` capability on the user provider.
 
 ## Package interaction flow
 

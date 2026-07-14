@@ -64,7 +64,7 @@ ceiling instead of the shorter default lifetime
 4. **Account status check** — reject `Disabled` / `Locked` / `Deleted` accounts with appropriate sentinel errors.
 5. **Email verification check** — if `RequireForLogin`, reject `PendingVerification` with `ErrAccountUnverified`.
 6. **Password verify** — `password.Argon2.Verify(password, storedHash)`. On mismatch, increment login counter (`rate.Limiter.IncrementLogin`) and auto-lockout counter (`LockoutLimiter.Record`), return `ErrInvalidCredentials`.
-7. **MFA check** — if TOTP is enabled for user and no inline MFA code provided, return `ErrMFALoginRequired` (or `LoginResult.MFARequired=true`).
+7. **MFA check** — if a required second factor applies to the user (TOTP enabled for the user, and/or `WebAuthn.RequireForLogin` with registered credentials) and no inline MFA code was provided, return `ErrMFALoginRequired` (or `LoginResult.MFARequired=true` with `MFATypes` listing the available factors, webauthn preferred).
 8. **Role/mask resolution** — `RoleStore.GetRole`, `RoleManager.GetMask`.
 9. **Session creation** — `session.Store.Save(ctx, session, ttl)` (Redis: SET+SADD+INCR pipeline = ~3 commands).
 10. **JWT issuance** — `jwt.Manager.CreateAccess(...)`.
@@ -156,7 +156,9 @@ access, refresh, err := engine.LoginWithTOTP(ctx, "alice@example.com", "password
 1. **Challenge lookup** — `MFALoginChallengeStore.Get(ctx, challengeID)`.
 2. **Attempt check** — reject if max attempts exceeded (`ErrMFALoginAttemptsExceeded`).
 3. **Expiry check** — reject if challenge TTL elapsed (`ErrMFALoginExpired`).
-4. **Code verify** — TOTP or backup code depending on `mfaType`.
+4. **Factor verify** — TOTP, backup code, or WebAuthn assertion depending on `mfaType`
+   (`"webauthn"` consumes the single-use ceremony session begun by
+   `Engine.BeginWebAuthnLogin`; see [webauthn.md](webauthn.md)).
 5. **Challenge consume** — `MFALoginChallengeStore.Delete`.
 6. **Session creation** — same as Login steps 8–15. The remember-me flag stored
    with the challenge (from `LoginWithOptions`) selects the session lifetime.

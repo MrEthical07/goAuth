@@ -48,7 +48,21 @@ The root package contains the authentication engine, builder, configuration, typ
 | `LoginWithOptions` | method | Like `LoginWithResult` with per-login options (`LoginOptions`, e.g. remember-me). |
 | `LoginOptions` | struct | Per-login options; `RememberMe` requests a durable session up to `Session.MaxSessionDuration`. |
 | `ConfirmLoginMFA` | method | Completes a pending MFA challenge with a TOTP code. |
-| `ConfirmLoginMFAWithType` | method | Completes a pending MFA challenge with a specified code type (TOTP or backup). |
+| `ConfirmLoginMFAWithType` | method | Completes a pending MFA challenge with a specified factor type (`totp`, `backup`, or `webauthn`). |
+
+### WebAuthn / FIDO2
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `BeginWebAuthnRegistration` | method | Starts a credential-registration ceremony; returns options JSON + ceremony ID. |
+| `FinishWebAuthnRegistration` | method | Verifies the attestation response and persists the credential. |
+| `ListWebAuthnCredentials` | method | Lists the user's registered credentials. |
+| `RemoveWebAuthnCredential` | method | Deletes one of the user's credentials. |
+| `BeginWebAuthnLogin` | method | Returns assertion options JSON for a pending MFA challenge. |
+| `WebAuthnConfig` | type | Relying-party and ceremony configuration (`Config.WebAuthn`). |
+| `WebAuthnCredential` | struct | Stored credential record (provider persistence shape). |
+| `WebAuthnCredentialProvider` | interface | Optional `UserProvider` capability for credential storage. |
+| `WebAuthnRegistrationChallenge` | struct | Ceremony ID + options JSON returned by `BeginWebAuthnRegistration`. |
 
 ### Token Lifecycle
 
