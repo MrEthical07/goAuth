@@ -23,6 +23,7 @@ type Config struct {
 	SessionHardening  SessionHardeningConfig
 	DeviceBinding     DeviceBindingConfig
 	TOTP              TOTPConfig
+	WebAuthn          WebAuthnConfig
 	Password          PasswordConfig
 	PasswordReset     PasswordResetConfig
 	EmailVerification EmailVerificationConfig
@@ -309,6 +310,61 @@ type TOTPConfig struct {
 
 /*
 ====================================
+WEBAUTHN CONFIG
+====================================
+*/
+
+// WebAuthnConfig controls WebAuthn/FIDO2 second-factor support.
+//
+// When Enabled, the user provider must also implement
+// [WebAuthnCredentialProvider] (checked at [Builder.Build]). The engine is
+// transport-agnostic: it exchanges CredentialCreation/CredentialRequest
+// options and authenticator responses as raw JSON with the caller.
+//
+//	Docs: docs/webauthn.md, docs/config.md
+type WebAuthnConfig struct {
+	// Enabled turns the WebAuthn surface on. Default: false.
+	Enabled bool
+
+	// RPID is the Relying Party ID — generally the site's effective domain
+	// without scheme or port (e.g. "example.com"). Required when Enabled.
+	RPID string
+
+	// RPDisplayName is the human-readable Relying Party name shown by
+	// authenticators. Required when Enabled.
+	RPDisplayName string
+
+	// RPOrigins lists the exact origins permitted to complete ceremonies
+	// (e.g. "https://app.example.com"). Required when Enabled.
+	RPOrigins []string
+
+	// AttestationPreference is the attestation conveyance preference:
+	// "none" (default), "indirect", "direct", or "enterprise". Keep "none"
+	// unless you have a concrete attestation policy.
+	AttestationPreference string
+
+	// UserVerification is the user-verification requirement for ceremonies:
+	// "preferred" (default), "required", or "discouraged".
+	UserVerification string
+
+	// CeremonyTTL bounds how long a begun ceremony (registration or login
+	// assertion) stays completable. 0 applies the default of 2 minutes.
+	CeremonyTTL time.Duration
+
+	// RequireForLogin gates login behind a WebAuthn assertion for users who
+	// have at least one registered credential (mirrors TOTP.RequireForLogin).
+	// Users without credentials log in normally. Default: false.
+	RequireForLogin bool
+
+	// RejectClonedAuthenticators fails assertions whose signature counter
+	// regressed (a cloned-authenticator signal) instead of merely auditing.
+	// Default: true (set by DefaultConfig; the zero value of this struct
+	// leaves it false only when the whole feature is disabled).
+	RejectClonedAuthenticators bool
+}
+
+/*
+====================================
 MULTI TENANT CONFIG
 ====================================
 */
@@ -523,6 +579,14 @@ func defaultConfig() Config {
 			RequireForPasswordReset:     false,
 			RequireTOTPForPasswordReset: false,
 		},
+		WebAuthn: WebAuthnConfig{
+			Enabled:                    false,
+			AttestationPreference:      "none",
+			UserVerification:           "preferred",
+			CeremonyTTL:                2 * time.Minute,
+			RequireForLogin:            false,
+			RejectClonedAuthenticators: true,
+		},
 		MultiTenant: MultiTenantConfig{
 			Enabled:          false,
 			TenantHeader:     "X-Tenant-ID",
@@ -633,6 +697,16 @@ func cloneConfig(cfg Config) Config {
 	out.JWT.PrivateKey = cloneBytes(cfg.JWT.PrivateKey)
 	out.JWT.PublicKey = cloneBytes(cfg.JWT.PublicKey)
 	out.JWT.VerifyKeys = cloneVerifyKeys(cfg.JWT.VerifyKeys)
+	out.WebAuthn.RPOrigins = cloneStrings(cfg.WebAuthn.RPOrigins)
+	return out
+}
+
+func cloneStrings(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	out := make([]string, len(s))
+	copy(out, s)
 	return out
 }
 
@@ -1009,6 +1083,43 @@ func (c *Config) Validate() error {
 	}
 	if c.TOTP.RequireBackupForLogin && !c.TOTP.Enabled {
 		return errors.New("TOTP RequireBackupForLogin requires TOTP Enabled")
+	}
+
+	// WebAuthn
+	if c.WebAuthn.Enabled {
+		if strings.TrimSpace(c.WebAuthn.RPID) == "" {
+			return errors.New("WebAuthn RPID is required when WebAuthn is enabled")
+		}
+		if strings.TrimSpace(c.WebAuthn.RPDisplayName) == "" {
+			return errors.New("WebAuthn RPDisplayName is required when WebAuthn is enabled")
+		}
+		if len(c.WebAuthn.RPOrigins) == 0 {
+			return errors.New("WebAuthn RPOrigins is required when WebAuthn is enabled")
+		}
+		for _, origin := range c.WebAuthn.RPOrigins {
+			if strings.TrimSpace(origin) == "" {
+				return errors.New("WebAuthn RPOrigins must not contain empty origins")
+			}
+		}
+		switch c.WebAuthn.AttestationPreference {
+		case "", "none", "indirect", "direct", "enterprise":
+		default:
+			return errors.New("WebAuthn AttestationPreference must be none, indirect, direct, or enterprise")
+		}
+		switch c.WebAuthn.UserVerification {
+		case "", "preferred", "required", "discouraged":
+		default:
+			return errors.New("WebAuthn UserVerification must be preferred, required, or discouraged")
+		}
+		if c.WebAuthn.CeremonyTTL < 0 {
+			return errors.New("WebAuthn CeremonyTTL must be >= 0 (0 = default)")
+		}
+		if c.WebAuthn.CeremonyTTL > 0 && (c.WebAuthn.CeremonyTTL < 10*time.Second || c.WebAuthn.CeremonyTTL > 10*time.Minute) {
+			return errors.New("WebAuthn CeremonyTTL must be between 10s and 10m when set")
+		}
+	}
+	if c.WebAuthn.RequireForLogin && !c.WebAuthn.Enabled {
+		return errors.New("WebAuthn RequireForLogin requires WebAuthn Enabled")
 	}
 
 	switch c.ValidationMode {
