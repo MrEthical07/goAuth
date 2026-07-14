@@ -224,9 +224,9 @@ type SecurityConfig struct {
 	// EnableIPBinding is a no-op: the engine never reads it. IP binding is
 	// controlled by DeviceBinding.Enabled with EnforceIPBinding/DetectIPChange.
 	// Enabling it produces the security_ip_binding_noop lint warning.
-	EnableIPBinding              bool
-	EnableUserAgentBinding       bool
-	EnableLoginFailureLimiter    bool
+	EnableIPBinding           bool
+	EnableUserAgentBinding    bool
+	EnableLoginFailureLimiter bool
 
 	// EnableIPSignal is a no-op: the engine never reads it. Enabling it
 	// produces the security_ip_signal_noop lint warning.
@@ -241,9 +241,9 @@ type SecurityConfig struct {
 	// the engine is transport-agnostic and never issues cookies, so nothing
 	// reads them. Enforce cookie flags and CSRF policy at the HTTP layer.
 	// Enabling any of them produces the cookie_settings_noop lint warning.
-	RequireSecureCookies bool
-	SameSitePolicy       http.SameSite
-	CSRFProtection       bool
+	RequireSecureCookies         bool
+	SameSitePolicy               http.SameSite
+	CSRFProtection               bool
 	EnablePermissionVersionCheck bool
 	EnableRoleVersionCheck       bool
 	EnableAccountVersionCheck    bool

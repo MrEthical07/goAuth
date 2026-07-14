@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          expected="$(printf '%s\n' builder.go config.go context.go doc.go engine.go error_mapping.go errors.go goAuth.go types.go | sort)"
+          expected="$(printf '%s\n' builder.go config.go context.go doc.go engine.go engine_webauthn.go error_mapping.go errors.go goAuth.go types.go | sort)"
           actual="$(ls -1 *.go | grep -v '_test.go$' | sort)"
 
           if [ "$actual" != "$expected" ]; then
@@ -56,7 +56,10 @@ jobs:
             exit 1
           fi
 
-          disallowed="$(ls -1 *.go | grep -v '_test.go$' | grep -E '(limiter|store|audit|metrics|engine_)' || true)"
+          # engine_*.go is allowed for per-subsystem Engine surface files
+          # (e.g. engine_webauthn.go); the exact whitelist above still gates
+          # which ones may exist.
+          disallowed="$(ls -1 *.go | grep -v '_test.go$' | grep -E '(limiter|store|audit|metrics)' || true)"
           if [ -n "$disallowed" ]; then
             echo "Disallowed root source file names detected:"
             echo "$disallowed"
