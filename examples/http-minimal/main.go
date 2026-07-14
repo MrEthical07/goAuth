@@ -5,7 +5,7 @@
 //
 // Endpoints:
 //
-//	POST /login     — JSON {"username":"...", "password":"..."}
+//	POST /login     — JSON {"username":"...", "password":"...", "remember":true|false}
 //	POST /refresh   — rotates tokens via the refresh-token cookie
 //	POST /logout    — destroys the current session (by access token)
 //	GET  /protected — middleware-guarded route (requires valid access token)
@@ -134,6 +134,9 @@ func loginHandler(engine *goAuth.Engine) http.HandlerFunc {
 		var body struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
+			// Remember opts into a durable session capped by
+			// Config.Session.MaxSessionDuration instead of the default lifetime.
+			Remember bool `json:"remember"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -142,14 +145,21 @@ func loginHandler(engine *goAuth.Engine) http.HandlerFunc {
 
 		ctx := withRequestContext(r)
 
-		access, refresh, err := engine.Login(ctx, body.Username, body.Password)
+		result, err := engine.LoginWithOptions(ctx, body.Username, body.Password,
+			goAuth.LoginOptions{RememberMe: body.Remember})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
+		if result.MFARequired {
+			// Complete via engine.ConfirmLoginMFA* — see docs/mfa.md and
+			// docs/webauthn.md. Out of scope for this minimal demo.
+			http.Error(w, "mfa required", http.StatusUnauthorized)
+			return
+		}
 
-		setRefreshCookie(w, r, refresh)
-		writeJSON(w, http.StatusOK, map[string]string{"access_token": access})
+		setRefreshCookie(w, r, result.RefreshToken)
+		writeJSON(w, http.StatusOK, map[string]string{"access_token": result.AccessToken})
 	}
 }
 

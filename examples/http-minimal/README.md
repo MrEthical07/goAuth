@@ -20,9 +20,10 @@ No external Redis required — uses [miniredis](https://github.com/alicebob/mini
 ## Try it
 
 ```bash
-# Login
+# Login (add "remember":true for a durable session capped by
+# Config.Session.MaxSessionDuration)
 curl -s -X POST http://localhost:8080/login \
-  -d '{"username":"alice@example.com","password":"correct-horse"}' \
+  -d '{"username":"alice@example.com","password":"correct-horse","remember":true}' \
   -c cookies.txt
 
 # Access a protected route
@@ -43,8 +44,16 @@ curl -s -X POST http://localhost:8080/logout \
 ## Integration in your project
 
 1. Replace `stubProvider` with your real database-backed `UserProvider`.
-2. Generate Ed25519 keys or use `goAuth.DefaultConfig()` (generates ephemeral keys).
+2. Generate Ed25519 keys with `go run ./cmd/goauth-keygen` (or use
+   `goAuth.DefaultConfig()`, which generates ephemeral keys). Set `JWT.KeyID`
+   and `JWT.VerifyKeys` from day one so the key-rotation ceremony in
+   [docs/ops.md](../../docs/ops.md) works without a flag day.
 3. Point `redis.NewClient` at your real Redis instance.
-4. Copy the handler patterns and middleware wiring into your router.
+4. Copy the handler patterns and middleware wiring into your router
+   (`middleware.RequireJWTOnly` / `RequireHybrid` / `RequireStrict` for
+   per-route validation modes).
+5. For WebAuthn/FIDO2 second factor, implement `WebAuthnCredentialProvider`
+   on your provider and enable `Config.WebAuthn` — see
+   [docs/webauthn.md](../../docs/webauthn.md).
 
 See [docs/api-reference.md](../../docs/api-reference.md) for the full API surface.

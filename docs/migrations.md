@@ -1,5 +1,34 @@
 # Migrations
 
+## v0.4.0 Migration Notes (Non-Breaking)
+
+v0.4.0 is additive: no config fields were renamed or removed and no public
+signatures changed. Existing configurations resolve to identical session
+lifetimes. Three behavior changes are worth reviewing:
+
+1. **Expired-token logout now succeeds.** `LogoutByAccessToken` with an
+   expired-but-authentic access token destroys the session and returns nil
+   instead of `ErrTokenInvalid`. Callers that branched on `ErrTokenInvalid`
+   for expired tokens during logout should treat nil as the success it is.
+   Forged/invalid tokens are still rejected.
+2. **Explicit `ModeHybrid` route overrides are now valid.**
+   `Validate(ctx, token, ModeHybrid)` and `middleware.Guard(engine,
+   ModeHybrid)` previously failed every request with `ErrInvalidRouteMode`;
+   they now validate statelessly. An explicit route mode always wins over the
+   engine mode — audit route wiring so no route unintentionally downgrades a
+   Strict engine (see [security.md](security.md)).
+3. **Rolling-deploy caveat.** MFA login challenges written by v0.4.0 use a
+   v2 record; binaries older than v0.4.0 cannot decode them during the
+   (≤ 3 minute) challenge TTL window of a mixed-version deploy. Deploy all
+   instances before relying on new MFA challenges, or accept a brief window
+   of failed MFA confirmations on old instances.
+
+Optional opt-ins added in v0.4.0 (no action needed to keep current behavior):
+`Session.MaxSessionDuration` + `LoginOptions.RememberMe`,
+`Security.LimiterWindowMode = "sliding"`, `JWT.VerifyKeys` key rotation, and
+`Config.WebAuthn`. Switching `LimiterWindowMode` to `"sliding"` effectively
+resets in-flight rate-limit windows (counters move to new bucket keys).
+
 ## v0.3.0 Migration Guide (Breaking)
 
 This release introduces breaking config, limiter, and error-model changes.

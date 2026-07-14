@@ -2,7 +2,7 @@
 
 Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessions + rotating refresh tokens + bitmask RBAC.
 
-[![Go Tests](https://img.shields.io/badge/tests-266%20passing-brightgreen)]()
+[![Go Tests](https://img.shields.io/badge/tests-336%20passing-brightgreen)]()
 [![Go Version](https://img.shields.io/badge/go-1.25%2B-blue)]()
 [![Race Detector](https://img.shields.io/badge/race%20detector-clean-brightgreen)]()
 
@@ -75,9 +75,12 @@ func main() {
     fmt.Println("Access:", access[:20]+"...")
 
     // Remember-me login: session lives up to Config.Session.MaxSessionDuration
-    result, err := engine.LoginWithOptions(context.Background(),
+    durable, err := engine.LoginWithOptions(context.Background(),
         "alice@example.com", "password", goAuth.LoginOptions{RememberMe: true})
-    _ = result
+    if err != nil {
+        log.Fatal(err)
+    }
+    _ = durable
 
     // Validate
     result, err := engine.ValidateAccess(context.Background(), access)
@@ -173,7 +176,7 @@ go test -tags=integration ./test/...
 go test -run '^$' -bench . -benchmem ./...
 ```
 
-266 tests, 4 fuzz targets, 13 benchmarks. Race-detector clean.
+336 tests, 4 fuzz targets, 18 benchmarks. Race-detector clean.
 
 ## License
 

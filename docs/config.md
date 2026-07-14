@@ -284,15 +284,18 @@ engine**:
 
 ## Config Linting
 
-`Config.Lint()` returns non-fatal warnings for sub-optimal settings:
+`Config.Lint()` returns non-fatal warnings for sub-optimal settings. Highlights:
 
-- AccessTTL > 15 min (wide revocation window)
-- ProductionMode disabled (warning only)
+- `access_ttl_long` (warn) — AccessTTL > 10 min widens the revocation window
+- `not_production_mode` (info) — ProductionMode disabled
 - `keyid_missing` (info) — Ed25519 signing without a `KeyID` (tokens carry no `kid`, complicating future key rotation)
-- Backup code count < 5
-- `max_session_duration_caps_default` — explicit MaxSessionDuration below the default session lifetime (caps all sessions)
-- `max_session_duration_long` — effective session ceiling > 30 days
+- `max_session_duration_caps_default` (warn) — explicit MaxSessionDuration below the default session lifetime (caps all sessions)
+- `max_session_duration_long` (warn) — effective session ceiling > 30 days
 - `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on `ModeStrict`-resolved routes
+- `*_noop` codes — config knobs that are accepted but never read by the engine (see the field tables above)
+
+The complete code list (25 codes: 8 INFO, 13 WARN, 4 HIGH) lives in
+[config_lint.md](config_lint.md).
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)
 
