@@ -480,6 +480,130 @@ func TestEmailVerificationDoesNotCrossTenants(t *testing.T) {
 	}
 }
 
+// newSingleTenantRecordEngine builds an engine with multi-tenancy DISABLED
+// and a user whose TenantID differs from the context tenant. This is the
+// legacy shape that TestEmailVerificationTenantBinding pins: with no tenant
+// boundary for goAuth to enforce, the record binds to the user's tenant.
+func newSingleTenantRecordEngine(t *testing.T) (*Engine, *redis.Client, func()) {
+	t.Helper()
+
+	mr, rdb := newTestRedis(t)
+
+	up := &mockUserProvider{
+		users: map[string]UserRecord{
+			"u1": {
+				UserID: "u1", Identifier: "alice", TenantID: "t_user",
+				Status: AccountPendingVerification, Role: "member",
+				PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+			},
+		},
+		byIdentifier: map[string]string{"alice": "u1"},
+	}
+
+	cfg := accountTestConfig()
+	cfg.MultiTenant.Enabled = false
+	cfg.PasswordReset.Enabled = true
+	cfg.PasswordReset.Strategy = ResetOTP
+	cfg.PasswordReset.ResetTTL = 15 * time.Minute
+	cfg.PasswordReset.MaxAttempts = 5
+	cfg.PasswordReset.OTPDigits = 6
+	cfg.EmailVerification.Enabled = true
+	cfg.EmailVerification.Strategy = VerificationOTP
+	cfg.EmailVerification.VerificationTTL = 15 * time.Minute
+	cfg.EmailVerification.MaxAttempts = 5
+	cfg.EmailVerification.OTPDigits = 6
+
+	engine, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{"member": {}, "admin": {"perm.read"}}).
+		WithUserProvider(up).
+		Build()
+	if err != nil {
+		mr.Close()
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	return engine, rdb, func() { mr.Close() }
+}
+
+// The reset and verification request paths must gate the effectiveTenant
+// override identically. Password reset has no pre-existing binding test of
+// its own, so without this the two paths could drift apart silently.
+//
+// With multi-tenancy off, BOTH bind the record to the user's tenant.
+func TestSingleTenantRecordBindingUnchangedOnBothPaths(t *testing.T) {
+	engine, rdb, done := newSingleTenantRecordEngine(t)
+	defer done()
+
+	ctx := WithTenantID(context.Background(), "t_ctx")
+
+	if _, err := engine.RequestPasswordReset(ctx, "alice"); err != nil {
+		t.Fatalf("RequestPasswordReset failed: %v", err)
+	}
+	if _, err := engine.RequestEmailVerification(ctx, "alice"); err != nil {
+		t.Fatalf("RequestEmailVerification failed: %v", err)
+	}
+
+	for _, tc := range []struct{ label, userKey, ctxKey string }{
+		{"password reset", "apr:t_user:*", "apr:t_ctx:*"},
+		{"email verification", "apv:t_user:*", "apv:t_ctx:*"},
+	} {
+		underUser, err := rdb.Keys(context.Background(), tc.userKey).Result()
+		if err != nil {
+			t.Fatalf("%s: scan failed: %v", tc.label, err)
+		}
+		if len(underUser) != 1 {
+			t.Fatalf("%s: expected 1 record under the user tenant, got %d", tc.label, len(underUser))
+		}
+
+		underCtx, err := rdb.Keys(context.Background(), tc.ctxKey).Result()
+		if err != nil {
+			t.Fatalf("%s: scan failed: %v", tc.label, err)
+		}
+		if len(underCtx) != 0 {
+			t.Fatalf("%s: single-tenant binding changed; record appeared under the context tenant: %v",
+				tc.label, underCtx)
+		}
+	}
+}
+
+// The mirror of the above: with multi-tenancy ON, BOTH paths bind the record
+// to the context tenant instead. Asserted together so the two paths cannot
+// diverge in either direction.
+func TestMultiTenantRecordBindingUsesContextTenantOnBothPaths(t *testing.T) {
+	engine, up, rdb, done := newTenantResetEngine(t)
+	defer done()
+
+	// A user whose own TenantID differs from the tenant the request is made
+	// in cannot be reached at all once the lookup is scoped, so drive the
+	// binding through a legitimate same-tenant request.
+	up.addUser(UserRecord{
+		UserID: "user-c", Identifier: "carol@example.com", TenantID: "tenant-a",
+		Status: AccountPendingVerification, Role: "member",
+		PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+	})
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	if _, err := engine.RequestPasswordReset(ctxA, "carol@example.com"); err != nil {
+		t.Fatalf("RequestPasswordReset failed: %v", err)
+	}
+	if _, err := engine.RequestEmailVerification(ctxA, "carol@example.com"); err != nil {
+		t.Fatalf("RequestEmailVerification failed: %v", err)
+	}
+
+	for _, prefix := range []string{"apr:tenant-a:*", "apv:tenant-a:*"} {
+		keys, err := rdb.Keys(context.Background(), prefix).Result()
+		if err != nil {
+			t.Fatalf("scan %s failed: %v", prefix, err)
+		}
+		if len(keys) != 1 {
+			t.Fatalf("expected 1 record at %s, got %d (%v)", prefix, len(keys), keys)
+		}
+	}
+}
+
 func newMultiTenantBuilder(t *testing.T, rdb *redis.Client, up UserProvider) *Builder {
 	t.Helper()
 
