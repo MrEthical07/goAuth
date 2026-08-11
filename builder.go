@@ -279,6 +279,18 @@ func (b *Builder) Build() (*Engine, error) {
 		WindowMode: windowMode,
 	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
+	if cfg.MultiTenant.Enabled {
+		// Without a tenant-scoped lookup the engine would resolve
+		// identifiers across every tenant, so credentials from one tenant
+		// would authenticate under another. Falling back silently to the
+		// tenant-blind lookup in a multi-tenant deployment must be
+		// impossible to configure.
+		provider, ok := b.userProvider.(TenantAwareUserProvider)
+		if !ok {
+			return nil, errors.New("MultiTenant is enabled but the user provider does not implement TenantAwareUserProvider")
+		}
+		engine.tenantProvider = provider
+	}
 	if cfg.WebAuthn.Enabled {
 		provider, ok := b.userProvider.(WebAuthnCredentialProvider)
 		if !ok {

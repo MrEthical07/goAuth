@@ -58,8 +58,37 @@ type Engine struct {
 	totp                *totpManager
 	jwtManager          *jwt.Manager
 	userProvider        UserProvider
+	tenantProvider      TenantAwareUserProvider
 	logger              *slog.Logger
 	flows               internalflows.Service
+}
+
+// tenantScopedLookup reports whether user lookups must be scoped to the
+// request's tenant. It is true only when multi-tenancy is enabled, in
+// which case [Builder.Build] has already guaranteed tenantProvider is
+// non-nil. When false, every lookup keeps the tenant-blind v0.4.0 path.
+func (e *Engine) tenantScopedLookup() bool {
+	return e != nil && e.config.MultiTenant.Enabled && e.tenantProvider != nil
+}
+
+// lookupUserByIdentifier resolves an identifier, scoping the query to the
+// context tenant when multi-tenancy is enabled. With multi-tenancy off it
+// is exactly the legacy tenant-blind lookup.
+func (e *Engine) lookupUserByIdentifier(ctx context.Context, identifier string) (UserRecord, error) {
+	if e.tenantScopedLookup() {
+		return e.tenantProvider.GetUserByIdentifierInTenant(ctx, tenantIDFromContext(ctx), identifier)
+	}
+	return e.userProvider.GetUserByIdentifier(identifier)
+}
+
+// lookupUserByID resolves a user ID, scoping the query to the context
+// tenant when multi-tenancy is enabled. With multi-tenancy off it is
+// exactly the legacy tenant-blind lookup.
+func (e *Engine) lookupUserByID(ctx context.Context, userID string) (UserRecord, error) {
+	if e.tenantScopedLookup() {
+		return e.tenantProvider.GetUserByIDInTenant(ctx, tenantIDFromContext(ctx), userID)
+	}
+	return e.userProvider.GetUserByID(userID)
 }
 
 type auditDispatcher = internalaudit.Dispatcher
