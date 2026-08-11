@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -336,6 +337,146 @@ func TestLoginCrossTenantAuditsTenantMismatch(t *testing.T) {
 	}
 	if event.TenantID != "tenant-b" {
 		t.Fatalf("rejection audited against tenant %q, want the context tenant tenant-b", event.TenantID)
+	}
+}
+
+// newTenantResetEngine builds a multi-tenant engine with password reset and
+// email verification enabled, holding the same identifier in two tenants.
+func newTenantResetEngine(t *testing.T) (*Engine, *tenantMockProvider, *redis.Client, func()) {
+	t.Helper()
+
+	mr, rdb := newTestRedis(t)
+
+	up := newTenantMockProvider()
+	up.addUser(UserRecord{
+		UserID: "user-a", Identifier: "shared@example.com", TenantID: "tenant-a",
+		Status: AccountActive, Role: "member",
+		PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+	})
+	up.addUser(UserRecord{
+		UserID: "user-b", Identifier: "other@example.com", TenantID: "tenant-b",
+		Status: AccountPendingVerification, Role: "member",
+		PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+	})
+
+	cfg := accountTestConfig()
+	cfg.MultiTenant.Enabled = true
+	cfg.PasswordReset.Enabled = true
+	cfg.PasswordReset.Strategy = ResetOTP
+	cfg.PasswordReset.ResetTTL = 15 * time.Minute
+	cfg.PasswordReset.MaxAttempts = 5
+	cfg.PasswordReset.OTPDigits = 6
+	cfg.EmailVerification.Enabled = true
+	cfg.EmailVerification.Strategy = VerificationOTP
+	cfg.EmailVerification.VerificationTTL = 15 * time.Minute
+	cfg.EmailVerification.MaxAttempts = 5
+	cfg.EmailVerification.OTPDigits = 6
+
+	engine, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{"member": {}, "admin": {"perm.read"}}).
+		WithUserProvider(up).
+		Build()
+	if err != nil {
+		mr.Close()
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	return engine, up, rdb, func() { mr.Close() }
+}
+
+// The takeover primitive: a reset requested under tenant B for an email that
+// exists only in tenant A must not create a redeemable record anywhere, and
+// must be indistinguishable from a request for an address nobody owns.
+func TestPasswordResetDoesNotCrossTenants(t *testing.T) {
+	engine, _, rdb, done := newTenantResetEngine(t)
+	defer done()
+
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+
+	foreign, foreignErr := engine.RequestPasswordReset(ctxB, "shared@example.com")
+	if foreignErr != nil {
+		t.Fatalf("cross-tenant request should stay enumeration-safe, got %v", foreignErr)
+	}
+
+	unknown, unknownErr := engine.RequestPasswordReset(ctxB, "nobody@example.com")
+	if unknownErr != nil {
+		t.Fatalf("unknown-identifier request failed: %v", unknownErr)
+	}
+
+	// Same response shape: both return a syntactically valid challenge and
+	// no error, so the caller cannot tell the two cases apart.
+	if (foreign == "") != (unknown == "") {
+		t.Fatalf("cross-tenant and unknown requests differ in shape: %q vs %q", foreign, unknown)
+	}
+	if len(foreign) != len(unknown) {
+		t.Fatalf("challenge lengths differ (%d vs %d); this leaks cross-tenant existence",
+			len(foreign), len(unknown))
+	}
+
+	// No reset record may exist in EITHER tenant. Before this fix the
+	// record was written under the resolved user's tenant, handing the
+	// requester a working reset for a user in a tenant they do not control.
+	keys, err := rdb.Keys(context.Background(), "apr:*").Result()
+	if err != nil {
+		t.Fatalf("scan reset keys failed: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("a reset record was written for a cross-tenant request: %v", keys)
+	}
+}
+
+// A legitimate same-tenant reset must still store its record under the
+// request's tenant.
+func TestPasswordResetStoresRecordUnderContextTenant(t *testing.T) {
+	engine, _, rdb, done := newTenantResetEngine(t)
+	defer done()
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	if _, err := engine.RequestPasswordReset(ctxA, "shared@example.com"); err != nil {
+		t.Fatalf("same-tenant reset request failed: %v", err)
+	}
+
+	keys, err := rdb.Keys(context.Background(), "apr:tenant-a:*").Result()
+	if err != nil {
+		t.Fatalf("scan reset keys failed: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected exactly 1 reset record under tenant-a, got %d (%v)", len(keys), keys)
+	}
+}
+
+// Cross-tenant email verification has the same shape as the reset hole.
+func TestEmailVerificationDoesNotCrossTenants(t *testing.T) {
+	engine, _, rdb, done := newTenantResetEngine(t)
+	defer done()
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+
+	// user-b is pending verification but lives in tenant-b.
+	foreign, foreignErr := engine.RequestEmailVerification(ctxA, "other@example.com")
+	if foreignErr != nil {
+		t.Fatalf("cross-tenant request should stay enumeration-safe, got %v", foreignErr)
+	}
+
+	unknown, unknownErr := engine.RequestEmailVerification(ctxA, "nobody@example.com")
+	if unknownErr != nil {
+		t.Fatalf("unknown-identifier request failed: %v", unknownErr)
+	}
+
+	if len(foreign) != len(unknown) {
+		t.Fatalf("challenge lengths differ (%d vs %d); this leaks cross-tenant existence",
+			len(foreign), len(unknown))
+	}
+
+	keys, err := rdb.Keys(context.Background(), "aev:*").Result()
+	if err != nil {
+		t.Fatalf("scan verification keys failed: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("a verification record was written for a cross-tenant request: %v", keys)
 	}
 }
 

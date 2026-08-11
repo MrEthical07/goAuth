@@ -2888,8 +2888,10 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 	}
 	e.configurePasswordResetLimiterDeps(&deps, cfg)
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByIdentifier = func(identifier string) (internalflows.PasswordResetUser, error) {
-			user, err := e.userProvider.GetUserByIdentifier(identifier)
+		deps.EnforceTenantMatch = e.tenantScopedLookup()
+		deps.Warn = e.warn
+		deps.GetUserByIdentifier = func(ctx context.Context, identifier string) (internalflows.PasswordResetUser, error) {
+			user, err := e.lookupUserByIdentifier(ctx, identifier)
 			if err != nil {
 				return internalflows.PasswordResetUser{}, err
 			}
@@ -2899,8 +2901,8 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 				Status:   uint8(user.Status),
 			}, nil
 		}
-		deps.GetUserByID = func(userID string) (internalflows.PasswordResetUser, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.PasswordResetUser, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.PasswordResetUser{}, err
 			}
