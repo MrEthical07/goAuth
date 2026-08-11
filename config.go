@@ -186,6 +186,20 @@ type AccountConfig struct {
 	AccountCreationMaxAttempts            int
 	AccountCreationCooldown               time.Duration
 	DefaultRole                           string
+	// AllowDuplicateIdentifierAcrossTenants is a provider-owned contract,
+	// not an engine-enforced rule. goAuth never queries across tenants, so
+	// it cannot enforce global identifier uniqueness; only the UserProvider
+	// implementation can, in its own schema (for example a unique index on
+	// identifier alone versus on (tenant_id, identifier)).
+	//
+	// The engine surfaces [ErrProviderDuplicateIdentifier] when a provider
+	// reports a conflict; this flag documents which uniqueness rule the
+	// provider is expected to implement.
+	//
+	// Deprecated: retained for backwards compatibility and as documentation
+	// of intent. Setting it true produces the
+	// account_duplicate_identifier_provider_owned lint warning as a reminder
+	// that the guarantee lives in your provider, not in goAuth.
 	AllowDuplicateIdentifierAcrossTenants bool
 }
 
@@ -383,7 +397,13 @@ MULTI TENANT CONFIG
 
 // MultiTenantConfig enables tenant-scoped session isolation.
 //
-//	Docs: docs/config.md
+// Enabled is the single switch governing tenant enforcement. With it set,
+// the engine scopes every user lookup to the request's tenant and requires
+// the user provider to implement [TenantAwareUserProvider] — [Builder.Build]
+// fails otherwise. With it unset, the engine behaves exactly as it did
+// before tenant-scoped lookup existed.
+//
+//	Docs: docs/config.md, docs/multi_tenancy.md
 type MultiTenantConfig struct {
 	Enabled bool
 
@@ -391,7 +411,18 @@ type MultiTenantConfig struct {
 	// middleware does not extract it. Tenant scoping comes exclusively from
 	// [WithTenantID] on the request context. Setting it with Enabled produces
 	// the tenant_header_noop lint warning.
-	TenantHeader     string
+	//
+	// Deprecated: the engine is transport-agnostic and will not read HTTP
+	// headers. Extract the tenant in your HTTP layer and attach it with
+	// [WithTenantID]. Retained for backwards compatibility; it has no effect.
+	TenantHeader string
+
+	// EnforceIsolation is not read by the engine.
+	//
+	// Deprecated: tenant-boundary enforcement is governed entirely by
+	// Enabled. This field never gated anything and setting it neither
+	// enables nor relaxes any check. Retained for backwards compatibility;
+	// setting it produces the tenant_enforce_isolation_noop lint warning.
 	EnforceIsolation bool
 }
 
@@ -608,9 +639,13 @@ func defaultConfig() Config {
 			RejectClonedAuthenticators: true,
 		},
 		MultiTenant: MultiTenantConfig{
-			Enabled:          false,
-			TenantHeader:     "X-Tenant-ID",
-			EnforceIsolation: true,
+			Enabled:      false,
+			TenantHeader: "X-Tenant-ID",
+			// EnforceIsolation is deprecated and unread. It previously
+			// defaulted to true, which implied an enforcement the engine
+			// never performed and would now emit a deprecation warning for
+			// every default config. Leaving it false changes no behaviour.
+			EnforceIsolation: false,
 		},
 		Database: DatabaseConfig{
 			MaxConnections:            25,
@@ -1463,6 +1498,16 @@ func (c *Config) Lint() LintResult {
 	if c.MultiTenant.Enabled && c.MultiTenant.TenantHeader != "" {
 		warn(LintInfo, "tenant_header_noop",
 			"MultiTenant.TenantHeader is not read by the engine or middleware; tenant scoping comes only from WithTenantID(ctx) — extract the header in your HTTP layer")
+	}
+
+	if c.MultiTenant.EnforceIsolation {
+		warn(LintWarn, "tenant_enforce_isolation_noop",
+			"MultiTenant.EnforceIsolation is deprecated and not read by the engine; tenant enforcement is governed entirely by MultiTenant.Enabled — setting it does not enable any isolation check")
+	}
+
+	if c.Account.AllowDuplicateIdentifierAcrossTenants {
+		warn(LintInfo, "account_duplicate_identifier_provider_owned",
+			"Account.AllowDuplicateIdentifierAcrossTenants is a provider-owned contract; goAuth cannot enforce identifier uniqueness it cannot query — implement the rule in your UserProvider schema")
 	}
 
 	// --- Production readiness ---
