@@ -180,12 +180,12 @@ type EmailVerificationConfig struct {
 //
 //	Docs: docs/config.md
 type AccountConfig struct {
-	Enabled                               bool
-	AutoLogin                             bool
-	EnableCreationLimiter                 bool
-	AccountCreationMaxAttempts            int
-	AccountCreationCooldown               time.Duration
-	DefaultRole                           string
+	Enabled                    bool
+	AutoLogin                  bool
+	EnableCreationLimiter      bool
+	AccountCreationMaxAttempts int
+	AccountCreationCooldown    time.Duration
+	DefaultRole                string
 	// AllowDuplicateIdentifierAcrossTenants is a provider-owned contract,
 	// not an engine-enforced rule. goAuth never queries across tenants, so
 	// it cannot enforce global identifier uniqueness; only the UserProvider
