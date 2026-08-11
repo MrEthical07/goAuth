@@ -2550,20 +2550,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.LockAccount = e.LockAccount
 	}
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByIdentifier = func(identifier string) (internalflows.LoginUserRecord, error) {
-			user, err := e.userProvider.GetUserByIdentifier(identifier)
-			if err != nil {
-				return internalflows.LoginUserRecord{}, err
-			}
-			return toFlowLoginUser(user), nil
-		}
-		deps.GetUserByID = func(userID string) (internalflows.LoginUserRecord, error) {
-			user, err := e.userProvider.GetUserByID(userID)
-			if err != nil {
-				return internalflows.LoginUserRecord{}, err
-			}
-			return toFlowLoginUser(user), nil
-		}
+		e.configureLoginUserLookupDeps(&deps)
 		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
 		deps.GetTOTPSecret = func(ctx context.Context, userID string) (*internalflows.LoginTOTPRecord, error) {
 			record, err := e.userProvider.GetTOTPSecret(ctx, userID)
@@ -2664,6 +2651,28 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	}
 
 	return deps
+}
+
+// configureLoginUserLookupDeps wires the login flow's user lookups. Both
+// route through the engine resolvers, so they are tenant-scoped whenever
+// multi-tenancy is enabled and tenant-blind exactly as before when it is
+// not.
+func (e *Engine) configureLoginUserLookupDeps(deps *internalflows.LoginDeps) {
+	deps.EnforceTenantMatch = e.tenantScopedLookup()
+	deps.GetUserByIdentifier = func(ctx context.Context, identifier string) (internalflows.LoginUserRecord, error) {
+		user, err := e.lookupUserByIdentifier(ctx, identifier)
+		if err != nil {
+			return internalflows.LoginUserRecord{}, err
+		}
+		return toFlowLoginUser(user), nil
+	}
+	deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.LoginUserRecord, error) {
+		user, err := e.lookupUserByID(ctx, userID)
+		if err != nil {
+			return internalflows.LoginUserRecord{}, err
+		}
+		return toFlowLoginUser(user), nil
+	}
 }
 
 func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {

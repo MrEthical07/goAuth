@@ -9,7 +9,7 @@ import (
 func timingTestDeps(verifyCalls *int) LoginDeps {
 	return LoginDeps{
 		AccountStatusError: func(uint8) error { return nil },
-		GetUserByIdentifier: func(string) (LoginUserRecord, error) {
+		GetUserByIdentifier: func(context.Context, string) (LoginUserRecord, error) {
 			return LoginUserRecord{}, errors.New("user not found")
 		},
 		VerifyPassword: func(string, string) (bool, error) {

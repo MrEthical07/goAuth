@@ -132,8 +132,15 @@ type LoginDeps struct {
 	ResetLockoutCounter  func(context.Context, string) error
 	LockAccount          func(context.Context, string) error
 
-	GetUserByIdentifier       func(string) (LoginUserRecord, error)
-	GetUserByID               func(string) (LoginUserRecord, error)
+	// EnforceTenantMatch requires a resolved user's TenantID to equal the
+	// request's tenant. Set only when multi-tenancy is enabled; with it
+	// false the flow behaves exactly as it did before tenant scoping.
+	EnforceTenantMatch bool
+
+	// GetUserByIdentifier and GetUserByID take a context so the engine can
+	// scope the lookup to the request's tenant when multi-tenancy is on.
+	GetUserByIdentifier       func(context.Context, string) (LoginUserRecord, error)
+	GetUserByID               func(context.Context, string) (LoginUserRecord, error)
 	UpdatePasswordHash        func(string, string) error
 	GetTOTPSecret             func(context.Context, string) (*LoginTOTPRecord, error)
 	UpdateTOTPLastUsedCounter func(context.Context, string, int64) error
@@ -183,6 +190,12 @@ type LoginDeps struct {
 // (empty password, unknown identifier). Skipping the dummy verification on
 // any credential-rejection path would create a measurable timing oracle.
 const dummyTimingHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+// errTenantMismatch marks a lookup discarded because the record belonged to
+// a different tenant than the request. It never reaches the caller: it only
+// selects the audit reason on a path that otherwise behaves exactly like an
+// unknown identifier.
+var errTenantMismatch = errors.New("goauth: user belongs to a different tenant")
 
 // RunLoginWithResult executes the login flow and either issues tokens or returns MFA challenge details.
 func RunLoginWithResult(ctx context.Context, username, password string, opts LoginOptions, deps LoginDeps) (*LoginResult, error) {
@@ -270,7 +283,17 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, deps.Errors.InvalidCredentials
 	}
 
-	user, err := deps.GetUserByIdentifier(username)
+	user, err := deps.GetUserByIdentifier(ctx, username)
+	if err == nil && deps.EnforceTenantMatch && tenantID != "" && user.TenantID != tenantID {
+		// The lookup is already tenant-scoped when multi-tenancy is on, so
+		// this is a defence-in-depth backstop against a provider that
+		// ignores the tenant argument. Discard the record and fall into the
+		// unknown-identifier path below: the caller must not be able to tell
+		// a foreign-tenant account from one that does not exist.
+		deps.Warn("goAuth: tenant-scoped lookup returned a user from another tenant; check the TenantAwareUserProvider implementation")
+		user = LoginUserRecord{}
+		err = errTenantMismatch
+	}
 	if err != nil {
 		// Perform a dummy password verification so unknown identifiers cost
 		// the same as wrong passwords; returning immediately would let an
@@ -294,11 +317,18 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 				return nil, deps.Errors.LoginRateLimited
 			}
 		}
+		// The audit trail distinguishes a cross-tenant attempt from an
+		// unknown identifier; the caller-facing response deliberately does
+		// not. Audit events must not be surfaced to end users.
+		reason := "user_not_found"
+		if errors.Is(err, errTenantMismatch) {
+			reason = "tenant_mismatch"
+		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
 				"identifier": username,
-				"reason":     "user_not_found",
+				"reason":     reason,
 			}
 		})
 		return nil, deps.Errors.InvalidCredentials
@@ -537,12 +567,28 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, deps.Errors.MFALoginInvalid
 	}
 
-	user, err := deps.GetUserByID(record.UserID)
+	user, err := deps.GetUserByID(ctx, record.UserID)
 	if err != nil {
 		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
 		deps.MetricInc(deps.Metrics.MFALoginFailure)
 		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, record.UserID, record.TenantID, "", deps.Errors.UserNotFound, nil)
 		return nil, deps.Errors.UserNotFound
+	}
+
+	// The check above compares the context tenant to the CHALLENGE's tenant.
+	// This one compares it to the resolved USER's tenant — a challenge whose
+	// record points at a user in another tenant must never complete, however
+	// that mismatch arose.
+	if contextTenant := deps.TenantIDFromContext(ctx); deps.EnforceTenantMatch &&
+		contextTenant != "" && user.TenantID != contextTenant {
+		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
+		deps.MetricInc(deps.Metrics.MFALoginFailure)
+		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, contextTenant, "", deps.Errors.MFALoginInvalid, func() map[string]string {
+			return map[string]string{
+				"reason": "tenant_mismatch",
+			}
+		})
+		return nil, deps.Errors.MFALoginInvalid
 	}
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
 		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)

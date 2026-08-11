@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
@@ -24,6 +25,11 @@ type tenantMockProvider struct {
 
 	// lastTenantArg records the tenant the engine last scoped a lookup to.
 	lastTenantArg string
+
+	// ignoreTenantScope simulates a provider that implements the interface
+	// but ignores the tenant argument, so tests can reach the engine-side
+	// backstop guard rather than only the provider's own scoping.
+	ignoreTenantScope bool
 }
 
 func newTenantMockProvider() *tenantMockProvider {
@@ -59,6 +65,16 @@ func tenantIdentifierKey(tenantID, identifier string) string {
 func (p *tenantMockProvider) GetUserByIdentifierInTenant(ctx context.Context, tenantID, identifier string) (UserRecord, error) {
 	p.tenantIdentifierCalls++
 	p.lastTenantArg = tenantID
+
+	if p.ignoreTenantScope {
+		// Deliberately tenant-blind: resolve via the plain index the way a
+		// broken implementation would.
+		userID, ok := p.byIdentifier[identifier]
+		if !ok {
+			return UserRecord{}, errors.New("not found")
+		}
+		return p.users[userID], nil
+	}
 
 	userID, ok := p.byIdentifier[tenantIdentifierKey(tenantID, identifier)]
 	if !ok {
@@ -142,6 +158,186 @@ var (
 	_ UserProvider            = legacyOnlyProvider{}
 	_ TenantAwareUserProvider = (*tenantMockProvider)(nil)
 )
+
+// collectingSink records events synchronously so a test can assert on the
+// audit trail without racing the dispatcher.
+type collectingSink struct {
+	mu     sync.Mutex
+	events []AuditEvent
+}
+
+func (s *collectingSink) Emit(_ context.Context, event AuditEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+}
+
+func (s *collectingSink) find(eventType, reason string) *AuditEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.events {
+		event := s.events[i]
+		if event.EventType != eventType {
+			continue
+		}
+		if reason == "" || event.Metadata["reason"] == reason {
+			found := s.events[i]
+			return &found
+		}
+	}
+	return nil
+}
+
+// newTenantLoginEngine builds a multi-tenant engine holding the SAME
+// identifier in two tenants with different passwords, the exact setup the
+// cross-tenant credential attack needs.
+func newTenantLoginEngine(t *testing.T) (*Engine, *tenantMockProvider, *collectingSink, func()) {
+	t.Helper()
+
+	mr, rdb := newTestRedis(t)
+
+	hasher := newTestHasher(t)
+	hashA, err := hasher.Hash("tenant-a-password-123")
+	if err != nil {
+		t.Fatalf("hash failed: %v", err)
+	}
+	hashB, err := hasher.Hash("tenant-b-password-123")
+	if err != nil {
+		t.Fatalf("hash failed: %v", err)
+	}
+
+	up := newTenantMockProvider()
+	up.addUser(UserRecord{
+		UserID: "user-a", Identifier: "shared@example.com", TenantID: "tenant-a",
+		PasswordHash: hashA, Status: AccountActive, Role: "member",
+		PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+	})
+	up.addUser(UserRecord{
+		UserID: "user-b", Identifier: "shared@example.com", TenantID: "tenant-b",
+		PasswordHash: hashB, Status: AccountActive, Role: "member",
+		PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+	})
+
+	cfg := accountTestConfig()
+	cfg.MultiTenant.Enabled = true
+	cfg.Audit.Enabled = true
+
+	sink := &collectingSink{}
+	engine, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{"member": {}, "admin": {"perm.read"}}).
+		WithUserProvider(up).
+		WithAuditSink(sink).
+		Build()
+	if err != nil {
+		mr.Close()
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	return engine, up, sink, func() { mr.Close() }
+}
+
+// The same email in two tenants must resolve to that tenant's own account.
+func TestLoginResolvesPerTenantUser(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	access, _, err := engine.Login(ctxA, "shared@example.com", "tenant-a-password-123")
+	if err != nil {
+		t.Fatalf("tenant-A login failed: %v", err)
+	}
+	claims, err := engine.ValidateAccess(ctxA, access)
+	if err != nil {
+		t.Fatalf("token validation failed: %v", err)
+	}
+	if claims.UserID != "user-a" {
+		t.Fatalf("tenant-A login issued a token for %q, want user-a", claims.UserID)
+	}
+	if claims.TenantID != "tenant-a" {
+		t.Fatalf("token stamped tenant %q, want tenant-a", claims.TenantID)
+	}
+
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+	access, _, err = engine.Login(ctxB, "shared@example.com", "tenant-b-password-123")
+	if err != nil {
+		t.Fatalf("tenant-B login failed: %v", err)
+	}
+	claims, err = engine.ValidateAccess(ctxB, access)
+	if err != nil {
+		t.Fatalf("token validation failed: %v", err)
+	}
+	if claims.UserID != "user-b" {
+		t.Fatalf("tenant-B login issued a token for %q, want user-b", claims.UserID)
+	}
+}
+
+// The core cross-tenant credential attack: tenant-A credentials presented
+// against tenant-B's context must not authenticate.
+func TestLoginRejectsCrossTenantCredentials(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+	access, refresh, err := engine.Login(ctxB, "shared@example.com", "tenant-a-password-123")
+	if err == nil {
+		t.Fatal("tenant-A password authenticated under tenant-B context")
+	}
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected the generic invalid-credentials error, got %v", err)
+	}
+	if access != "" || refresh != "" {
+		t.Fatal("tokens were issued for a rejected cross-tenant login")
+	}
+}
+
+// A user that exists only in another tenant must be indistinguishable from
+// one that does not exist at all.
+func TestLoginCrossTenantIsIndistinguishableFromUnknownUser(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	ctxC := WithTenantID(context.Background(), "tenant-c")
+
+	_, _, foreignErr := engine.Login(ctxC, "shared@example.com", "tenant-a-password-123")
+	_, _, unknownErr := engine.Login(ctxC, "nobody@example.com", "tenant-a-password-123")
+
+	if foreignErr == nil || unknownErr == nil {
+		t.Fatal("expected both logins to fail")
+	}
+	if foreignErr.Error() != unknownErr.Error() {
+		t.Fatalf("cross-tenant login is distinguishable from an unknown user: %q vs %q",
+			foreignErr.Error(), unknownErr.Error())
+	}
+}
+
+// The rejection must still be visible to defenders, recorded against the
+// context tenant.
+func TestLoginCrossTenantAuditsTenantMismatch(t *testing.T) {
+	engine, up, sink, done := newTenantLoginEngine(t)
+	defer done()
+
+	// Force the mismatch through the backstop guard by making the
+	// tenant-scoped lookup misbehave the way a buggy provider would.
+	up.ignoreTenantScope = true
+
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+	if _, _, err := engine.Login(ctxB, "shared@example.com", "tenant-a-password-123"); err == nil {
+		t.Fatal("expected the login to be rejected")
+	}
+
+	engine.Close()
+
+	event := sink.find(auditEventLoginFailure, "tenant_mismatch")
+	if event == nil {
+		t.Fatal("no login failure audited with reason tenant_mismatch")
+	}
+	if event.TenantID != "tenant-b" {
+		t.Fatalf("rejection audited against tenant %q, want the context tenant tenant-b", event.TenantID)
+	}
+}
 
 func newMultiTenantBuilder(t *testing.T, rdb *redis.Client, up UserProvider) *Builder {
 	t.Helper()
