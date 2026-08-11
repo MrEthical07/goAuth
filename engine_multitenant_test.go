@@ -649,6 +649,101 @@ func TestAuthenticatedPathsAllowSameTenantUserID(t *testing.T) {
 	}
 }
 
+// Identifier-keyed limiters are keyed on (tenant, identifier), so burning
+// the login budget for an address under one tenant must not lock the same
+// address out under another. Verification only: the keys already carry the
+// tenant, and this pins that they keep doing so.
+func TestLoginRateLimitDoesNotCrossTenants(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+
+	// Exhaust the login budget for the shared address under tenant B.
+	// accountTestConfig sets MaxLoginAttempts to 5.
+	var lockedOut bool
+	for i := 0; i < 12; i++ {
+		_, _, err := engine.Login(ctxB, "shared@example.com", "wrong-password-123")
+		if errors.Is(err, ErrLoginRateLimited) {
+			lockedOut = true
+			break
+		}
+	}
+	if !lockedOut {
+		t.Fatal("tenant-B login was never rate limited; the test cannot prove isolation")
+	}
+
+	// The same address under tenant A must be unaffected, and a correct
+	// password must still authenticate.
+	attemptsA, err := engine.GetLoginAttempts(ctxA, "shared@example.com")
+	if err != nil {
+		t.Fatalf("GetLoginAttempts failed: %v", err)
+	}
+	if attemptsA != 0 {
+		t.Fatalf("tenant-A saw %d failed attempts from tenant-B traffic; the limiter key is not tenant-scoped", attemptsA)
+	}
+
+	if _, _, err := engine.Login(ctxA, "shared@example.com", "tenant-a-password-123"); err != nil {
+		t.Fatalf("tenant-A login was blocked by tenant-B's rate limit: %v", err)
+	}
+}
+
+// GetLoginAttempts reports per-tenant counts, so the same identifier must
+// carry independent tallies in different tenants.
+func TestGetLoginAttemptsIsTenantScoped(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+
+	for i := 0; i < 2; i++ {
+		_, _, _ = engine.Login(ctxB, "shared@example.com", "wrong-password-123")
+	}
+
+	attemptsB, err := engine.GetLoginAttempts(ctxB, "shared@example.com")
+	if err != nil {
+		t.Fatalf("GetLoginAttempts(tenant-b) failed: %v", err)
+	}
+	if attemptsB == 0 {
+		t.Fatal("tenant-B attempts were not recorded")
+	}
+
+	attemptsA, err := engine.GetLoginAttempts(ctxA, "shared@example.com")
+	if err != nil {
+		t.Fatalf("GetLoginAttempts(tenant-a) failed: %v", err)
+	}
+	if attemptsA != 0 {
+		t.Fatalf("tenant-A reported %d attempts for tenant-B traffic", attemptsA)
+	}
+}
+
+// Refresh needs no equality guard: the session is loaded from a key built
+// with the CONTEXT tenant, so a token minted in one tenant simply misses in
+// another. This pins that fail-closed behaviour so it cannot regress into
+// needing one.
+func TestRefreshTokenDoesNotCrossTenants(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	_, refresh, err := engine.Login(ctxA, "shared@example.com", "tenant-a-password-123")
+	if err != nil {
+		t.Fatalf("tenant-A login failed: %v", err)
+	}
+
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+	if _, _, err := engine.Refresh(ctxB, refresh); err == nil {
+		t.Fatal("a tenant-A refresh token was accepted under tenant-B context")
+	}
+
+	// The token must still work in its own tenant.
+	if _, _, err := engine.Refresh(ctxA, refresh); err != nil {
+		t.Fatalf("refresh failed in the token's own tenant: %v", err)
+	}
+}
+
 func newMultiTenantBuilder(t *testing.T, rdb *redis.Client, up UserProvider) *Builder {
 	t.Helper()
 
