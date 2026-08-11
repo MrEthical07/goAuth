@@ -2058,15 +2058,17 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		return
 	}
 
-	deps.GetUserByIdentifier = func(identifier string) (internalflows.EmailVerificationUser, error) {
-		user, err := e.userProvider.GetUserByIdentifier(identifier)
+	deps.EnforceTenantMatch = e.tenantScopedLookup()
+	deps.Warn = e.warn
+	deps.GetUserByIdentifier = func(ctx context.Context, identifier string) (internalflows.EmailVerificationUser, error) {
+		user, err := e.lookupUserByIdentifier(ctx, identifier)
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}
 		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
 	}
-	deps.GetUserByID = func(userID string) (internalflows.EmailVerificationUser, error) {
-		user, err := e.userProvider.GetUserByID(userID)
+	deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.EmailVerificationUser, error) {
+		user, err := e.lookupUserByID(ctx, userID)
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}

@@ -180,11 +180,17 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		return challenge, nil
 	}
 
-	// The reset record is always stored under the tenant the request was
-	// made in. Deriving it from the resolved user instead would let a
-	// request made in one tenant write a redeemable record into another
-	// tenant's keyspace.
+	// When multi-tenancy is enabled the record is always stored under the
+	// tenant the request was made in. Deriving it from the resolved user
+	// instead would let a request made in one tenant write a redeemable
+	// record into another tenant's keyspace.
+	//
+	// With multi-tenancy disabled the legacy behaviour is preserved: the
+	// user's own tenant wins.
 	effectiveTenant := tenantID
+	if !deps.EnforceTenantMatch && user.TenantID != "" {
+		effectiveTenant = user.TenantID
+	}
 
 	resetID, challenge, secretHash, err := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits)
 	if err != nil {

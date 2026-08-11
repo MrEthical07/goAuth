@@ -59,8 +59,16 @@ type EmailVerificationDeps struct {
 	MapLimiterError     func(error) error
 	MapStoreError       func(error) error
 
-	GetUserByIdentifier       func(string) (EmailVerificationUser, error)
-	GetUserByID               func(string) (EmailVerificationUser, error)
+	// EnforceTenantMatch requires a resolved user's TenantID to equal the
+	// request's tenant. Set only when multi-tenancy is enabled.
+	EnforceTenantMatch bool
+
+	Warn func(string, ...any)
+
+	// GetUserByIdentifier and GetUserByID take a context so the engine can
+	// scope the lookup to the request's tenant when multi-tenancy is on.
+	GetUserByIdentifier       func(context.Context, string) (EmailVerificationUser, error)
+	GetUserByID               func(context.Context, string) (EmailVerificationUser, error)
 	UpdateStatusAndInvalidate func(context.Context, string, uint8) error
 
 	SaveVerificationRecord    func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
@@ -124,7 +132,16 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		return "", mapped
 	}
 
-	user, err := deps.GetUserByIdentifier(identifier)
+	user, err := deps.GetUserByIdentifier(ctx, identifier)
+	if err == nil && deps.EnforceTenantMatch && tenantID != "" && user.TenantID != tenantID {
+		// Defence in depth against a provider that ignores the tenant
+		// argument. Fall into the enumeration-safe branch below so an
+		// account that exists only in another tenant is indistinguishable
+		// from one that does not exist.
+		deps.Warn("goAuth: tenant-scoped lookup returned a user from another tenant; check the TenantAwareUserProvider implementation")
+		user = EmailVerificationUser{}
+		err = errTenantMismatch
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", err
@@ -181,8 +198,16 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		return fakeChallenge, nil
 	}
 
+	// When multi-tenancy is enabled the record is always stored under the
+	// tenant the request was made in. Deriving it from the resolved user
+	// instead would let a request made in one tenant write a redeemable
+	// record into another tenant's keyspace.
+	//
+	// With multi-tenancy disabled the legacy behaviour is preserved: the
+	// user's own tenant wins. Single-tenant deployments rely on that to
+	// bind records to a user-carried tenant value the context does not set.
 	effectiveTenant := tenantID
-	if user.TenantID != "" {
+	if !deps.EnforceTenantMatch && user.TenantID != "" {
 		effectiveTenant = user.TenantID
 	}
 
@@ -294,7 +319,7 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 		return mapped
 	}
 
-	user, err := deps.GetUserByID(record.UserID)
+	user, err := deps.GetUserByID(ctx, record.UserID)
 	if err != nil {
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, record.UserID, tenantID, "", deps.Errors.UserNotFound, nil)
@@ -406,7 +431,7 @@ func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code s
 		return mapped
 	}
 
-	user, err := deps.GetUserByID(record.UserID)
+	user, err := deps.GetUserByID(ctx, record.UserID)
 	if err != nil {
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, record.UserID, tenantID, "", deps.Errors.UserNotFound, nil)
@@ -455,6 +480,9 @@ func normalizeEmailVerificationDeps(deps *EmailVerificationDeps) {
 	}
 	if deps.SleepEnumerationDelay == nil {
 		deps.SleepEnumerationDelay = func(context.Context) error { return nil }
+	}
+	if deps.Warn == nil {
+		deps.Warn = func(string, ...any) {}
 	}
 	if deps.MetricInc == nil {
 		deps.MetricInc = func(int) {}
