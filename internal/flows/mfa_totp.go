@@ -65,7 +65,7 @@ type TOTPDeps struct {
 	TenantIDFromContext func(context.Context) string
 	AccountStatusError  func(uint8) error
 
-	GetUserByID               func(string) (TOTPUser, error)
+	GetUserByID               func(context.Context, string) (TOTPUser, error)
 	GetTOTPSecret             func(context.Context, string) (*TOTPRecord, error)
 	EnableTOTP                func(context.Context, string, []byte) error
 	DisableTOTP               func(context.Context, string) error
@@ -103,7 +103,7 @@ func RunGenerateTOTPSetup(ctx context.Context, userID string, deps TOTPDeps) (*T
 		return nil, deps.Errors.UserNotFound
 	}
 
-	user, err := deps.GetUserByID(userID)
+	user, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, deps.Errors.UserNotFound
 	}
@@ -165,7 +165,7 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		return deps.Errors.UserNotFound
 	}
 
-	before, err := deps.GetUserByID(userID)
+	before, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.Errors.UserNotFound
 	}
@@ -227,7 +227,7 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		return deps.Errors.TOTPUnavailable
 	}
 
-	after, err := deps.GetUserByID(userID)
+	after, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.Errors.UserNotFound
 	}
@@ -267,7 +267,7 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 		return deps.Errors.UserNotFound
 	}
 
-	user, err := deps.GetUserByID(userID)
+	user, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.Errors.UserNotFound
 	}
@@ -326,7 +326,7 @@ func RunDisableTOTP(ctx context.Context, userID string, deps TOTPDeps) error {
 		return deps.Errors.UserNotFound
 	}
 
-	before, err := deps.GetUserByID(userID)
+	before, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.Errors.UserNotFound
 	}
@@ -335,7 +335,7 @@ func RunDisableTOTP(ctx context.Context, userID string, deps TOTPDeps) error {
 		return deps.Errors.TOTPUnavailable
 	}
 
-	after, err := deps.GetUserByID(userID)
+	after, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.Errors.UserNotFound
 	}

@@ -731,7 +731,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		return mapToAuthError(ErrPasswordPolicy)
 	}
 
-	user, err := e.userProvider.GetUserByID(userID)
+	user, err := e.lookupUserByID(ctx, userID)
 	if err != nil {
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, tenantIDFromContext(ctx), "", ErrUserNotFound, func() map[string]string {
 			return map[string]string{
@@ -1202,8 +1202,8 @@ func (e *Engine) accountStatusFlowDeps() internalflows.UpdateAccountStatusDeps {
 	}
 
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByID = func(userID string) (internalflows.AccountStatusRecord, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.AccountStatusRecord, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.AccountStatusRecord{}, err
 			}
@@ -1752,8 +1752,8 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 	}
 
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByID = func(userID string) (internalflows.BackupCodeUser, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.BackupCodeUser, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.BackupCodeUser{}, err
 			}
@@ -3275,8 +3275,8 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	}
 
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByID = func(userID string) (internalflows.TOTPUser, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.TOTPUser, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.TOTPUser{}, err
 			}

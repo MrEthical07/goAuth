@@ -249,8 +249,8 @@ func (e *Engine) webauthnFlowDeps() internalflows.WebAuthnDeps {
 	}
 
 	if e.userProvider != nil {
-		deps.GetUserByID = func(userID string) (internalflows.LoginUserRecord, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.LoginUserRecord, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.LoginUserRecord{}, err
 			}

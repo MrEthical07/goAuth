@@ -604,6 +604,51 @@ func TestMultiTenantRecordBindingUsesContextTenantOnBothPaths(t *testing.T) {
 	}
 }
 
+// The authenticated id-keyed paths take a bare userID from the caller and
+// derive the tenant only from context, so under multi-tenancy they must not
+// resolve a user belonging to another tenant.
+func TestAuthenticatedPathsRejectForeignTenantUserID(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	// user-a lives in tenant-a; every call below is made under tenant-b.
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+
+	t.Run("ChangePassword", func(t *testing.T) {
+		err := engine.ChangePassword(ctxB, "user-a", "tenant-a-password-123", "new-password-12345")
+		if err == nil {
+			t.Fatal("changed the password of a user in another tenant")
+		}
+		if !errors.Is(err, ErrUserNotFound) {
+			t.Fatalf("expected user-not-found, got %v", err)
+		}
+	})
+
+	t.Run("LockAccount", func(t *testing.T) {
+		if err := engine.LockAccount(ctxB, "user-a"); err == nil {
+			t.Fatal("locked an account belonging to another tenant")
+		}
+	})
+
+	t.Run("GenerateBackupCodes", func(t *testing.T) {
+		if _, err := engine.GenerateBackupCodes(ctxB, "user-a"); err == nil {
+			t.Fatal("generated backup codes for a user in another tenant")
+		}
+	})
+}
+
+// The same operations must still work for a user in their own tenant, so the
+// guard rejects only cross-tenant access rather than breaking the flows.
+func TestAuthenticatedPathsAllowSameTenantUserID(t *testing.T) {
+	engine, _, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	if err := engine.ChangePassword(ctxA, "user-a", "tenant-a-password-123", "new-password-12345"); err != nil {
+		t.Fatalf("same-tenant password change failed: %v", err)
+	}
+}
+
 func newMultiTenantBuilder(t *testing.T, rdb *redis.Client, up UserProvider) *Builder {
 	t.Helper()
 
