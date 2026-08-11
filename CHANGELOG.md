@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+Minor release (SemVer): additive. One new optional interface, no changed
+public signatures, no removed or renamed config fields. Every behavior change
+is gated on `MultiTenant.Enabled`, which defaults to `false` and is not set by
+any shipped preset — deployments that do not opt in behave exactly as they did
+in v0.4.0.
+
+### Security
+
+All three fixes below apply only when `MultiTenant.Enabled = true`. They are
+live vulnerabilities for any deployment running more than one tenant; the
+`Enabled = false` path was never affected.
+
+- **Cross-tenant account takeover via password reset (unauthenticated).** The
+  password-reset request path resolved the identifier tenant-blind and then
+  stored the reset record under the **resolved user's** tenant rather than the
+  request's. A reset requested under tenant B for an address belonging to
+  tenant A wrote a valid, redeemable reset record into tenant A's keyspace,
+  which the confirm path honored. Reachable by anyone who could reach the
+  reset endpoint and guess an email address. The lookup is now scoped to the
+  request's tenant and the record is always stored under it.
+- **Cross-tenant credential attack on login.** Login resolved the user
+  tenant-blind and never compared the resolved user's tenant to the request's.
+  Valid tenant-A credentials presented against tenant-B's context
+  authenticated, yielding a token cryptographically stamped tenant B while
+  carrying tenant A's user id and role. Login now resolves within the request's
+  tenant and rejects a mismatch with the same generic invalid-credentials error
+  as a wrong password.
+- **Cross-tenant email verification.** Same shape as the reset hole: a
+  tenant-blind lookup plus record binding to the resolved user's tenant. Now
+  scoped and bound to the request's tenant.
+
+Enumeration resistance is preserved on every path: a cross-tenant identifier
+is indistinguishable from a nonexistent one in response shape, error value,
+and timing posture. Rejections are recorded in the audit trail with
+`reason: "tenant_mismatch"` against the context tenant. **Audit events must
+not be surfaced to tenant users** — the stream distinguishes cases the
+response deliberately does not.
+
+### Added
+
+- `TenantAwareUserProvider` — optional capability interface with
+  context-taking, tenant-scoped variants of both user lookups
+  (`GetUserByIdentifierInTenant`, `GetUserByIDInTenant`). Detected by type
+  assertion at `Builder.Build()`, the same mechanism as
+  `WebAuthnCredentialProvider`. The existing `UserProvider` interface is
+  unchanged and existing implementations continue to compile.
+- Fail-fast build validation: `Builder.Build()` now fails when
+  `MultiTenant.Enabled` is set and the user provider does not implement
+  `TenantAwareUserProvider`. A silent fallback to tenant-blind lookup in a
+  multi-tenant deployment must be impossible to configure. Safe for existing
+  consumers, who default to `Enabled = false`.
+- `docs/multi_tenancy.md` — tenant model, provider contract with
+  implementation guidance, enforced paths, enumeration-resistance notes, and
+  adoption steps.
+- New lint warnings: `tenant_enforce_isolation_noop` and
+  `account_duplicate_identifier_provider_owned`.
+
+### Changed
+
+- With `MultiTenant.Enabled = true`, every user lookup — including the
+  authenticated id-keyed paths (change password, account status transitions,
+  backup codes, TOTP provisioning, WebAuthn ceremonies) — is scoped to the
+  request's tenant. Previously these resolved across all tenants, so a user id
+  from another tenant was honored. With `Enabled = false` they remain
+  tenant-blind.
+- `MultiTenant.EnforceIsolation` no longer defaults to `true` in
+  `defaultConfig()`. The field is unread, so this changes no behavior; it
+  previously implied an enforcement the engine never performed and would now
+  emit a deprecation warning for every default config.
+
+### Deprecated
+
+No fields removed; all continue to be accepted.
+
+- `MultiTenant.EnforceIsolation` — no-op that never gated anything. Tenant
+  enforcement is governed entirely by `MultiTenant.Enabled`.
+- `MultiTenant.TenantHeader` — no-op. The engine is transport-agnostic and
+  will not read HTTP headers; extract the tenant in your HTTP layer and attach
+  it with `WithTenantID`.
+- `Account.AllowDuplicateIdentifierAcrossTenants` — documented as a
+  provider-owned contract. goAuth never queries across tenants and so cannot
+  enforce global identifier uniqueness; only the provider's schema can.
+
+---
+
 ## [0.4.0] - 2026-07-14
 
 Minor release (SemVer): every public API change is additive — new config

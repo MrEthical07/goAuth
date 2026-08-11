@@ -73,14 +73,17 @@ func (c *Config) Lint() LintResult
 | `cache_lru_noop` | WARN | `Cache.LRUEnabled` is set but no in-memory session cache is implemented |
 | `database_config_noop` | INFO | `Database.Address` is set but `DatabaseConfig` is never read (use `Builder.WithRedis`) |
 | `tenant_header_noop` | INFO | `MultiTenant.TenantHeader` is set with multi-tenancy enabled but is never read (tenant comes from `WithTenantID(ctx)`) |
+| `tenant_enforce_isolation_noop` | WARN | `MultiTenant.EnforceIsolation` is deprecated and never read; tenant enforcement is governed entirely by `MultiTenant.Enabled` |
+| `account_duplicate_identifier_provider_owned` | INFO | `Account.AllowDuplicateIdentifierAcrossTenants` is a provider-owned contract; goAuth cannot enforce uniqueness it cannot query |
 
-Summary: 8 INFO, 13 WARN, 4 HIGH.
+Summary: 9 INFO, 14 WARN, 4 HIGH.
 
 ### No-op knob warnings
 
 Several config fields are accepted for backward compatibility but are not read
 by the engine (`Security.EnableIPBinding`, `Security.EnableIPSignal`, the
-cookie/CSRF knobs, `CacheConfig`, `DatabaseConfig`, `MultiTenant.TenantHeader`).
+cookie/CSRF knobs, `CacheConfig`, `DatabaseConfig`, `MultiTenant.TenantHeader`,
+`MultiTenant.EnforceIsolation`).
 The `*_noop` lint codes fire when such a knob is enabled so integrators do not
 assume a protection is active. They will be removed or wired up in a future
 major/minor release; see `docs/config.md` for per-field notes.
