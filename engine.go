@@ -85,10 +85,33 @@ func (e *Engine) lookupUserByIdentifier(ctx context.Context, identifier string) 
 // tenant when multi-tenancy is enabled. With multi-tenancy off it is
 // exactly the legacy tenant-blind lookup.
 func (e *Engine) lookupUserByID(ctx context.Context, userID string) (UserRecord, error) {
-	if e.tenantScopedLookup() {
-		return e.tenantProvider.GetUserByIDInTenant(ctx, tenantIDFromContext(ctx), userID)
+	return e.lookupUserByIDInTenant(ctx, tenantIDFromContext(ctx), userID)
+}
+
+// lookupUserByIDInTenant resolves a user ID against an explicitly supplied
+// tenant rather than the context's. Confirm paths use it to pass the tenant
+// a challenge record was loaded under, which for tenant-carrying challenges
+// is authoritative and may legitimately differ from the context tenant.
+//
+// The returned record's TenantID is verified against the requested tenant.
+// The provider is contractually required to scope the query itself, but a
+// provider that satisfies TenantAwareUserProvider without honouring the
+// tenant predicate would otherwise hand back a foreign-tenant record that
+// callers go on to mutate, so the mismatch fails closed as not-found.
+func (e *Engine) lookupUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error) {
+	if !e.tenantScopedLookup() {
+		return e.userProvider.GetUserByID(userID)
 	}
-	return e.userProvider.GetUserByID(userID)
+
+	user, err := e.tenantProvider.GetUserByIDInTenant(ctx, tenantID, userID)
+	if err != nil {
+		return UserRecord{}, err
+	}
+	if tenantID != "" && user.TenantID != tenantID {
+		e.warn("goAuth: GetUserByIDInTenant returned a user from another tenant; check the TenantAwareUserProvider implementation")
+		return UserRecord{}, ErrUserNotFound
+	}
+	return user, nil
 }
 
 type auditDispatcher = internalaudit.Dispatcher
@@ -2050,6 +2073,7 @@ func (e *Engine) configureEmailVerificationLimiterDeps(deps *internalflows.Email
 
 func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.EmailVerificationDeps) {
 	if e != nil {
+		deps.WithTenant = WithTenantID
 		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
 			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
 		}
@@ -2067,8 +2091,8 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		}
 		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
 	}
-	deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.EmailVerificationUser, error) {
-		user, err := e.lookupUserByID(ctx, userID)
+	deps.GetUserByIDInTenant = func(ctx context.Context, tenantID, userID string) (internalflows.EmailVerificationUser, error) {
+		user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}

@@ -96,6 +96,11 @@ func (p *tenantMockProvider) GetUserByIDInTenant(ctx context.Context, tenantID, 
 	if !ok {
 		return UserRecord{}, errors.New("not found")
 	}
+	if p.ignoreTenantScope {
+		// Deliberately ignores the tenant predicate, the way a provider
+		// that implements the interface but forgets the WHERE clause would.
+		return user, nil
+	}
 	if user.TenantID != tenantID {
 		return UserRecord{}, errors.New("not found")
 	}
@@ -741,6 +746,92 @@ func TestRefreshTokenDoesNotCrossTenants(t *testing.T) {
 	// The token must still work in its own tenant.
 	if _, _, err := engine.Refresh(ctxA, refresh); err != nil {
 		t.Fatalf("refresh failed in the token's own tenant: %v", err)
+	}
+}
+
+// The token/UUID email-verification challenge embeds its own tenant, and
+// ConfirmEmailVerification is documented as the entry point for exactly that
+// case. The record is loaded and consumed under the challenge's tenant, so
+// the user lookup must use the same authoritative tenant — otherwise a
+// divergent (or absent) context tenant consumes the record and then fails to
+// resolve the user, burning a valid link.
+func TestConfirmEmailVerificationUsesChallengeTenant(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		confirmCtx func() context.Context
+	}{
+		{"absent context tenant", func() context.Context { return context.Background() }},
+		{"divergent context tenant", func() context.Context {
+			return WithTenantID(context.Background(), "tenant-b")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, up, _, done := newTenantResetEngine(t)
+			defer done()
+
+			up.addUser(UserRecord{
+				UserID: "user-v", Identifier: "verify@example.com", TenantID: "tenant-a",
+				Status: AccountPendingVerification, Role: "member",
+				PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+			})
+
+			ctxA := WithTenantID(context.Background(), "tenant-a")
+			challenge, err := engine.RequestEmailVerification(ctxA, "verify@example.com")
+			if err != nil {
+				t.Fatalf("RequestEmailVerification failed: %v", err)
+			}
+
+			if err := engine.ConfirmEmailVerification(tc.confirmCtx(), challenge); err != nil {
+				t.Fatalf("confirm failed with a challenge that carries its own tenant: %v", err)
+			}
+
+			if got := up.users["user-v"].Status; got != AccountActive {
+				t.Fatalf("user status is %v, want AccountActive", got)
+			}
+		})
+	}
+}
+
+// A provider can satisfy TenantAwareUserProvider without actually honouring
+// the tenant predicate. The id-keyed paths mutate the record they resolve,
+// so the engine verifies the returned TenantID rather than trusting it.
+func TestIDLookupRejectsProviderThatIgnoresTenant(t *testing.T) {
+	engine, up, _, done := newTenantLoginEngine(t)
+	defer done()
+
+	up.ignoreTenantScope = true
+
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+
+	// user-a lives in tenant-a. The buggy provider hands it back for any
+	// tenant; the engine must still refuse it.
+	if _, err := engine.lookupUserByID(ctxB, "user-a"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected user-not-found for a foreign-tenant record, got %v", err)
+	}
+
+	t.Run("ChangePassword", func(t *testing.T) {
+		err := engine.ChangePassword(ctxB, "user-a", "tenant-a-password-123", "new-password-12345")
+		if err == nil {
+			t.Fatal("mutated a foreign-tenant user through a buggy provider")
+		}
+	})
+
+	t.Run("LockAccount", func(t *testing.T) {
+		if err := engine.LockAccount(ctxB, "user-a"); err == nil {
+			t.Fatal("locked a foreign-tenant account through a buggy provider")
+		}
+	})
+
+	t.Run("GenerateBackupCodes", func(t *testing.T) {
+		if _, err := engine.GenerateBackupCodes(ctxB, "user-a"); err == nil {
+			t.Fatal("generated backup codes for a foreign-tenant user through a buggy provider")
+		}
+	})
+
+	// The same buggy provider must still serve same-tenant lookups.
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	if _, err := engine.lookupUserByID(ctxA, "user-a"); err != nil {
+		t.Fatalf("same-tenant lookup failed: %v", err)
 	}
 }
 

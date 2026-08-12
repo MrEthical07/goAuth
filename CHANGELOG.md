@@ -81,6 +81,21 @@ response deliberately does not.
 
 ### Fixed
 
+- Email-verification confirm no longer consumes a valid link when the
+  request context's tenant is absent or differs from the tenant embedded in
+  the challenge. `ConfirmEmailVerification` is documented as the
+  cross-tenant entry point — the challenge carries its own tenant, and the
+  record is loaded and consumed under that tenant — but the user lookup and
+  the status transition were scoped to the context tenant, so a divergent
+  context deleted the record and then failed to resolve the user. Both now
+  use the tenant the record was loaded under. Affects
+  `MultiTenant.Enabled = true` only.
+- Tenant-scoped ID lookups now verify the returned record's `TenantID`
+  against the requested tenant and fail closed as not-found on mismatch. A
+  provider that satisfies `TenantAwareUserProvider` without honouring the
+  tenant predicate would otherwise hand the id-keyed paths (change password,
+  account status, backup codes, TOTP, WebAuthn) a foreign-tenant record that
+  callers go on to mutate. The identifier paths already had this backstop.
 - Bumped `go.opentelemetry.io/otel` and its `metric`, `trace`, `sdk`, and
   `sdk/metric` modules from v1.43.0 to v1.44.0, clearing advisory
   GO-2026-5158 (baggage parsing no longer caps raw header length). goAuth
