@@ -79,6 +79,15 @@ response deliberately does not.
   previously implied an enforcement the engine never performed and would now
   emit a deprecation warning for every default config.
 
+### Fixed
+
+- Bumped `go.opentelemetry.io/otel` and its `metric`, `trace`, `sdk`, and
+  `sdk/metric` modules from v1.43.0 to v1.44.0, clearing advisory
+  GO-2026-5158 (baggage parsing no longer caps raw header length). goAuth
+  does not call the affected code — `govulncheck` reports zero reachable
+  vulnerabilities on v1.43.0 — so this is a hygiene upgrade rather than an
+  exploitable fix. Unrelated to the tenant work in this release.
+
 ### Deprecated
 
 No fields removed; all continue to be accepted.
