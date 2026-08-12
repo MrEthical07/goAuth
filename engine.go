@@ -58,8 +58,60 @@ type Engine struct {
 	totp                *totpManager
 	jwtManager          *jwt.Manager
 	userProvider        UserProvider
+	tenantProvider      TenantAwareUserProvider
 	logger              *slog.Logger
 	flows               internalflows.Service
+}
+
+// tenantScopedLookup reports whether user lookups must be scoped to the
+// request's tenant. It is true only when multi-tenancy is enabled, in
+// which case [Builder.Build] has already guaranteed tenantProvider is
+// non-nil. When false, every lookup keeps the tenant-blind v0.4.0 path.
+func (e *Engine) tenantScopedLookup() bool {
+	return e != nil && e.config.MultiTenant.Enabled && e.tenantProvider != nil
+}
+
+// lookupUserByIdentifier resolves an identifier, scoping the query to the
+// context tenant when multi-tenancy is enabled. With multi-tenancy off it
+// is exactly the legacy tenant-blind lookup.
+func (e *Engine) lookupUserByIdentifier(ctx context.Context, identifier string) (UserRecord, error) {
+	if e.tenantScopedLookup() {
+		return e.tenantProvider.GetUserByIdentifierInTenant(ctx, tenantIDFromContext(ctx), identifier)
+	}
+	return e.userProvider.GetUserByIdentifier(identifier)
+}
+
+// lookupUserByID resolves a user ID, scoping the query to the context
+// tenant when multi-tenancy is enabled. With multi-tenancy off it is
+// exactly the legacy tenant-blind lookup.
+func (e *Engine) lookupUserByID(ctx context.Context, userID string) (UserRecord, error) {
+	return e.lookupUserByIDInTenant(ctx, tenantIDFromContext(ctx), userID)
+}
+
+// lookupUserByIDInTenant resolves a user ID against an explicitly supplied
+// tenant rather than the context's. Confirm paths use it to pass the tenant
+// a challenge record was loaded under, which for tenant-carrying challenges
+// is authoritative and may legitimately differ from the context tenant.
+//
+// The returned record's TenantID is verified against the requested tenant.
+// The provider is contractually required to scope the query itself, but a
+// provider that satisfies TenantAwareUserProvider without honouring the
+// tenant predicate would otherwise hand back a foreign-tenant record that
+// callers go on to mutate, so the mismatch fails closed as not-found.
+func (e *Engine) lookupUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error) {
+	if !e.tenantScopedLookup() {
+		return e.userProvider.GetUserByID(userID)
+	}
+
+	user, err := e.tenantProvider.GetUserByIDInTenant(ctx, tenantID, userID)
+	if err != nil {
+		return UserRecord{}, err
+	}
+	if tenantID != "" && user.TenantID != tenantID {
+		e.warn("goAuth: GetUserByIDInTenant returned a user from another tenant; check the TenantAwareUserProvider implementation")
+		return UserRecord{}, ErrUserNotFound
+	}
+	return user, nil
 }
 
 type auditDispatcher = internalaudit.Dispatcher
@@ -702,7 +754,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		return mapToAuthError(ErrPasswordPolicy)
 	}
 
-	user, err := e.userProvider.GetUserByID(userID)
+	user, err := e.lookupUserByID(ctx, userID)
 	if err != nil {
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, tenantIDFromContext(ctx), "", ErrUserNotFound, func() map[string]string {
 			return map[string]string{
@@ -1173,8 +1225,8 @@ func (e *Engine) accountStatusFlowDeps() internalflows.UpdateAccountStatusDeps {
 	}
 
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByID = func(userID string) (internalflows.AccountStatusRecord, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.AccountStatusRecord, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.AccountStatusRecord{}, err
 			}
@@ -1723,8 +1775,8 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 	}
 
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByID = func(userID string) (internalflows.BackupCodeUser, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.BackupCodeUser, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.BackupCodeUser{}, err
 			}
@@ -2021,6 +2073,7 @@ func (e *Engine) configureEmailVerificationLimiterDeps(deps *internalflows.Email
 
 func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.EmailVerificationDeps) {
 	if e != nil {
+		deps.WithTenant = WithTenantID
 		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
 			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
 		}
@@ -2029,15 +2082,17 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		return
 	}
 
-	deps.GetUserByIdentifier = func(identifier string) (internalflows.EmailVerificationUser, error) {
-		user, err := e.userProvider.GetUserByIdentifier(identifier)
+	deps.EnforceTenantMatch = e.tenantScopedLookup()
+	deps.Warn = e.warn
+	deps.GetUserByIdentifier = func(ctx context.Context, identifier string) (internalflows.EmailVerificationUser, error) {
+		user, err := e.lookupUserByIdentifier(ctx, identifier)
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}
 		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
 	}
-	deps.GetUserByID = func(userID string) (internalflows.EmailVerificationUser, error) {
-		user, err := e.userProvider.GetUserByID(userID)
+	deps.GetUserByIDInTenant = func(ctx context.Context, tenantID, userID string) (internalflows.EmailVerificationUser, error) {
+		user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}
@@ -2521,20 +2576,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.LockAccount = e.LockAccount
 	}
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByIdentifier = func(identifier string) (internalflows.LoginUserRecord, error) {
-			user, err := e.userProvider.GetUserByIdentifier(identifier)
-			if err != nil {
-				return internalflows.LoginUserRecord{}, err
-			}
-			return toFlowLoginUser(user), nil
-		}
-		deps.GetUserByID = func(userID string) (internalflows.LoginUserRecord, error) {
-			user, err := e.userProvider.GetUserByID(userID)
-			if err != nil {
-				return internalflows.LoginUserRecord{}, err
-			}
-			return toFlowLoginUser(user), nil
-		}
+		e.configureLoginUserLookupDeps(&deps)
 		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
 		deps.GetTOTPSecret = func(ctx context.Context, userID string) (*internalflows.LoginTOTPRecord, error) {
 			record, err := e.userProvider.GetTOTPSecret(ctx, userID)
@@ -2635,6 +2677,28 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	}
 
 	return deps
+}
+
+// configureLoginUserLookupDeps wires the login flow's user lookups. Both
+// route through the engine resolvers, so they are tenant-scoped whenever
+// multi-tenancy is enabled and tenant-blind exactly as before when it is
+// not.
+func (e *Engine) configureLoginUserLookupDeps(deps *internalflows.LoginDeps) {
+	deps.EnforceTenantMatch = e.tenantScopedLookup()
+	deps.GetUserByIdentifier = func(ctx context.Context, identifier string) (internalflows.LoginUserRecord, error) {
+		user, err := e.lookupUserByIdentifier(ctx, identifier)
+		if err != nil {
+			return internalflows.LoginUserRecord{}, err
+		}
+		return toFlowLoginUser(user), nil
+	}
+	deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.LoginUserRecord, error) {
+		user, err := e.lookupUserByID(ctx, userID)
+		if err != nil {
+			return internalflows.LoginUserRecord{}, err
+		}
+		return toFlowLoginUser(user), nil
+	}
 }
 
 func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
@@ -2850,8 +2914,10 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 	}
 	e.configurePasswordResetLimiterDeps(&deps, cfg)
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByIdentifier = func(identifier string) (internalflows.PasswordResetUser, error) {
-			user, err := e.userProvider.GetUserByIdentifier(identifier)
+		deps.EnforceTenantMatch = e.tenantScopedLookup()
+		deps.Warn = e.warn
+		deps.GetUserByIdentifier = func(ctx context.Context, identifier string) (internalflows.PasswordResetUser, error) {
+			user, err := e.lookupUserByIdentifier(ctx, identifier)
 			if err != nil {
 				return internalflows.PasswordResetUser{}, err
 			}
@@ -2861,8 +2927,8 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 				Status:   uint8(user.Status),
 			}, nil
 		}
-		deps.GetUserByID = func(userID string) (internalflows.PasswordResetUser, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.PasswordResetUser, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.PasswordResetUser{}, err
 			}
@@ -3233,8 +3299,8 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	}
 
 	if e != nil && e.userProvider != nil {
-		deps.GetUserByID = func(userID string) (internalflows.TOTPUser, error) {
-			user, err := e.userProvider.GetUserByID(userID)
+		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.TOTPUser, error) {
+			user, err := e.lookupUserByID(ctx, userID)
 			if err != nil {
 				return internalflows.TOTPUser{}, err
 			}

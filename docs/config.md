@@ -238,9 +238,9 @@ values between `0` and 1 minute; `0` means unset.
 
 | Field             | Type   | Default         | Description |
 |-------------------|--------|-----------------|-------------|
-| `Enabled`         | `bool` | `false`         | Enable tenant isolation |
-| `TenantHeader`    | `string`| `"X-Tenant-ID"`| **No-op** — never read by the engine or middleware; tenant scoping comes only from `WithTenantID(ctx)` (lint: `tenant_header_noop`) |
-| `EnforceIsolation`| `bool` | `true`          | Strict tenant boundary enforcement |
+| `Enabled`         | `bool` | `false`         | Scopes every user lookup to the request tenant and requires the provider to implement `TenantAwareUserProvider` (`Build` fails otherwise). The single switch governing tenant enforcement — see [multi_tenancy.md](multi_tenancy.md) |
+| `TenantHeader`    | `string`| `"X-Tenant-ID"`| **Deprecated, no-op** — never read by the engine or middleware; tenant scoping comes only from `WithTenantID(ctx)` (lint: `tenant_header_noop`) |
+| `EnforceIsolation`| `bool` | `false`         | **Deprecated, no-op** — never gated anything; tenant enforcement is governed entirely by `Enabled` (lint: `tenant_enforce_isolation_noop`) |
 
 ## No-op sections: Cache (`Config.Cache`) and Database (`Config.Database`)
 

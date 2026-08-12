@@ -1,5 +1,53 @@
 # Migrations
 
+## v0.5.0 Migration Notes (Non-Breaking)
+
+v0.5.0 is additive: no config fields were renamed or removed, no public
+signatures changed, and one optional interface was added. Every behavior
+change is gated on `MultiTenant.Enabled`, which defaults to `false` and is not
+set by any shipped preset.
+
+### Single-tenant deployments: no action needed
+
+If `MultiTenant.Enabled` is false — the default — nothing changes. User lookup
+stays tenant-blind, reset and verification records bind exactly as before, and
+your existing `UserProvider` needs no new methods. Upgrade and move on.
+
+### Multi-tenant deployments: required work
+
+If you run more than one tenant, v0.5.0 fixes three cross-tenant
+vulnerabilities (see the Security section of the changelog), and opting in is
+required to get them:
+
+1. **Implement `TenantAwareUserProvider`** on your existing provider —
+   `GetUserByIdentifierInTenant` and `GetUserByIDInTenant`, both scoping the
+   query to the given `tenant_id` in the database and returning not-found for
+   records in other tenants.
+2. **Populate `UserRecord.TenantID`** correctly on every returned record.
+3. **Attach the tenant to every request context** with `WithTenantID`.
+4. **Set `MultiTenant.Enabled = true`.** `Builder.Build()` fails with a clear
+   message if step 1 was missed, so a misconfiguration cannot start.
+
+See [multi_tenancy.md](multi_tenancy.md) for the full contract and examples.
+
+### Caveats when turning multi-tenancy on
+
+- **In-flight reset and verification links.** Records now bind to the
+  request's tenant rather than the resolved user's. Where those differed,
+  links issued before the switch may not resolve afterwards. Drain the reset
+  and verification TTL window first, or accept that affected users
+  re-request.
+- **Cross-tenant user ids are now rejected.** Administrative calls that pass a
+  bare `userID` (change password, account status transitions, backup codes,
+  TOTP, WebAuthn) resolve within the context tenant only. Any caller relying
+  on acting across tenants with a single context must set the correct tenant
+  per call.
+- **Deprecation warnings.** `MultiTenant.EnforceIsolation` and
+  `MultiTenant.TenantHeader` are no-ops and now warn when set;
+  `Account.AllowDuplicateIdentifierAcrossTenants` is documented as a
+  provider-owned contract. No field was removed — clearing them is optional
+  and changes nothing.
+
 ## v0.4.0 Migration Notes (Non-Breaking)
 
 v0.4.0 is additive: no config fields were renamed or removed and no public

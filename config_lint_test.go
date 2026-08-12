@@ -361,3 +361,42 @@ func containsCode(codes []string, code string) bool {
 	}
 	return false
 }
+
+func TestLint_DeprecatedEnforceIsolationWarns(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.MultiTenant.EnforceIsolation = true
+
+	if !containsCode(cfg.Lint().Codes(), "tenant_enforce_isolation_noop") {
+		t.Error("expected tenant_enforce_isolation_noop when the deprecated field is set")
+	}
+}
+
+// The field is deprecated and unread, so the shipped defaults must not set
+// it — otherwise every consumer sees a deprecation warning for a value they
+// never chose.
+func TestLint_DefaultsDoNotTripDeprecationWarnings(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"DefaultConfig":        DefaultConfig(),
+		"HighSecurityConfig":   HighSecurityConfig(),
+		"HighThroughputConfig": HighThroughputConfig(),
+	} {
+		codes := cfg.Lint().Codes()
+		for _, code := range []string{
+			"tenant_enforce_isolation_noop",
+			"account_duplicate_identifier_provider_owned",
+		} {
+			if containsCode(codes, code) {
+				t.Errorf("%s trips deprecation warning %q out of the box", name, code)
+			}
+		}
+	}
+}
+
+func TestLint_DuplicateIdentifierIsProviderOwned(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Account.AllowDuplicateIdentifierAcrossTenants = true
+
+	if !containsCode(cfg.Lint().Codes(), "account_duplicate_identifier_provider_owned") {
+		t.Error("expected account_duplicate_identifier_provider_owned when the flag is set")
+	}
+}

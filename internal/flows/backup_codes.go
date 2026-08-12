@@ -50,7 +50,7 @@ type BackupCodeDeps struct {
 	TenantIDFromContext func(context.Context) string
 	AccountStatusError  func(uint8) error
 
-	GetUserByID        func(string) (BackupCodeUser, error)
+	GetUserByID        func(context.Context, string) (BackupCodeUser, error)
 	GetBackupCodes     func(context.Context, string) ([]BackupCodeRecord, error)
 	ReplaceBackupCodes func(context.Context, string, []BackupCodeRecord) error
 	ConsumeBackupCode  func(context.Context, string, [32]byte) (bool, error)
@@ -93,7 +93,7 @@ func RunGenerateBackupCodes(ctx context.Context, userID string, deps BackupCodeD
 		return nil, deps.Errors.UserNotFound
 	}
 
-	user, err := deps.GetUserByID(userID)
+	user, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		emitBackupCodeFailure(ctx, deps, userID, "", deps.Errors.UserNotFound, map[string]string{
 			"action": "generate",
@@ -146,7 +146,7 @@ func RunRegenerateBackupCodes(ctx context.Context, userID, totpCode string, deps
 		return nil, deps.Errors.UserNotFound
 	}
 
-	user, err := deps.GetUserByID(userID)
+	user, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		emitBackupCodeFailure(ctx, deps, userID, "", deps.Errors.UserNotFound, map[string]string{
 			"action": "regenerate",

@@ -65,8 +65,16 @@ type PasswordResetDeps struct {
 	MapStoreError       func(error) error
 	IsStoreNotFound     func(error) bool
 
-	GetUserByIdentifier func(string) (PasswordResetUser, error)
-	GetUserByID         func(string) (PasswordResetUser, error)
+	// EnforceTenantMatch requires a resolved user's TenantID to equal the
+	// request's tenant. Set only when multi-tenancy is enabled.
+	EnforceTenantMatch bool
+
+	Warn func(string, ...any)
+
+	// GetUserByIdentifier and GetUserByID take a context so the engine can
+	// scope the lookup to the request's tenant when multi-tenancy is on.
+	GetUserByIdentifier func(context.Context, string) (PasswordResetUser, error)
+	GetUserByID         func(context.Context, string) (PasswordResetUser, error)
 	HashPassword        func(string) (string, error)
 	UpdatePasswordHash  func(string, string) error
 	LogoutAllInTenant   func(context.Context, string, string) error
@@ -134,7 +142,17 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		return "", mapped
 	}
 
-	user, err := deps.GetUserByIdentifier(identifier)
+	user, err := deps.GetUserByIdentifier(ctx, identifier)
+	if err == nil && deps.EnforceTenantMatch && tenantID != "" && user.TenantID != tenantID {
+		// Defence in depth: the lookup is already tenant-scoped, so this
+		// only fires if a provider ignores the tenant argument. Fall into
+		// the enumeration-safe branch below rather than rejecting loudly —
+		// an account that exists only in another tenant must look exactly
+		// like one that does not exist.
+		deps.Warn("goAuth: tenant-scoped lookup returned a user from another tenant; check the TenantAwareUserProvider implementation")
+		user = PasswordResetUser{}
+		err = errTenantMismatch
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", err
@@ -162,8 +180,15 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		return challenge, nil
 	}
 
+	// When multi-tenancy is enabled the record is always stored under the
+	// tenant the request was made in. Deriving it from the resolved user
+	// instead would let a request made in one tenant write a redeemable
+	// record into another tenant's keyspace.
+	//
+	// With multi-tenancy disabled the legacy behaviour is preserved: the
+	// user's own tenant wins.
 	effectiveTenant := tenantID
-	if user.TenantID != "" {
+	if !deps.EnforceTenantMatch && user.TenantID != "" {
 		effectiveTenant = user.TenantID
 	}
 
@@ -276,7 +301,7 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 			})
 			return mapped
 		}
-		user, err := deps.GetUserByID(peek.UserID)
+		user, err := deps.GetUserByID(ctx, peek.UserID)
 		if err != nil {
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, peek.UserID, tenantID, "", deps.Errors.UserNotFound, nil)
@@ -333,7 +358,7 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 		return mapped
 	}
 
-	user, err := deps.GetUserByID(record.UserID)
+	user, err := deps.GetUserByID(ctx, record.UserID)
 	if err != nil {
 		deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 		deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, record.UserID, tenantID, "", deps.Errors.UserNotFound, nil)
@@ -398,6 +423,9 @@ func normalizePasswordResetDeps(deps *PasswordResetDeps) {
 	}
 	if deps.SleepEnumerationDelay == nil {
 		deps.SleepEnumerationDelay = func(context.Context) error { return nil }
+	}
+	if deps.Warn == nil {
+		deps.Warn = func(string, ...any) {}
 	}
 	if deps.MetricInc == nil {
 		deps.MetricInc = func(int) {}

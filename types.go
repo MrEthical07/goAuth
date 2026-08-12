@@ -111,6 +111,38 @@ type UserProvider interface {
 	ConsumeBackupCode(ctx context.Context, userID string, codeHash [32]byte) (bool, error)
 }
 
+// TenantAwareUserProvider is an optional capability interface a
+// [UserProvider] can additionally implement to scope user lookup to a
+// single tenant. It is detected via type assertion at [Builder.Build];
+// when [Config.MultiTenant] is enabled and the user provider does not
+// implement it, Build fails. Existing UserProvider implementations are
+// unaffected when multi-tenancy is disabled.
+//
+// The plain [UserProvider] lookups are tenant-blind: they resolve an
+// identifier or user ID across the whole user table. In a multi-tenant
+// deployment that is an isolation failure — credentials belonging to one
+// tenant resolve under another tenant's request context. These variants
+// take the tenant the request is scoped to, and implementations MUST
+// constrain the query to it, returning a not-found error when the record
+// exists only in a different tenant.
+//
+// Implementations must not treat an empty tenantID as "any tenant"; the
+// engine only calls these methods with the tenant resolved from the
+// request context.
+//
+//	Docs: docs/multi_tenancy.md
+type TenantAwareUserProvider interface {
+	// GetUserByIdentifierInTenant resolves an identifier within tenantID
+	// only. It must return an error (not another tenant's record) when the
+	// identifier exists solely in a different tenant.
+	GetUserByIdentifierInTenant(ctx context.Context, tenantID, identifier string) (UserRecord, error)
+
+	// GetUserByIDInTenant resolves a user ID within tenantID only. It must
+	// return an error (not the record) when the user belongs to a
+	// different tenant.
+	GetUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error)
+}
+
 // UserRecord is the full account record returned by [UserProvider].
 // It carries credential hashes, status, role, and versioning counters.
 type UserRecord struct {

@@ -55,7 +55,7 @@ type WebAuthnDeps struct {
 	Now                 func() time.Time
 	NewCeremonyID       func() (string, error)
 
-	GetUserByID               func(string) (LoginUserRecord, error)
+	GetUserByID               func(context.Context, string) (LoginUserRecord, error)
 	GetCredentials            func(context.Context, string) ([]webauthn.Credential, error)
 	AddCredential             func(context.Context, string, webauthn.Credential) error
 	UpdateCredentialSignCount func(context.Context, string, []byte, uint32) error
@@ -145,7 +145,7 @@ func RunBeginWebAuthnRegistration(ctx context.Context, userID string, deps WebAu
 		return nil, "", deps.Errors.UserNotFound
 	}
 
-	user, err := deps.GetUserByID(userID)
+	user, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, "", deps.Errors.UserNotFound
 	}
@@ -241,7 +241,7 @@ func RunFinishWebAuthnRegistration(
 		return nil, deps.Errors.Unavailable
 	}
 
-	user, err := deps.GetUserByID(userID)
+	user, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		failAudit(deps.Errors.UserNotFound, "user_lookup")
 		return nil, deps.Errors.UserNotFound
@@ -304,7 +304,7 @@ func RunBeginWebAuthnLogin(ctx context.Context, challengeID string, deps WebAuth
 		return nil, deps.Errors.Invalid
 	}
 
-	user, err := deps.GetUserByID(challenge.UserID)
+	user, err := deps.GetUserByID(ctx, challenge.UserID)
 	if err != nil {
 		return nil, deps.Errors.UserNotFound
 	}
@@ -379,7 +379,7 @@ func RunConfirmWebAuthnAssertion(
 		return deps.Errors.Unavailable
 	}
 
-	user, err := deps.GetUserByID(userID)
+	user, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.Errors.UserNotFound
 	}

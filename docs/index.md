@@ -14,6 +14,7 @@ This directory contains the authoritative documentation for the goAuth authentic
 | **Integrate error handling** | [error-model.md](error-model.md) → [api-reference.md § Error Model](api-reference.md#error-model) |
 | **Ops & scaling** | [ops.md](ops.md) → [performance.md](performance.md) → [capacity.md](capacity.md) |
 | **Security review** | [security.md](security.md) → [security-model.md](security-model.md) |
+| **Run multiple tenants** | [multi_tenancy.md](multi_tenancy.md) → [config.md § MultiTenant](config.md) |
 | **Full API surface** | [api-reference.md](api-reference.md) |
 | **Config tuning** | [config.md](config.md) → [config-presets.md](config-presets.md) → [config_lint.md](config_lint.md) |
 
@@ -38,6 +39,7 @@ Per-module guides covering primitives, usage examples, configuration, strategies
 | [metrics.md](metrics.md) | Metrics system: counters, histograms, exporters |
 | [introspection.md](introspection.md) | Session introspection: active sessions, health checks |
 | [device_binding.md](device_binding.md) | Device binding: IP/UA fingerprint enforcement |
+| [multi_tenancy.md](multi_tenancy.md) | Multi-tenancy: tenant-scoped user lookup, TenantAwareUserProvider, isolation guarantees |
 | [config.md](config.md) | Full configuration reference (all fields, defaults, types) |
 | [config-presets.md](config-presets.md) | Configuration presets: Default, HighSecurity, HighThroughput |
 | [config_lint.md](config_lint.md) | Configuration lint: severity levels, AsError helper |

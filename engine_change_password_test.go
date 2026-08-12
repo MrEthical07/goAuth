@@ -71,6 +71,33 @@ func (m *mockUserProvider) GetUserByID(userID string) (UserRecord, error) {
 	return user, nil
 }
 
+// GetUserByIdentifierInTenant and GetUserByIDInTenant make mockUserProvider
+// satisfy TenantAwareUserProvider, which Build requires whenever
+// MultiTenant.Enabled is set. Both scan by tenant rather than using the
+// tenant-blind byIdentifier index.
+func (m *mockUserProvider) GetUserByIdentifierInTenant(ctx context.Context, tenantID, identifier string) (UserRecord, error) {
+	m.getByIdentifierCalls++
+
+	for _, user := range m.users {
+		if user.Identifier == identifier && user.TenantID == tenantID {
+			return user, nil
+		}
+	}
+
+	return UserRecord{}, errors.New("not found")
+}
+
+func (m *mockUserProvider) GetUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error) {
+	m.getByIDCalls++
+
+	user, ok := m.users[userID]
+	if !ok || user.TenantID != tenantID {
+		return UserRecord{}, errors.New("not found")
+	}
+
+	return user, nil
+}
+
 func (m *mockUserProvider) UpdatePasswordHash(userID string, newHash string) error {
 	m.updatePasswordCalls++
 
