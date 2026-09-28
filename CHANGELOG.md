@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.0] - Unreleased
+## [0.6.0] - 2026-09-28
 
 Minor release (SemVer): `gorelease -base=v0.5.1` reports no incompatible
 changes. Two things push this above a patch: goAuth now targets **Go 1.27
