@@ -49,6 +49,7 @@ var publicAuthSentinels = []*AuthError{
 	ErrTOTPInvalid,
 	ErrTOTPRateLimited,
 	ErrTOTPNotConfigured,
+	ErrTOTPAlreadyEnabled,
 	ErrTOTPUnavailable,
 	ErrMFALoginRequired,
 	ErrMFALoginInvalid,

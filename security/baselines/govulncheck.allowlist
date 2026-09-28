@@ -4,3 +4,12 @@
 # goAuth imports only x/crypto/argon2 — no openpgp package is imported or
 # reachable, so the module-level finding is accepted.
 GO-2026-5932|golang.org/x/crypto|-|0
+# GO-2026-6303, GO-2026-6354, GO-2026-6355: all three affect
+# golang.org/x/crypto/ssh (source-address restriction bypass, and two
+# connection-deadlock issues via crafted SSH messages). goAuth imports only
+# x/crypto/argon2 — no ssh package is imported or reachable, so these
+# module-level findings are accepted. Unrelated to the change in this PR,
+# which does not touch golang.org/x/crypto.
+GO-2026-6303|golang.org/x/crypto|-|0
+GO-2026-6354|golang.org/x/crypto|-|0
+GO-2026-6355|golang.org/x/crypto|-|0

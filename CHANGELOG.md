@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-09-28
+
+Patch release (SemVer): no public signature changed. One new sentinel
+(`ErrTOTPAlreadyEnabled`) and one new error code
+(`AUTH_TOTP_ALREADY_ENABLED`) were added; every other exported name is
+unchanged. `go get github.com/MrEthical07/goAuth@v0.5.1` is a drop-in
+replacement for v0.5.0.
+
+### Security
+
+- **TOTP re-enrollment silently replaced an active secret.**
+  `GenerateTOTPSetup`/`ProvisionTOTP` never checked whether the user already
+  had TOTP enabled before generating a new secret and calling
+  `UserProvider.EnableTOTP` unconditionally. Depending on how the provider
+  tracks enabled/verified state, this had two possible outcomes, neither
+  correct: if the provider kept the account "enabled" through the call, the
+  new, never-confirmed secret went live immediately — locking the real user
+  out of their authenticator app and handing the new secret (in the setup
+  response) to whoever called setup, including a caller holding only a
+  stolen access token, defeating MFA for anyone who also knew the password.
+  If the provider instead reset to "unverified" on the call, TOTP was
+  silently downgraded to disabled until someone confirmed the new secret.
+  goAuth never documented a "rotate TOTP while enabled" flow — the
+  documented path is `DisableTOTP` followed by `GenerateTOTPSetup` +
+  `ConfirmTOTPSetup` — so no correct consumer flow depended on the old
+  behavior.
+
+### Added
+
+- `ErrTOTPAlreadyEnabled` (`AUTH_TOTP_ALREADY_ENABLED`, `CategoryAuthState`) —
+  returned by `GenerateTOTPSetup`/`ProvisionTOTP` when the user already has
+  TOTP enabled.
+
+### Changed
+
+- `GenerateTOTPSetup`/`ProvisionTOTP` now refuse to run while TOTP is already
+  enabled for the user (`record.Enabled && len(record.Secret) > 0`, the same
+  predicate the login flow uses), returning `ErrTOTPAlreadyEnabled` instead
+  of generating and persisting a replacement secret. No secret is generated,
+  `EnableTOTP` is not called, and no `TOTPSetupRequested` audit event is
+  emitted on the rejected path. Re-running setup after a setup that was
+  started but never confirmed (`Enabled == false`) is unaffected and still
+  succeeds, replacing the unconfirmed secret — losing the QR code before
+  confirming still recovers the same way it always has. The rotation path
+  for an enabled user is unchanged: `DisableTOTP` then setup + confirm again.
+  If `UserProvider.GetTOTPSecret` returns an error (for example a provider
+  that returns `sql.ErrNoRows` rather than a nil record for a user who has
+  never set up TOTP) the guard proceeds exactly as v0.5.0 did — this is
+  deliberate, and no weaker than v0.5.0, which never checked at all.
+  `ConfirmTOTPSetup`, `VerifyTOTP`, `DisableTOTP`, backup codes, MFA login,
+  and password-reset-with-TOTP are unchanged.
+
 ## [Unreleased]
 
 Minor release (SemVer): additive. One new optional interface, no changed

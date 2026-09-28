@@ -88,6 +88,7 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `CodeAuthTOTPInvalid` | `AUTH_TOTP_INVALID` |
 | `CodeAuthTOTPRateLimited` | `AUTH_TOTP_RATE_LIMITED` |
 | `CodeAuthMFANotConfigured` | `AUTH_MFA_NOT_CONFIGURED` |
+| `CodeAuthTOTPAlreadyEnabled` | `AUTH_TOTP_ALREADY_ENABLED` |
 | `CodeSystemUnavailableMFA` | `SYSTEM_UNAVAILABLE_MFA` |
 | `CodeAuthMFARequired` | `AUTH_MFA_REQUIRED` |
 | `CodeAuthMFAInvalidCode` | `AUTH_MFA_INVALID_CODE` |
@@ -154,6 +155,7 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `ErrTOTPInvalid` | `CategoryAuthValidation` | `CodeAuthTOTPInvalid` | `invalid totp code` |
 | `ErrTOTPRateLimited` | `CategoryAuthAbuse` | `CodeAuthTOTPRateLimited` | `totp attempts rate limited` |
 | `ErrTOTPNotConfigured` | `CategoryAuthState` | `CodeAuthMFANotConfigured` | `totp not configured` |
+| `ErrTOTPAlreadyEnabled` | `CategoryAuthState` | `CodeAuthTOTPAlreadyEnabled` | `totp already enabled` |
 | `ErrTOTPUnavailable` | `CategorySystem` | `CodeSystemUnavailableMFA` | `totp unavailable` |
 | `ErrMFALoginRequired` | `CategoryAuthState` | `CodeAuthMFARequired` | `mfa required` |
 | `ErrMFALoginInvalid` | `CategoryAuthValidation` | `CodeAuthMFAInvalidCode` | `mfa code invalid` |
@@ -206,6 +208,7 @@ These status mappings are recommended for API adapters wrapping goAuth.
 | `AUTH_PERMISSION_DENIED` | `403 Forbidden` |
 | `AUTH_ACCOUNT_DISABLED`, `AUTH_ACCOUNT_LOCKED`, `AUTH_ACCOUNT_DELETED`, `AUTH_VERIFICATION_REQUIRED` | `403 Forbidden` |
 | `AUTH_ACCOUNT_EXISTS` | `409 Conflict` |
+| `AUTH_TOTP_ALREADY_ENABLED` | `409 Conflict` |
 | Validation failures (`AUTH_*_INVALID`, password policy, route mode) | `400 Bad Request` |
 | Abuse and attempt limits (`AUTH_*_LIMITED`, `AUTH_*_ATTEMPTS_*`, `AUTH_REFRESH_REUSE_DETECTED`) | `429 Too Many Requests` |
 | Unavailable dependency codes (`SYSTEM_UNAVAILABLE*`) | `503 Service Unavailable` |

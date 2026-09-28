@@ -835,6 +835,84 @@ func TestIDLookupRejectsProviderThatIgnoresTenant(t *testing.T) {
 	}
 }
 
+// The TOTP re-enroll guard must read through the same tenant-scoped path as
+// every other id-keyed operation: a caller cannot use a foreign-tenant
+// context to either (a) probe whether a user in another tenant already has
+// TOTP enabled, or (b) bypass the guard by supplying a userID that only
+// resolves under a different tenant's context.
+func TestTOTPSetupGuardIsTenantScoped(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	defer mr.Close()
+
+	up := newTenantMockProvider()
+	up.addUser(UserRecord{
+		UserID: "user-a", Identifier: "alice@example.com", TenantID: "tenant-a",
+		Status: AccountActive, Role: "member",
+		PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1,
+	})
+
+	cfg := DefaultConfig()
+	cfg.MultiTenant.Enabled = true
+	cfg.Audit.Enabled = false
+	cfg.JWT.SigningMethod = "hs256"
+	cfg.JWT.PrivateKey = []byte("test-secret")
+	cfg.TOTP.Enabled = true
+	cfg.TOTP.Issuer = "goAuth"
+	cfg.TOTP.Digits = 6
+	cfg.TOTP.Period = 30
+	cfg.TOTP.Algorithm = "SHA1"
+	cfg.TOTP.Skew = 1
+
+	engine, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"read", "write"}).
+		WithRoles(map[string][]string{"member": {"read"}}).
+		WithUserProvider(up).
+		Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	ctxA := WithTenantID(context.Background(), "tenant-a")
+	ctxB := WithTenantID(context.Background(), "tenant-b")
+
+	// A caller in the wrong tenant must not even reach the TOTP guard: the
+	// id-keyed lookup fails closed first, so no cross-tenant read of the
+	// TOTP record happens.
+	if _, err := engine.ProvisionTOTP(ctxB, "user-a"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected ErrUserNotFound for a cross-tenant ProvisionTOTP call, got %v", err)
+	}
+	if up.getTOTPSecretCalls != 0 {
+		t.Fatalf("cross-tenant ProvisionTOTP call read the TOTP record (%d calls)", up.getTOTPSecretCalls)
+	}
+
+	// Same-tenant setup succeeds and enables TOTP.
+	provision, err := engine.ProvisionTOTP(ctxA, "user-a")
+	if err != nil {
+		t.Fatalf("same-tenant ProvisionTOTP failed: %v", err)
+	}
+	code := codeForNow(t, provision.Secret, cfg.TOTP)
+	if err := engine.ConfirmTOTPSetup(ctxA, "user-a", code); err != nil {
+		t.Fatalf("same-tenant ConfirmTOTPSetup failed: %v", err)
+	}
+
+	up.getTOTPSecretCalls = 0
+
+	// Re-running setup from the correct tenant now hits the guard.
+	if _, err := engine.ProvisionTOTP(ctxA, "user-a"); !errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Fatalf("expected ErrTOTPAlreadyEnabled, got %v", err)
+	}
+	if up.getTOTPSecretCalls != 1 {
+		t.Fatalf("expected exactly 1 TOTP secret read for the same-tenant guard check, got %d", up.getTOTPSecretCalls)
+	}
+
+	// The foreign tenant still cannot see the now-enabled TOTP state.
+	if _, err := engine.ProvisionTOTP(ctxB, "user-a"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected ErrUserNotFound for a cross-tenant ProvisionTOTP call, got %v", err)
+	}
+}
+
 func newMultiTenantBuilder(t *testing.T, rdb *redis.Client, up UserProvider) *Builder {
 	t.Helper()
 

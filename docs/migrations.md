@@ -1,5 +1,24 @@
 # Migrations
 
+## v0.5.1 Migration Notes (Non-Breaking)
+
+No action needed. v0.5.1 is a drop-in replacement for v0.5.0: no public
+signature changed, and the only new exported names are the sentinel
+`ErrTOTPAlreadyEnabled` and the error code `AUTH_TOTP_ALREADY_ENABLED`.
+
+The one observable behavior change: calling `GenerateTOTPSetup` /
+`ProvisionTOTP` for a user who already has TOTP enabled now returns
+`ErrTOTPAlreadyEnabled` instead of silently generating and persisting a
+replacement secret (see the Security entry in the changelog). If your
+integration ever called setup again for an already-enrolled user expecting
+it to rotate the secret, switch that call to `DisableTOTP` followed by
+`GenerateTOTPSetup`/`ProvisionTOTP` + `ConfirmTOTPSetup`. Setup for a user
+who has never enrolled, or who started but never confirmed a previous setup,
+behaves exactly as before.
+
+Consumers who expose TOTP setup over HTTP should map `ErrTOTPAlreadyEnabled`
+(`AUTH_TOTP_ALREADY_ENABLED`) to `409 Conflict`.
+
 ## v0.5.0 Migration Notes (Non-Breaking)
 
 v0.5.0 is additive: no config fields were renamed or removed, no public

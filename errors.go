@@ -54,6 +54,7 @@ const (
 	CodeAuthTOTPInvalid                    AuthCode = "AUTH_TOTP_INVALID"
 	CodeAuthTOTPRateLimited                AuthCode = "AUTH_TOTP_RATE_LIMITED"
 	CodeAuthMFANotConfigured               AuthCode = "AUTH_MFA_NOT_CONFIGURED"
+	CodeAuthTOTPAlreadyEnabled             AuthCode = "AUTH_TOTP_ALREADY_ENABLED"
 	CodeSystemUnavailableMFA               AuthCode = "SYSTEM_UNAVAILABLE_MFA"
 	CodeAuthMFARequired                    AuthCode = "AUTH_MFA_REQUIRED"
 	CodeAuthMFAInvalidCode                 AuthCode = "AUTH_MFA_INVALID_CODE"
@@ -205,6 +206,10 @@ var (
 	ErrTOTPRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthTOTPRateLimited), "totp attempts rate limited")
 	// ErrTOTPNotConfigured is an exported constant or variable used by the authentication engine.
 	ErrTOTPNotConfigured = NewAuthError(CategoryAuthState, string(CodeAuthMFANotConfigured), "totp not configured")
+	// ErrTOTPAlreadyEnabled is returned by GenerateTOTPSetup/ProvisionTOTP when
+	// the user already has TOTP enabled. The rotation path is DisableTOTP
+	// followed by GenerateTOTPSetup + ConfirmTOTPSetup.
+	ErrTOTPAlreadyEnabled = NewAuthError(CategoryAuthState, string(CodeAuthTOTPAlreadyEnabled), "totp already enabled")
 	// ErrTOTPUnavailable is an exported constant or variable used by the authentication engine.
 	ErrTOTPUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableMFA), "totp unavailable")
 	// ErrMFALoginRequired is an exported constant or variable used by the authentication engine.
