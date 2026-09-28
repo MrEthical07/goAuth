@@ -129,7 +129,8 @@ func RunGenerateTOTPSetup(ctx context.Context, userID string, deps TOTPDeps) (*T
 	// never checked at all.
 	if deps.GetTOTPSecret != nil {
 		if record, terr := deps.GetTOTPSecret(ctx, userID); terr == nil && record != nil && record.Enabled && len(record.Secret) > 0 {
-			deps.MetricInc(deps.Metrics.TOTPFailure)
+			// Not a TOTPFailure: a refused re-enroll is a policy rejection,
+			// not a failed code, and TOTPFailure is a brute-force signal.
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPAlreadyEnabled, nil)
 			return nil, deps.Errors.TOTPAlreadyEnabled
 		}

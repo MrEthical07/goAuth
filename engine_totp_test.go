@@ -404,6 +404,34 @@ func TestTOTPFullLifecycleRegression(t *testing.T) {
 	}
 }
 
+func TestTOTPSetupRefusedWhileEnabledDoesNotCountAsTOTPFailureMetric(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.Metrics.Enabled = true
+	up := newHardeningUserProvider(t)
+
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	provision, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ProvisionTOTP failed: %v", err)
+	}
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", codeForNow(t, provision.Secret, cfg.TOTP)); err != nil {
+		t.Fatalf("ConfirmTOTPSetup failed: %v", err)
+	}
+
+	before := engine.MetricsSnapshot().Counters[MetricTOTPFailure]
+
+	if _, err := engine.ProvisionTOTP(context.Background(), "u1"); !errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Fatalf("expected ErrTOTPAlreadyEnabled, got %v", err)
+	}
+
+	after := engine.MetricsSnapshot().Counters[MetricTOTPFailure]
+	if after != before {
+		t.Fatalf("expected TOTPFailure metric unchanged by a refused re-enroll (not a failed code), got %d -> %d", before, after)
+	}
+}
+
 func TestTOTPSetupRefusedWhileEnabledAuditsDistinguishableCode(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	defer mr.Close()
