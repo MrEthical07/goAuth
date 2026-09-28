@@ -1500,6 +1500,7 @@ const (
 	auditErrTOTPRequired          AuditErrorCode = "totp_required"
 	auditErrTOTPInvalid           AuditErrorCode = "totp_invalid"
 	auditErrTOTPRateLimited       AuditErrorCode = "totp_rate_limited"
+	auditErrTOTPAlreadyEnabled    AuditErrorCode = "totp_already_enabled"
 	auditErrMFARequired           AuditErrorCode = "mfa_required"
 	auditErrMFAInvalid            AuditErrorCode = "mfa_invalid"
 	auditErrMFAAttemptsExceeded   AuditErrorCode = "mfa_attempts_exceeded"
@@ -1642,6 +1643,8 @@ func auditErrorCode(err error) AuditErrorCode {
 	case errors.Is(err, ErrTOTPInvalid),
 		errors.Is(err, ErrTOTPNotConfigured):
 		return auditErrTOTPInvalid
+	case errors.Is(err, ErrTOTPAlreadyEnabled):
+		return auditErrTOTPAlreadyEnabled
 	case errors.Is(err, ErrTOTPRateLimited):
 		return auditErrTOTPRateLimited
 	case errors.Is(err, ErrMFALoginRequired):
@@ -3290,6 +3293,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 			UserNotFound:              ErrUserNotFound,
 			TOTPUnavailable:           ErrTOTPUnavailable,
 			TOTPNotConfigured:         ErrTOTPNotConfigured,
+			TOTPAlreadyEnabled:        ErrTOTPAlreadyEnabled,
 			TOTPRequired:              ErrTOTPRequired,
 			TOTPInvalid:               ErrTOTPInvalid,
 			TOTPRateLimited:           ErrTOTPRateLimited,

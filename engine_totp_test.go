@@ -302,6 +302,152 @@ func TestTOTPPasswordResetRequirementPreservesChallenge(t *testing.T) {
 	}
 }
 
+func TestTOTPSetupRefusedWhileEnabled(t *testing.T) {
+	cfg := totpTestConfig()
+	up := newHardeningUserProvider(t)
+
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	provision, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ProvisionTOTP failed: %v", err)
+	}
+	code := codeForNow(t, provision.Secret, cfg.TOTP)
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", code); err != nil {
+		t.Fatalf("ConfirmTOTPSetup failed: %v", err)
+	}
+
+	up.enableTOTPCalls = 0
+
+	if _, err := engine.GenerateTOTPSetup(context.Background(), "u1"); !errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Fatalf("expected ErrTOTPAlreadyEnabled from GenerateTOTPSetup, got %v", err)
+	}
+	if _, err := engine.ProvisionTOTP(context.Background(), "u1"); !errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Fatalf("expected ErrTOTPAlreadyEnabled from ProvisionTOTP, got %v", err)
+	}
+	if up.enableTOTPCalls != 0 {
+		t.Fatalf("expected EnableTOTP not to be called while refusing re-enrollment, got %d calls", up.enableTOTPCalls)
+	}
+}
+
+func TestTOTPSetupSucceedsAfterUnconfirmedSetup(t *testing.T) {
+	cfg := totpTestConfig()
+	up := newHardeningUserProvider(t)
+
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	first, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("first ProvisionTOTP failed: %v", err)
+	}
+	// Simulate the user losing the QR code before confirming: re-run setup.
+	second, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("expected re-running unconfirmed setup to succeed, got %v", err)
+	}
+	if second.Secret == first.Secret {
+		t.Fatal("expected the secret to be replaced on re-run")
+	}
+	if up.users["u1"].TOTPEnabled {
+		t.Fatal("expected TOTP to remain disabled until confirmed")
+	}
+
+	code := codeForNow(t, second.Secret, cfg.TOTP)
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", code); err != nil {
+		t.Fatalf("ConfirmTOTPSetup with the latest secret failed: %v", err)
+	}
+}
+
+func TestTOTPFullLifecycleRegression(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.TOTP.RequireForLogin = true
+	up := newHardeningUserProvider(t)
+
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	// Setup -> confirm.
+	provision, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ProvisionTOTP failed: %v", err)
+	}
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", codeForNow(t, provision.Secret, cfg.TOTP)); err != nil {
+		t.Fatalf("ConfirmTOTPSetup failed: %v", err)
+	}
+
+	// Login now requires TOTP.
+	if _, _, err := engine.Login(context.Background(), "alice", "correct-password-123"); !errors.Is(err, ErrTOTPRequired) {
+		t.Fatalf("expected ErrTOTPRequired, got %v", err)
+	}
+	access, refresh, err := engine.LoginWithTOTP(context.Background(), "alice", "correct-password-123", codeForOffset(t, provision.Secret, cfg.TOTP, 1))
+	if err != nil || access == "" || refresh == "" {
+		t.Fatalf("login with totp failed: %v", err)
+	}
+
+	// Re-enrollment is refused while enabled.
+	if _, err := engine.ProvisionTOTP(context.Background(), "u1"); !errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Fatalf("expected ErrTOTPAlreadyEnabled, got %v", err)
+	}
+
+	// Disable -> setup again succeeds.
+	if err := engine.DisableTOTP(context.Background(), "u1"); err != nil {
+		t.Fatalf("DisableTOTP failed: %v", err)
+	}
+	newProvision, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("expected setup to succeed after disable, got %v", err)
+	}
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", codeForNow(t, newProvision.Secret, cfg.TOTP)); err != nil {
+		t.Fatalf("ConfirmTOTPSetup after re-enrollment failed: %v", err)
+	}
+}
+
+func TestTOTPSetupRefusedWhileEnabledAuditsDistinguishableCode(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	defer mr.Close()
+
+	cfg := totpTestConfig()
+	cfg.Audit.Enabled = true
+	up := newHardeningUserProvider(t)
+	sink := &collectingSink{}
+
+	engine, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{"member": {}, "admin": {"perm.read"}}).
+		WithUserProvider(up).
+		WithAuditSink(sink).
+		Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	provision, err := engine.ProvisionTOTP(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ProvisionTOTP failed: %v", err)
+	}
+	if err := engine.ConfirmTOTPSetup(context.Background(), "u1", codeForNow(t, provision.Secret, cfg.TOTP)); err != nil {
+		t.Fatalf("ConfirmTOTPSetup failed: %v", err)
+	}
+
+	if _, err := engine.ProvisionTOTP(context.Background(), "u1"); !errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Fatalf("expected ErrTOTPAlreadyEnabled, got %v", err)
+	}
+
+	engine.Close()
+
+	event := sink.find(auditEventTOTPFailure, "")
+	if event == nil {
+		t.Fatal("expected a totp_failure audit event for the refused re-enrollment")
+	}
+	if event.Error != string(auditErrTOTPAlreadyEnabled) {
+		t.Fatalf("expected audit error code %q, got %q (re-enrollment refusals must be distinguishable from internal errors)", auditErrTOTPAlreadyEnabled, event.Error)
+	}
+}
+
 func TestTOTPValidatePathNoProviderCallsRegression(t *testing.T) {
 	cfg := totpTestConfig()
 	cfg.ValidationMode = ModeStrict

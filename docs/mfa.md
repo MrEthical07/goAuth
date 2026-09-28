@@ -91,6 +91,14 @@ setup, err := engine.GenerateTOTPSetup(ctx, "user-123")
 err = engine.ConfirmTOTPSetup(ctx, "user-123", "123456")
 ```
 
+`GenerateTOTPSetup`/`ProvisionTOTP` refuse to run while the user already has
+TOTP enabled, returning `ErrTOTPAlreadyEnabled` instead of generating and
+persisting a new secret. There is no in-place rotation: to replace an
+enabled secret, call `DisableTOTP` first, then `GenerateTOTPSetup` /
+`ProvisionTOTP` + `ConfirmTOTPSetup` again. A setup that was started but
+never confirmed (`Enabled == false`) is not affected — re-running setup in
+that state still succeeds and replaces the unconfirmed secret.
+
 ### Login with MFA challenge
 
 ```go
@@ -153,6 +161,7 @@ Rate limiting for TOTP and backup codes uses dedicated domain limiters (`TOTPLim
 | `ErrTOTPInvalid` | Wrong TOTP code |
 | `ErrTOTPRateLimited` | TOTP attempt limit exceeded |
 | `ErrTOTPNotConfigured` | TOTP not set up for user |
+| `ErrTOTPAlreadyEnabled` | `GenerateTOTPSetup`/`ProvisionTOTP` called while TOTP is already enabled; disable then re-setup to rotate |
 | `ErrTOTPUnavailable` | TOTP backend/limiter unavailable |
 | `ErrBackupCodeInvalid` | Wrong backup code |
 | `ErrBackupCodeRateLimited` | Backup code attempt limit exceeded |
@@ -190,6 +199,7 @@ Rate limiting for TOTP and backup codes uses dedicated domain limiters (`TOTPLim
 
 ## Migration Notes
 
+- **v0.5.1**: `GenerateTOTPSetup`/`ProvisionTOTP` now return `ErrTOTPAlreadyEnabled` instead of silently replacing an active secret. See [migrations.md](migrations.md#v051-migration-notes-non-breaking).
 - **Enabling TOTP**: Setting `Config.TOTP.Enabled = true` does not retroactively require MFA for existing users. Users must individually set up TOTP via `GenerateTOTPSetup` + `ConfirmTOTPSetup`.
 - **Skew changes**: Increasing `Skew` widens the acceptance window. Decreasing it may cause valid codes from slower users to be rejected.
 - **Backup code regeneration**: `RegenerateBackupCodes` replaces all existing codes. Users must save the new codes immediately.

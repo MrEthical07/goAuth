@@ -50,6 +50,7 @@ type TOTPErrors struct {
 	UserNotFound              error
 	TOTPUnavailable           error
 	TOTPNotConfigured         error
+	TOTPAlreadyEnabled        error
 	TOTPRequired              error
 	TOTPInvalid               error
 	TOTPRateLimited           error
@@ -109,6 +110,29 @@ func RunGenerateTOTPSetup(ctx context.Context, userID string, deps TOTPDeps) (*T
 	}
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
 		return nil, statusErr
+	}
+
+	// Refuse to re-enroll TOTP while it is already active, using exactly the
+	// predicate the login flow uses to decide TOTP is enabled (see
+	// internal/flows/login.go). Without this guard a caller (including one
+	// holding only a stolen access token) can silently replace a working
+	// secret: either it goes live immediately, locking the real owner out and
+	// handing the attacker a secret that defeats MFA, or the provider resets
+	// to unverified and MFA is silently downgraded. There is no documented
+	// "rotate while enabled" flow; the path is DisableTOTP then setup+confirm.
+	//
+	// If GetTOTPSecret errors or returns a nil record, proceed exactly as
+	// v0.5.0 did (no guard). Some providers return an error (e.g.
+	// sql.ErrNoRows) rather than an empty record for a user who has never set
+	// up TOTP; failing closed here would break first-time enrollment for
+	// those providers. Proceeding on error is no weaker than v0.5.0, which
+	// never checked at all.
+	if deps.GetTOTPSecret != nil {
+		if record, terr := deps.GetTOTPSecret(ctx, userID); terr == nil && record != nil && record.Enabled && len(record.Secret) > 0 {
+			deps.MetricInc(deps.Metrics.TOTPFailure)
+			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPAlreadyEnabled, nil)
+			return nil, deps.Errors.TOTPAlreadyEnabled
+		}
 	}
 
 	secretRaw, secretBase32, err := deps.GenerateSecret()
