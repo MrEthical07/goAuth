@@ -278,6 +278,15 @@ func (b *Builder) Build() (*Engine, error) {
 		Duration:   cfg.Security.AutoLockoutDuration,
 		WindowMode: windowMode,
 	})
+	// Shares ChangePassword/VerifyPassword's own attempt budget with the
+	// login failure limiter's configured thresholds, in its own rl:pwdverify:*
+	// namespace, independent of auto-lockout: a stolen access token must not
+	// be able to lock the real owner out of login by exhausting this limiter.
+	engine.passwordVerifyLimiter = limiters.NewPasswordVerifyLimiter(b.redis, limiters.PasswordVerifyConfig{
+		MaxAttempts: cfg.Security.MaxLoginAttempts,
+		Cooldown:    cfg.Security.LoginCooldownDuration,
+		WindowMode:  windowMode,
+	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
 	if cfg.MultiTenant.Enabled {
 		// Without a tenant-scoped lookup the engine would resolve

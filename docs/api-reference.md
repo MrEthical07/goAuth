@@ -90,6 +90,7 @@ The root package contains the authentication engine, builder, configuration, typ
 |--------|------|-------------|
 | `CreateAccount` | method | Creates a user account with optional auto-login and role assignment. |
 | `ChangePassword` | method | Changes a user's password after verifying the old password. |
+| `VerifyPassword` | method | Step-up check: verifies a password against the stored hash without changing any state. Shares `ChangePassword`'s rate limiter. |
 | `DisableAccount` | method | Disables an account, preventing new logins. |
 | `EnableAccount` | method | Re-enables a previously disabled account. |
 | `LockAccount` | method | Locks an account (e.g. after brute-force detection). |

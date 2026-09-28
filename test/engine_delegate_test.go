@@ -42,6 +42,7 @@ func TestEngine_DelegateMethodComplexity(t *testing.T) {
 		"Refresh":                          {100, "metric/audit dispatch", "internal/flows/refresh.go", "v1.0.0"},
 		"Validate":                         {60, "result building", "internal/flows/validate.go", "v1.0.0"},
 		"ChangePassword":                   {120, "not yet migrated", "internal/flows/account.go", "v1.0.0"},
+		"VerifyPassword":                   {80, "not yet migrated; shares ChangePassword's password-verify limiter", "internal/flows/account.go", "v1.0.0"},
 		"enforceSessionHardeningOnLogin":   {80, "helper with session state", "internal/flows/login.go", "v1.0.0"},
 		"CreateAccount":                    {60, "delegate + error mapping", "internal/flows/account.go", "v1.0.0"},
 		"accountFlowDeps":                  {100, "wiring function", "internal/flows/deps.go", "v1.0.0"},

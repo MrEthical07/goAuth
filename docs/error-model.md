@@ -78,6 +78,7 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `CodeAuthResetAttemptsExceeded` | `AUTH_RESET_ATTEMPTS_EXCEEDED` |
 | `CodeAuthPasswordPolicyViolation` | `AUTH_PASSWORD_POLICY_VIOLATION` |
 | `CodeAuthPasswordReuse` | `AUTH_PASSWORD_REUSE` |
+| `CodeAuthPasswordVerifyRateLimited` | `AUTH_PASSWORD_VERIFY_RATE_LIMITED` |
 | `CodeSystemSessionCreationFailed` | `SYSTEM_SESSION_CREATION_FAILED` |
 | `CodeSystemSessionInvalidationFailed` | `SYSTEM_SESSION_INVALIDATION_FAILED` |
 | `CodeAuthSessionLimitExceeded` | `AUTH_SESSION_LIMIT_EXCEEDED` |
@@ -145,6 +146,7 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `ErrPasswordResetAttempts` | `CategoryAuthAbuse` | `CodeAuthResetAttemptsExceeded` | `password reset attempts exceeded` |
 | `ErrPasswordPolicy` | `CategoryAuthValidation` | `CodeAuthPasswordPolicyViolation` | `password policy violation` |
 | `ErrPasswordReuse` | `CategoryAuthValidation` | `CodeAuthPasswordReuse` | `password reuse rejected` |
+| `ErrPasswordVerifyRateLimited` | `CategoryAuthAbuse` | `CodeAuthPasswordVerifyRateLimited` | `password verification rate limited` |
 | `ErrSessionCreationFailed` | `CategorySystem` | `CodeSystemSessionCreationFailed` | `session creation failed` |
 | `ErrSessionInvalidationFailed` | `CategorySystem` | `CodeSystemSessionInvalidationFailed` | `session invalidation failed` |
 | `ErrSessionLimitExceeded` | `CategoryAuthAbuse` | `CodeAuthSessionLimitExceeded` | `session limit exceeded` |

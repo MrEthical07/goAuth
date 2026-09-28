@@ -56,6 +56,7 @@ var expectedEngineBoundaryMethods = map[string]struct{}{
 	"ValidateAccess":                     {},
 	"VerifyBackupCode":                   {},
 	"VerifyBackupCodeInTenant":           {},
+	"VerifyPassword":                     {},
 	"VerifyTOTP":                         {},
 }
 
