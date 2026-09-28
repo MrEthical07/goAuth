@@ -13,6 +13,8 @@ func TestConfigValidateWebAuthnRequiredFields(t *testing.T) {
 		wantErr string
 	}{
 		{"missing rpid", func(c *Config) { c.WebAuthn.RPID = "" }, "RPID"},
+		{"ip address rpid", func(c *Config) { c.WebAuthn.RPID = "192.168.1.1" }, "not an IP address"},
+		{"ipv6 rpid", func(c *Config) { c.WebAuthn.RPID = "::1" }, "not an IP address"},
 		{"missing display name", func(c *Config) { c.WebAuthn.RPDisplayName = "" }, "RPDisplayName"},
 		{"missing origins", func(c *Config) { c.WebAuthn.RPOrigins = nil }, "RPOrigins"},
 		{"empty origin", func(c *Config) { c.WebAuthn.RPOrigins = []string{" "} }, "empty origins"},
@@ -55,6 +57,36 @@ func TestConfigValidateWebAuthnValidConfigPasses(t *testing.T) {
 	cfg.WebAuthn.AttestationPreference = "junk"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected disabled webauthn config to pass, got %v", err)
+	}
+}
+
+func TestConfigValidateWebAuthnRPIDLocalhostPasses(t *testing.T) {
+	cfg := webauthnTestConfig()
+	cfg.WebAuthn.RPID = "localhost"
+	cfg.WebAuthn.RPOrigins = []string{"http://localhost:8080"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected localhost RPID to pass, got %v", err)
+	}
+}
+
+// An IP RPID must fail fast at Build() with goAuth's own readable message,
+// not a library error the first time a ceremony starts.
+func TestBuildRejectsIPAddressRPID(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	defer mr.Close()
+
+	cfg := webauthnTestConfig()
+	cfg.WebAuthn.RPID = "203.0.113.5"
+
+	_, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{"member": {}}).
+		WithUserProvider(newWebAuthnMockProvider(t)).
+		Build()
+	if err == nil || !strings.Contains(err.Error(), "not an IP address") {
+		t.Fatalf("expected Build to fail fast on an IP RPID, got %v", err)
 	}
 }
 
