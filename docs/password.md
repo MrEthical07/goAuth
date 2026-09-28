@@ -65,6 +65,16 @@ if needs, _ := hasher.NeedsUpgrade(oldHash); needs {
 - All comparisons use `crypto/subtle.ConstantTimeCompare`.
 - Salt is generated from `crypto/rand` — never reused.
 - `NeedsUpgrade` enables transparent hash migration on login.
+- `Engine.ChangePassword`'s old-password check and `Engine.VerifyPassword`
+  share a dedicated rate limiter (own Redis key namespace,
+  `Security.MaxLoginAttempts` / `Security.LoginCooldownDuration`). Each
+  attempt is *reserved atomically* (a single Redis `INCR`) before Argon2
+  runs, rather than checked and recorded as two separate steps, so a burst
+  of concurrent requests cannot run more verifications than the configured
+  limit — a rate-limited caller, including one racing inside a burst, costs
+  no verification CPU. It never triggers account auto-lockout — a caller
+  holding only a stolen access token must not be able to lock the real
+  owner out of login.
 
 ## Performance Notes
 
@@ -104,6 +114,7 @@ Login flow:
 | `ErrPasswordReuse` | New password matches current hash |
 | `Config.Validate` / `password.NewArgon2` error (non-sentinel) | Invalid Argon2 configuration (memory, time, parallelism) |
 | `ErrInvalidCredentials` | Password verification failed (returned by engine, not password package) |
+| `ErrPasswordVerifyRateLimited` | Repeated `ChangePassword`/`VerifyPassword` failures for the user exceeded `Security.MaxLoginAttempts` within `Security.LoginCooldownDuration`; never triggers account auto-lockout |
 
 ## Flow Ownership
 
@@ -113,6 +124,7 @@ Login flow:
 | Password Verification | `Argon2.Verify` | `password/argon2.go` (called by `internal/flows/login.go`) |
 | Password Upgrade Check | `Argon2.NeedsUpgrade` | `password/argon2.go` (called during login) |
 | Password Change | `Engine.ChangePassword` | `internal/flows/password.go` |
+| Password Verify (step-up) | `Engine.VerifyPassword` | `engine.go` (shares `ChangePassword`'s rate limiter) |
 | Password Reset Confirm | `Engine.ConfirmPasswordReset` | `internal/flows/password_reset.go` |
 
 ## Testing Evidence
@@ -121,6 +133,7 @@ Login flow:
 |----------|------|-------|
 | Argon2 Hash/Verify | `password/argon2_test.go` | Hash, verify, config validation, NeedsUpgrade |
 | Password Change | `engine_change_password_test.go` | Old password verify, reuse, policy |
+| Password Verify + Rate Limiting | `engine_verify_password_test.go` | Step-up verify, rate limiting shared with `ChangePassword`, no auto-lockout, tenant isolation, concurrent-burst bound (`TestVerifyPasswordConcurrentBurstBoundedByMaxAttempts`) |
 | Password Reset | `engine_password_reset_test.go` | Reset with new password hashing |
 | Config Validation | `config_test.go` | Password config bounds |
 | Security Invariants | `security_invariants_test.go` | Constant-time comparison |

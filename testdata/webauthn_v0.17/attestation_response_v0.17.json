@@ -1,0 +1,13 @@
+{
+  "type": "public-key",
+  "id": "fgRp4OcEF1BS0cgmITrcpGAdzn-SThGXbJ1byDOMoVY",
+  "rawId": "fgRp4OcEF1BS0cgmITrcpGAdzn-SThGXbJ1byDOMoVY",
+  "response": {
+    "attestationObject": "o2NmbXRmcGFja2VkZ2F0dFN0bXSiY2FsZyZjc2lnWEgwRgIhANKQd_4fAsUW_O_6cJDuGzwsbkLtHmROzEZ_cd971BMaAiEAhA59eDg5_LgL3aJGqA4mRyfNgCAa44BHD1csK_1PHeNoYXV0aERhdGFYpKN5pvbur7mlXjeMEYA04nUeaC-rny0wqxPSElWGzhlHRQAAAAA_aBhuBDNvgoJ_a6XBMTkwACB-BGng5wQXUFLRyCYhOtykYB3Of5JOEZdsnVvIM4yhVqUBAgMmIAEhWCAE4xUc3z6vUwppg_EECKTt-yYTavn8aqg2XeXhwaiNRSJYID5ia0M_LGJo_ujth_uOqowHSqT71Ybh74WMiijwD8Rz",
+    "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiQ2RTWFhBNnFkZ2RqRE5YR3V5MGJ6ZmNLQzBQemNZMldnU2NqYW9ORjFMZyIsIm9yaWdpbiI6Imh0dHBzOi8vZXhhbXBsZS5jb20ifQ",
+    "transports": [
+      "internal"
+    ]
+  },
+  "clientExtensionResults": {}
+}

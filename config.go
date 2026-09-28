@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/go-webauthn/webauthn/protocol"
 )
 
 // Config is the top-level configuration struct for the goAuth [Engine].
@@ -1144,6 +1146,14 @@ func (c *Config) Validate() error {
 	if c.WebAuthn.Enabled {
 		if strings.TrimSpace(c.WebAuthn.RPID) == "" {
 			return errors.New("WebAuthn RPID is required when WebAuthn is enabled")
+		}
+		// go-webauthn v0.18 rejects an RPID that isn't a valid domain string
+		// (an IP address, an empty or hyphen-bounded label, non-ASCII
+		// characters, ...) at webauthn.New/Begin* time. Reject it here too,
+		// with a readable message, so Build() fails fast instead of the
+		// engine surfacing a library error the first time a ceremony starts.
+		if err := protocol.ValidateRPID(c.WebAuthn.RPID); err != nil {
+			return errors.New(`WebAuthn RPID must be a valid domain such as "localhost" or "example.com", not an IP address`)
 		}
 		if strings.TrimSpace(c.WebAuthn.RPDisplayName) == "" {
 			return errors.New("WebAuthn RPDisplayName is required when WebAuthn is enabled")

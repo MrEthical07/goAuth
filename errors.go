@@ -44,6 +44,7 @@ const (
 	CodeAuthResetAttemptsExceeded          AuthCode = "AUTH_RESET_ATTEMPTS_EXCEEDED"
 	CodeAuthPasswordPolicyViolation        AuthCode = "AUTH_PASSWORD_POLICY_VIOLATION"
 	CodeAuthPasswordReuse                  AuthCode = "AUTH_PASSWORD_REUSE"
+	CodeAuthPasswordVerifyRateLimited      AuthCode = "AUTH_PASSWORD_VERIFY_RATE_LIMITED"
 	CodeSystemSessionCreationFailed        AuthCode = "SYSTEM_SESSION_CREATION_FAILED"
 	CodeSystemSessionInvalidationFailed    AuthCode = "SYSTEM_SESSION_INVALIDATION_FAILED"
 	CodeAuthSessionLimitExceeded           AuthCode = "AUTH_SESSION_LIMIT_EXCEEDED"
@@ -186,6 +187,11 @@ var (
 	ErrPasswordPolicy = NewAuthError(CategoryAuthValidation, string(CodeAuthPasswordPolicyViolation), "password policy violation")
 	// ErrPasswordReuse is an exported constant or variable used by the authentication engine.
 	ErrPasswordReuse = NewAuthError(CategoryAuthValidation, string(CodeAuthPasswordReuse), "password reuse rejected")
+	// ErrPasswordVerifyRateLimited is returned by ChangePassword and VerifyPassword
+	// when repeated password-verification failures for the user have exceeded
+	// Security.MaxLoginAttempts within Security.LoginCooldownDuration. It never
+	// triggers account auto-lockout.
+	ErrPasswordVerifyRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthPasswordVerifyRateLimited), "password verification rate limited")
 	// ErrSessionCreationFailed is an exported constant or variable used by the authentication engine.
 	ErrSessionCreationFailed = NewAuthError(CategorySystem, string(CodeSystemSessionCreationFailed), "session creation failed")
 	// ErrSessionInvalidationFailed is an exported constant or variable used by the authentication engine.

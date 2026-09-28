@@ -278,6 +278,15 @@ func (b *Builder) Build() (*Engine, error) {
 		Duration:   cfg.Security.AutoLockoutDuration,
 		WindowMode: windowMode,
 	})
+	// Shares ChangePassword/VerifyPassword's own attempt budget with the
+	// login failure limiter's configured thresholds, in its own rl:pwdverify:*
+	// namespace, independent of auto-lockout: a stolen access token must not
+	// be able to lock the real owner out of login by exhausting this limiter.
+	engine.passwordVerifyLimiter = limiters.NewPasswordVerifyLimiter(b.redis, limiters.PasswordVerifyConfig{
+		MaxAttempts: cfg.Security.MaxLoginAttempts,
+		Cooldown:    cfg.Security.LoginCooldownDuration,
+		WindowMode:  windowMode,
+	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
 	if cfg.MultiTenant.Enabled {
 		// Without a tenant-scoped lookup the engine would resolve
@@ -378,5 +387,13 @@ func newWebAuthnRP(cfg WebAuthnConfig) (*webauthn.WebAuthn, error) {
 			Login:        timeout,
 			Registration: timeout,
 		},
+		// go-webauthn v0.18 defaults to rejecting a ceremony whose client
+		// returned an extension output this Relying Party never requested
+		// (protocol.UnsolicitedOutputPolicyReject). goAuth requests no
+		// extensions at all, so a real browser or password manager that
+		// volunteers one unprompted would fail login/registration under the
+		// new default. v0.17.4 performed no such check, so pin Ignore to
+		// keep that behavior.
+		ExtensionsUnsolicitedOutputPolicy: protocol.UnsolicitedOutputPolicyIgnore,
 	})
 }

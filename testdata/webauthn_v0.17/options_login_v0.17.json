@@ -1,0 +1,17 @@
+{
+  "publicKey": {
+    "challenge": "IOsIzA9uuVBmKUswTbaK7UfM0udfjirYrqr-4ZL3AbY",
+    "timeout": 120000,
+    "rpId": "example.com",
+    "allowCredentials": [
+      {
+        "type": "public-key",
+        "id": "fgRp4OcEF1BS0cgmITrcpGAdzn-SThGXbJ1byDOMoVY",
+        "transports": [
+          "internal"
+        ]
+      }
+    ],
+    "userVerification": "preferred"
+  }
+}

@@ -1,5 +1,77 @@
 # Migrations
 
+## v0.6.0 Migration Notes (Non-Breaking)
+
+v0.6.0 upgrades `github.com/go-webauthn/webauthn` from v0.17.4 to v0.18.2,
+adds a rate limiter to `ChangePassword`'s old-password check plus the new
+`VerifyPassword` method, and raises goAuth's minimum Go version. No goAuth
+public signature was removed or changed; `gorelease -base=v0.5.1` reports no
+incompatible changes. It is a minor bump rather than a patch because of the
+Go version floor and the new exported method.
+
+### Action required: raise your Go toolchain to 1.27+
+
+From v0.6.0, goAuth supports the current Go major release only (Go 1.27)
+and will raise its minimum again whenever a new Go major ships. This is a
+maintainer policy choice, not a technical requirement of the go-webauthn
+upgrade itself (which needs only Go 1.26.0). If your project builds with an
+older toolchain, upgrade it before taking this release.
+
+### Action required if you expose ChangePassword errors over HTTP
+
+`ChangePassword`'s old-password check (and the new `VerifyPassword`) can now
+return `ErrPasswordVerifyRateLimited` (`AUTH_PASSWORD_VERIFY_RATE_LIMITED`)
+after repeated verification failures for the same user, using your existing
+`Security.MaxLoginAttempts` / `Security.LoginCooldownDuration` thresholds —
+no new config field to set. Like every other `AUTH_*_LIMITED` code, map it
+to `429 Too Many Requests` if your HTTP layer doesn't already fall through
+to the generic abuse-category mapping. This never triggers account
+auto-lockout.
+
+### No action needed if you don't use WebAuthn
+
+If `Config.WebAuthn.Enabled` is false, the go-webauthn upgrade changes
+nothing observable for you beyond the Go version floor above.
+
+### No action needed if you do use WebAuthn
+
+- **Credentials your users have already registered keep working.** Proven
+  against fixtures captured from an actual v0.17.4 ceremony — see the
+  changelog's rolling-deploy notes.
+- **A rolling deploy across this upgrade is not expected to break
+  in-flight ceremonies, in either direction.** goAuth requests no WebAuthn
+  extensions and pins `ExtensionsUnsolicitedOutputPolicyIgnore`, so a
+  ceremony begun on an old instance and finished on a new one decodes and
+  completes normally — and the reverse (begun on a new instance, finished
+  on an old one, the rollback case) does too, proven directly rather than
+  assumed. This is a stronger guarantee than go-webauthn's own upgrade
+  guide describes for the general case, specific to goAuth never
+  requesting extensions or binding a ceremony to one origin.
+- **`BeginWebAuthnRegistration`/`BeginWebAuthnLogin` output is unchanged**
+  apart from the always-random per-ceremony challenge — including the
+  algorithm list (`pubKeyCredParams`): go-webauthn v0.18's new
+  post-quantum algorithms are opt-in only, and goAuth doesn't opt in.
+
+### Optional: adopt `VerifyPassword`
+
+If you re-implement a "confirm your password" check before a sensitive
+action (removing a security key, disabling MFA, deleting an account),
+`Engine.VerifyPassword(ctx, userID, password) error` does the same
+tenant-scoped lookup and Argon2 check `ChangePassword` uses, with no state
+change, sharing its new rate limiter. Nothing changes if you don't call it.
+
+### Worth knowing
+
+- If `Config.WebAuthn.RPID` is an IP address or otherwise not a valid
+  domain string (for example, a Docker container IP used in local
+  development), `Build()` now fails immediately with a readable message
+  instead of the ceremony failing later at the client. Use `localhost` for
+  local development against this library.
+- A WebAuthn response whose `id` and `rawId` disagree, or that omits
+  `rawId`, is now rejected. No legitimate client produces such a response;
+  this closes a gap rather than tightening anything a real authenticator
+  could trip.
+
 ## v0.5.1 Migration Notes (Non-Breaking)
 
 No action needed. v0.5.1 is a drop-in replacement for v0.5.0: no public

@@ -14,7 +14,7 @@ credential model retains the flags needed for a future passwordless mode.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Enabled` | `bool` | `false` | Turns the WebAuthn surface on |
-| `RPID` | `string` | — | Relying Party ID (effective domain, e.g. `"example.com"`). Required |
+| `RPID` | `string` | — | Relying Party ID (effective domain, e.g. `"example.com"`). Required; must be a valid domain string (`"localhost"` or a domain of two or more labels) — an IP address or otherwise invalid value fails `Config.Validate` with a readable error, not a library error at ceremony time |
 | `RPDisplayName` | `string` | — | Human-readable RP name shown by authenticators. Required |
 | `RPOrigins` | `[]string` | — | Exact origins allowed to complete ceremonies. Required |
 | `AttestationPreference` | `string` | `"none"` | `none`/`indirect`/`direct`/`enterprise` |
@@ -101,6 +101,11 @@ TOTP.
   fails `Build()`; backend errors surface as `ErrWebAuthnUnavailable`, never as success.
 - Attestation defaults to `"none"` — verify-and-store of attestation chains is out of
   scope unless you opt into a stronger conveyance preference.
+- **Unsolicited extension outputs are ignored, not rejected.** goAuth never requests a
+  WebAuthn extension, but a real browser or password manager can volunteer an output
+  anyway. The relying-party config pins `ExtensionsUnsolicitedOutputPolicy` to ignore
+  (rather than the go-webauthn v0.18+ default of rejecting the ceremony), so such an
+  output never fails a login or registration.
 
 ## Redis Keys
 

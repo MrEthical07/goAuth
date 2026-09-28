@@ -49,6 +49,13 @@ All module docs must link to:
 3. Use categories: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
 4. On release, move `[Unreleased]` entries to a versioned section.
 
+## Go Version Support
+
+goAuth supports the current Go major release only (currently Go 1.27). When a
+new Go major ships, goAuth's minimum version rises to it in the next minor
+or major release. CI (`.github/workflows/go-race.yml`) tests against that
+one version; do not add older Go versions to the matrix.
+
 ## Code Conventions
 
 - No public API changes without discussion.

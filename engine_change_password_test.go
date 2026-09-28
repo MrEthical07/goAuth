@@ -61,6 +61,8 @@ func (m *mockUserProvider) GetUserByIdentifier(identifier string) (UserRecord, e
 }
 
 func (m *mockUserProvider) GetUserByID(userID string) (UserRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.getByIDCalls++
 
 	user, ok := m.users[userID]

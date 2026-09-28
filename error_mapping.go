@@ -39,6 +39,7 @@ var publicAuthSentinels = []*AuthError{
 	ErrPasswordResetAttempts,
 	ErrPasswordPolicy,
 	ErrPasswordReuse,
+	ErrPasswordVerifyRateLimited,
 	ErrSessionCreationFailed,
 	ErrSessionInvalidationFailed,
 	ErrSessionLimitExceeded,
@@ -119,6 +120,10 @@ func mapToAuthError(err error) *AuthError {
 		return WrapAuthError(ErrTOTPRateLimited, err)
 	case errors.Is(err, limiters.ErrTOTPUnavailable):
 		return WrapAuthError(ErrTOTPUnavailable, err)
+	case errors.Is(err, limiters.ErrPasswordVerifyRateLimited):
+		return WrapAuthError(ErrPasswordVerifyRateLimited, err)
+	case errors.Is(err, limiters.ErrPasswordVerifyUnavailable):
+		return WrapAuthError(ErrSystemUnavailable, err)
 	case errors.Is(err, limiters.ErrBackupCodeRateLimited):
 		return WrapAuthError(ErrBackupCodeRateLimited, err)
 	case errors.Is(err, limiters.ErrBackupCodeUnavailable):

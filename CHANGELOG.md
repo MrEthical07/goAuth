@@ -7,6 +7,144 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-09-28
+
+Minor release (SemVer): `gorelease -base=v0.5.1` reports no incompatible
+changes. Two things push this above a patch: goAuth now targets **Go 1.27
+only** (a maintainer policy choice — see Changed — not something
+go-webauthn v0.18.2 itself requires, which needs only Go 1.26.0), and one
+new exported method (`VerifyPassword`) plus one new sentinel/error code were
+added. Every other consumer-visible difference is upstream behavior (a
+go-webauthn v0.18 tightening) that no legitimate client or caller could
+have depended on.
+
+### Security
+
+- **`ChangePassword`'s old-password check had no attempt limiting.**
+  `Engine.ChangePassword` verified the caller-supplied old password with
+  Argon2 and, on a mismatch, only incremented a metric and emitted an audit
+  event — nothing limited repeated attempts. A caller holding only a stolen
+  access token could guess the account password without limit, at roughly
+  200 ms of Argon2 CPU per guess and no other cost. Fixed by a dedicated
+  `PasswordVerifyLimiter` (its own `rl:pwdverify:*` Redis namespace, reusing
+  `Security.MaxLoginAttempts` / `Security.LoginCooldownDuration`), which
+  atomically *reserves* each attempt (a single Redis `INCR`) before Argon2
+  runs, rather than checking a read-only count and only recording after a
+  failed verification: a check-then-verify split leaves a race where an
+  arbitrarily large *concurrent* burst can all observe a count below the
+  limit before any of them records an attempt, spending unbounded Argon2 CPU
+  regardless of the configured limit. The atomic reservation caps the number
+  of verifications that ever run at exactly `MaxLoginAttempts`, however many
+  requests arrive concurrently (`TestVerifyPasswordConcurrentBurstBoundedByMaxAttempts`).
+  It never triggers account auto-lockout, so exhausting it cannot be used to
+  lock the real owner out of login. See Added.
+
+### Added
+
+- `Engine.VerifyPassword(ctx, userID, password) error` — a step-up
+  primitive for consumers who need to confirm a password before a sensitive
+  action (removing a security key, disabling MFA, deleting an account)
+  without re-implementing verification. No state change; shares
+  `ChangePassword`'s tenant-scoped lookup and its new rate limiter; reveals
+  no more about account existence than `ChangePassword` already does.
+- `ErrPasswordVerifyRateLimited` (`AUTH_PASSWORD_VERIFY_RATE_LIMITED`,
+  `CategoryAuthAbuse`) — returned by `ChangePassword` and `VerifyPassword`
+  when the password-verify limiter is exceeded. Maps to `429 Too Many
+  Requests` under the existing `AUTH_*_LIMITED` HTTP guidance.
+- `Config.Validate` now rejects a `WebAuthn.RPID` that isn't a valid domain
+  string (an IP address, empty/hyphen-bounded labels, non-ASCII characters)
+  with a readable message, so `Build()` fails fast instead of the engine
+  surfacing a go-webauthn library error the first time a ceremony starts.
+  Uses `protocol.ValidateRPID`, the exact function go-webauthn v0.18 itself
+  runs, so there is no drift between the two checks.
+- `testdata/webauthn_v0.17/gen` — the go-webauthn v0.17.4 fixture generator
+  used to prove the v0.17→v0.18 compatibility claims below, committed as
+  its own Go module (pinned to `go-webauthn v0.17.4` +
+  `descope/virtualwebauthn v1.0.5`) so v0.17.4 never enters goAuth's own
+  module graph. `make webauthn-compat` runs both compatibility directions.
+- Golden-byte tests (`session`, `internal/stores`, `internal/audit`) proving
+  every Redis record goAuth writes, and the JSON its audit sink emits, are
+  byte-for-byte identical under Go 1.27.1 to what v0.5.1 (Go 1.26.5)
+  produced for the same fields.
+
+### Changed
+
+- **goAuth now targets the current Go major release only (Go 1.27), and
+  will raise its minimum whenever a new Go major ships.** This is a
+  maintainer policy decision, not a technical requirement of this release —
+  go-webauthn v0.18.2 itself needs only Go 1.26.0. `go.mod`'s `go` directive
+  is `1.27.0` (`toolchain go1.27.1`). See Migration Notes for what this
+  means for consumers on an older toolchain.
+- `github.com/go-webauthn/webauthn` v0.17.4 → v0.18.2. Hygiene, not a
+  security fix: there is no known advisory against v0.17.4 in the Go
+  vulnerability database or GHSA at the time of writing.
+- `newWebAuthnRP` pins `ExtensionsUnsolicitedOutputPolicy:
+  protocol.UnsolicitedOutputPolicyIgnore`. go-webauthn v0.18 defaults to
+  *rejecting* a ceremony whose client volunteers an extension output the
+  Relying Party never requested. goAuth requests no WebAuthn extensions,
+  and a real browser or password manager can return one unprompted, so the
+  new default would fail real logins; pinning `Ignore` reproduces v0.17.4's
+  behavior, which performed no such check at all.
+  `TestWebAuthnV017SessionRejectsUnsolicitedOutputWithoutIgnorePolicy`
+  documents what would happen without the pin.
+- go-webauthn v0.18's default credential-parameter list
+  (`CredentialParametersDefault`, what `BeginRegistration` uses unless a
+  caller opts into a different list) is unchanged by Go 1.27 — the new
+  post-quantum ML-DSA algorithms are gated behind a *separate*,
+  library-provided opt-in (`CredentialParametersPQCRecommendedL3`, itself
+  gated on a `go1.27` build tag) that goAuth does not call. Confirmed both
+  by re-running `TestWebAuthnOptionsJSONUnchangedAcrossUpgrade` under Go
+  1.27.1 (still passes, `pubKeyCredParams` unchanged) and by reading
+  go-webauthn's source. No pin was needed.
+- TOTP re-enrollment refusal (`ErrTOTPAlreadyEnabled`, added in v0.5.1) no
+  longer increments the `TOTPFailure` metric. That metric is a brute-force
+  signal; a refused re-enroll is a policy rejection, not a failed code. The
+  audit event and its distinct `totp_already_enabled` code are unchanged.
+- `golang.org/x/crypto` v0.54.0 → v0.57.0 and `golang.org/x/sys` v0.47.0 →
+  v0.48.0 (transitive, pulled in by go-webauthn v0.18.2).
+
+### Dependencies
+
+Direct:
+- `github.com/go-webauthn/webauthn` v0.17.4 → v0.18.2
+
+Transitive (all pulled in by the above; none newly introduced beyond what
+v0.5.1 already carried transitively through v0.17.4, except where noted):
+- `github.com/go-webauthn/x` v0.2.6 → v0.3.1
+- `github.com/fxamacker/cbor/v2` v2.9.2 → v2.9.4
+- `golang.org/x/crypto` v0.54.0 → v0.57.0
+- `golang.org/x/sys` v0.47.0 → v0.48.0
+- `github.com/go-viper/mapstructure/v2`, `github.com/tinylib/msgp`,
+  `github.com/philhofer/fwd`, `github.com/google/go-tpm` were already
+  indirect dependencies under v0.5.1 (via go-webauthn v0.17.4) and are
+  unchanged in version.
+
+### Notes: rolling-deploy compatibility
+
+Both upgrade direction (v0.5.x → v0.6.0) and rollback direction (v0.6.0 →
+v0.5.x) were tested against real ceremony data, not assumed:
+
+- **Upgrade (v0.17.4-written ceremony, finished under v0.18.2):** succeeds
+  cleanly — no failure, bounded or otherwise —
+  `TestWebAuthnV017SessionDecodesAndFinishesUnderV018`.
+- **Rollback (v0.18.2-written ceremony, finished under v0.17.4):** also
+  succeeds cleanly. A `SessionData` record written by v0.18.2 for goAuth's
+  own (no-extensions, no-origin-binding) configuration carries no
+  `extensions`, `origin`, or `authorizeUVInitialization` keys, so it
+  decodes under v0.17.4's `SessionData` exactly as a native v0.17.4 record
+  would — proven by `testdata/webauthn_v0.17/gen -verify-reverse`
+  (`make webauthn-compat` runs both directions).
+- Redis records for sessions, MFA login challenges, password-reset and
+  email-verification records, and WebAuthn ceremony envelopes are all
+  encoded with `encoding/binary` (fixed-width big-endian, length-prefixed
+  strings) — never `encoding/json` — so Go 1.27's `encoding/json` v2
+  backend cannot affect their wire format. Proven byte-for-byte identical
+  to v0.5.1 (Go 1.26.5) output, not just assumed from the encoding choice.
+- The one JSON path in a stored record — go-webauthn's own `SessionData`
+  blob inside the WebAuthn ceremony envelope — was also spot-checked
+  directly: its `json.Marshal` output for the same go-webauthn v0.18.2
+  dependency is byte-for-byte identical between Go 1.26.5 and Go 1.27.1.
+
 ## [0.5.1] - 2026-09-28
 
 Patch release (SemVer): no public signature changed. One new sentinel
@@ -59,7 +197,7 @@ replacement for v0.5.0.
   `ConfirmTOTPSetup`, `VerifyTOTP`, `DisableTOTP`, backup codes, MFA login,
   and password-reset-with-TOTP are unchanged.
 
-## [Unreleased]
+## [0.5.0] - 2026-08-12
 
 Minor release (SemVer): additive. One new optional interface, no changed
 public signatures, no removed or renamed config fields. Every behavior change

@@ -137,6 +137,7 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 |---|---|---|---|
 | `CreateAccount` | `engine.CreateAccount(ctx, req)` | `ctx`, `req CreateAccountRequest` | `(*CreateAccountResult, error)` |
 | `ChangePassword` | `engine.ChangePassword(ctx, userID, oldPassword, newPassword)` | `ctx`, `userID string`, `oldPassword string`, `newPassword string` | `error`; invalidates all user sessions on success |
+| `VerifyPassword` | `engine.VerifyPassword(ctx, userID, password)` | `ctx`, `userID string`, `password string` | `error`; step-up check, no state change, shares `ChangePassword`'s rate limiter |
 | `DisableAccount` | `engine.DisableAccount(ctx, userID)` | `ctx`, `userID string` | `error` |
 | `EnableAccount` | `engine.EnableAccount(ctx, userID)` | `ctx`, `userID string` | `error` |
 | `UnlockAccount` | `engine.UnlockAccount(ctx, userID)` | `ctx`, `userID string` | `error`; unlocks account and resets lockout counter |
