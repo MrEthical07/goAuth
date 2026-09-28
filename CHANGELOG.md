@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - Unreleased
+
+**Draft — evaluation candidate, not shipped.** Upgrades `github.com/go-webauthn/webauthn` from v0.17.4 to v0.18.2. No goAuth public signature changed and `gorelease` reports no incompatible changes, but this is not a patch release: go-webauthn v0.18's own `go.mod` requires Go 1.26.0, so goAuth's minimum Go version rises from 1.25.0 to 1.26.0 — a consumer-visible floor change unrelated to any goAuth API. That alone is why this is a minor bump rather than a patch.
+
+### Changed
+
+- `github.com/go-webauthn/webauthn` v0.17.4 → v0.18.2. This is hygiene, not a security fix: there is no known advisory against v0.17.4 in the Go vulnerability database or GHSA at the time of writing.
+- goAuth's minimum Go version is now 1.26.0 (was 1.25.0), forced by go-webauthn v0.18.x's own `go` directive.
+- `newWebAuthnRP` now pins `ExtensionsUnsolicitedOutputPolicy: protocol.UnsolicitedOutputPolicyIgnore`. go-webauthn v0.18 defaults to *rejecting* a ceremony whose client volunteers an extension output the Relying Party never requested (`UnsolicitedOutputPolicyReject`). goAuth requests no WebAuthn extensions, so a real browser or password manager that returns one unprompted would otherwise fail login/registration under the new default; pinning `Ignore` keeps v0.17.4's behavior, which had no such check at all.
+
+### Compatibility evidence (see PR description for the full table)
+
+- **Stored credentials.** A credential registered under go-webauthn v0.17.4 (fixtures in `testdata/webauthn_v0.17/`, captured with the same `descope/virtualwebauthn` helper the existing tests use) still completes a login assertion under v0.18.2 unchanged — proven by `TestWebAuthnV017CredentialStillAuthenticatesUnderV018`.
+- **Rolling-deploy window.** A `SessionData` record written by go-webauthn v0.17.4 (`json.Marshal`, exactly as goAuth stores it in Redis under the `awn:` prefix) decodes cleanly under v0.18.2 and the ceremony finishes successfully — `TestWebAuthnV017SessionDecodesAndFinishesUnderV018`. This is stronger than the generic "may fail" concern in go-webauthn's own migration guide: because goAuth requests no extensions and pins the `Ignore` policy, a ceremony begun on an old instance and finished on a new one (or the reverse) during a rolling deploy is not expected to fail at all, bounded or otherwise. `TestWebAuthnV017SessionRejectsUnsolicitedOutputWithoutIgnorePolicy` documents what would happen without the pin (see `docs/migrations.md`).
+- **Options JSON shape.** `BeginWebAuthnRegistration`/`BeginWebAuthnLogin` output is byte-for-byte identical before and after the upgrade, apart from the per-ceremony random `challenge` — `TestWebAuthnOptionsJSONUnchangedAcrossUpgrade` diffs the v0.17.4 golden fixtures against fresh v0.18.2 output.
+- All existing WebAuthn tests (clone detection, sign-count regression, single-use ceremonies, RPID/origin enforcement, `RequireForLogin`) pass unchanged.
+
+### Other consumer-visible differences (not code changes, but worth flagging)
+
+- **Stricter Relying Party ID validation.** `webauthn.New` (and both `Begin*` calls) now reject an RPID that is an IP address, contains empty/hyphen-bounded labels, has non-ASCII characters, or is otherwise not a valid domain string. A deployment using a bare IP for `Config.WebAuthn.RPID` (e.g. local development against a Docker IP) will now fail at build time instead of failing later at the client. Use `localhost` for local development.
+- **Credential responses are validated more strictly.** A response whose `id` and `rawId` disagree, or that omits `rawId`, is now rejected (previously accepted, silently ignoring the client's `id`).
+
 ## [0.5.1] - 2026-09-28
 
 Patch release (SemVer): no public signature changed. One new sentinel
@@ -59,7 +81,7 @@ replacement for v0.5.0.
   `ConfirmTOTPSetup`, `VerifyTOTP`, `DisableTOTP`, backup codes, MFA login,
   and password-reset-with-TOTP are unchanged.
 
-## [Unreleased]
+## [0.5.0] - 2026-08-12
 
 Minor release (SemVer): additive. One new optional interface, no changed
 public signatures, no removed or renamed config fields. Every behavior change

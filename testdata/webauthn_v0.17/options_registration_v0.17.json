@@ -1,0 +1,61 @@
+{
+  "publicKey": {
+    "rp": {
+      "name": "Example",
+      "id": "example.com"
+    },
+    "user": {
+      "name": "fixture@example.com",
+      "displayName": "fixture@example.com",
+      "id": "dXNlci1maXh0dXJlLTE"
+    },
+    "challenge": "CdSXXA6qdgdjDNXGuy0bzfcKC0PzcY2WgScjaoNF1Lg",
+    "pubKeyCredParams": [
+      {
+        "type": "public-key",
+        "alg": -7
+      },
+      {
+        "type": "public-key",
+        "alg": -35
+      },
+      {
+        "type": "public-key",
+        "alg": -36
+      },
+      {
+        "type": "public-key",
+        "alg": -257
+      },
+      {
+        "type": "public-key",
+        "alg": -258
+      },
+      {
+        "type": "public-key",
+        "alg": -259
+      },
+      {
+        "type": "public-key",
+        "alg": -37
+      },
+      {
+        "type": "public-key",
+        "alg": -38
+      },
+      {
+        "type": "public-key",
+        "alg": -39
+      },
+      {
+        "type": "public-key",
+        "alg": -8
+      }
+    ],
+    "timeout": 120000,
+    "authenticatorSelection": {
+      "userVerification": "preferred"
+    },
+    "attestation": "none"
+  }
+}

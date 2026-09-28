@@ -1,5 +1,49 @@
 # Migrations
 
+## v0.6.0 Migration Notes (Draft — evaluation candidate, not shipped)
+
+v0.6.0 upgrades `github.com/go-webauthn/webauthn` from v0.17.4 to v0.18.2.
+No goAuth public signature changed. It is a minor bump rather than a patch
+because it raises goAuth's minimum Go version.
+
+### Action required: raise your Go toolchain to 1.26.0+
+
+go-webauthn v0.18.x's own `go.mod` requires Go 1.26.0. goAuth's `go`
+directive rises to match. If your project builds with an older Go
+toolchain, upgrade it before taking this release. This is unrelated to any
+change in goAuth's own API.
+
+### No action needed if you don't use WebAuthn
+
+If `Config.WebAuthn.Enabled` is false, this release changes nothing
+observable for you beyond the Go version floor above.
+
+### No action needed if you do use WebAuthn
+
+- **Credentials your users have already registered keep working.** Proven
+  against fixtures captured from an actual v0.17.4 ceremony — see the
+  changelog's Compatibility evidence section.
+- **A rolling deploy across this upgrade is not expected to break
+  in-flight ceremonies.** goAuth requests no WebAuthn extensions and pins
+  `ExtensionsUnsolicitedOutputPolicyIgnore`, so a ceremony begun on an old
+  instance and finished on a new one (or the reverse) decodes and completes
+  normally within the existing `WebAuthn.CeremonyTTL` window. This is a
+  stronger guarantee than go-webauthn's own upgrade guide describes for the
+  general case, specific to goAuth never requesting extensions.
+- **`BeginWebAuthnRegistration`/`BeginWebAuthnLogin` output is unchanged**
+  apart from the always-random per-ceremony challenge.
+
+### Worth knowing
+
+- If `Config.WebAuthn.RPID` is an IP address rather than a domain name (for
+  example, a Docker container IP used in local development), build now
+  fails immediately instead of the ceremony failing later at the client.
+  Use `localhost` for local development against this library.
+- A WebAuthn response whose `id` and `rawId` disagree, or that omits
+  `rawId`, is now rejected. No legitimate client produces such a response;
+  this closes a gap rather than tightening anything a real authenticator
+  could trip.
+
 ## v0.5.1 Migration Notes (Non-Breaking)
 
 No action needed. v0.5.1 is a drop-in replacement for v0.5.0: no public

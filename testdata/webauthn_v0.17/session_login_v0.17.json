@@ -1,0 +1,10 @@
+{
+  "challenge": "IOsIzA9uuVBmKUswTbaK7UfM0udfjirYrqr-4ZL3AbY",
+  "rpId": "example.com",
+  "user_id": "dXNlci1maXh0dXJlLTE=",
+  "allowed_credentials": [
+    "fgRp4OcEF1BS0cgmITrcpGAdzn+SThGXbJ1byDOMoVY="
+  ],
+  "expires": "2026-09-28T09:47:41.832770939Z",
+  "userVerification": "preferred"
+}

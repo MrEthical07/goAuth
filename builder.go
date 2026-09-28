@@ -378,5 +378,13 @@ func newWebAuthnRP(cfg WebAuthnConfig) (*webauthn.WebAuthn, error) {
 			Login:        timeout,
 			Registration: timeout,
 		},
+		// go-webauthn v0.18 defaults to rejecting a ceremony whose client
+		// returned an extension output this Relying Party never requested
+		// (protocol.UnsolicitedOutputPolicyReject). goAuth requests no
+		// extensions at all, so a real browser or password manager that
+		// volunteers one unprompted would fail login/registration under the
+		// new default. v0.17.4 performed no such check, so pin Ignore to
+		// keep that behavior.
+		ExtensionsUnsolicitedOutputPolicy: protocol.UnsolicitedOutputPolicyIgnore,
 	})
 }
