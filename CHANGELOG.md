@@ -27,8 +27,15 @@ have depended on.
   access token could guess the account password without limit, at roughly
   200 ms of Argon2 CPU per guess and no other cost. Fixed by a dedicated
   `PasswordVerifyLimiter` (its own `rl:pwdverify:*` Redis namespace, reusing
-  `Security.MaxLoginAttempts` / `Security.LoginCooldownDuration`), checked
-  *before* Argon2 runs so a rate-limited caller costs no verification CPU.
+  `Security.MaxLoginAttempts` / `Security.LoginCooldownDuration`), which
+  atomically *reserves* each attempt (a single Redis `INCR`) before Argon2
+  runs, rather than checking a read-only count and only recording after a
+  failed verification: a check-then-verify split leaves a race where an
+  arbitrarily large *concurrent* burst can all observe a count below the
+  limit before any of them records an attempt, spending unbounded Argon2 CPU
+  regardless of the configured limit. The atomic reservation caps the number
+  of verifications that ever run at exactly `MaxLoginAttempts`, however many
+  requests arrive concurrently (`TestVerifyPasswordConcurrentBurstBoundedByMaxAttempts`).
   It never triggers account auto-lockout, so exhausting it cannot be used to
   lock the real owner out of login. See Added.
 

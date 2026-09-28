@@ -32,10 +32,10 @@ type PasswordVerifyConfig struct {
 	WindowMode window.Mode
 }
 
-// PasswordVerifyLimiter rate-limits repeated password-verification failures
-// for a user, independent of and never triggering account auto-lockout: a
-// caller holding only a stolen access token must not be able to lock the
-// real owner out of login by exhausting this limiter.
+// PasswordVerifyLimiter rate-limits password-verification attempts for a
+// user, independent of and never triggering account auto-lockout: a caller
+// holding only a stolen access token must not be able to lock the real
+// owner out of login by exhausting this limiter.
 type PasswordVerifyLimiter struct {
 	window      *window.Window
 	maxAttempts int64
@@ -67,26 +67,23 @@ func (l *PasswordVerifyLimiter) key(tenantID, userID string) string {
 	return "rl:pwdverify:fail:" + tenantID + ":" + userID
 }
 
-// Check reports whether the caller is currently rate-limited, without
-// recording an attempt. Callers must check before running Argon2, so a
-// rate-limited caller costs no verification CPU.
-func (l *PasswordVerifyLimiter) Check(ctx context.Context, tenantID, userID string) error {
-	count, err := l.window.Count(ctx, l.key(tenantID, userID), l.cooldown)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrPasswordVerifyUnavailable, err)
-	}
-	if count >= l.maxAttempts {
-		return ErrPasswordVerifyRateLimited
-	}
-	return nil
-}
-
-func (l *PasswordVerifyLimiter) RecordFailure(ctx context.Context, tenantID, userID string) error {
+// Reserve atomically claims one verification attempt before Argon2 runs, so
+// a burst of concurrent requests can never run more verifications than
+// maxAttempts within the window: a plain "read the count, then verify, then
+// record on failure" sequence leaves a check-then-verify race where every
+// concurrent caller can observe a count below the limit before any of them
+// records an attempt, letting an arbitrarily large concurrent burst bypass
+// the limit entirely. Reserving the slot with a single atomic INCR before
+// verification closes that race -- only the first maxAttempts reservations
+// within the window are ever allowed to proceed to Argon2, whatever the
+// concurrency. It returns ErrPasswordVerifyRateLimited, without letting the
+// caller proceed to verification, once the claim would exceed maxAttempts.
+func (l *PasswordVerifyLimiter) Reserve(ctx context.Context, tenantID, userID string) error {
 	count, err := l.window.Incr(ctx, l.key(tenantID, userID), l.cooldown)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrPasswordVerifyUnavailable, err)
 	}
-	if count >= l.maxAttempts {
+	if count > l.maxAttempts {
 		return ErrPasswordVerifyRateLimited
 	}
 	return nil

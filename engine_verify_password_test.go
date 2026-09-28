@@ -3,6 +3,7 @@ package goAuth
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,22 +23,25 @@ func TestChangePasswordRateLimitedAfterMaxAttempts(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Attempts 1..MaxLoginAttempts-1 (here 1 and 2) are plain invalid-credentials.
-	for i := 0; i < cfg.Security.MaxLoginAttempts-1; i++ {
+	// Each of the first MaxLoginAttempts attempts is a genuine Argon2
+	// verification (and a genuine mismatch), since each one reserves its
+	// own slot atomically before running Argon2.
+	for i := 0; i < cfg.Security.MaxLoginAttempts; i++ {
 		if err := engine.ChangePassword(ctx, "u1", "wrong-old-pass", "new-password-999"); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("attempt %d: expected ErrInvalidCredentials, got %v", i+1, err)
 		}
 	}
 
-	// The attempt that reaches MaxLoginAttempts trips the limiter.
+	// The next attempt exceeds MaxLoginAttempts and is refused before Argon2
+	// ever runs.
 	if err := engine.ChangePassword(ctx, "u1", "wrong-old-pass", "new-password-999"); !errors.Is(err, ErrPasswordVerifyRateLimited) {
-		t.Fatalf("expected ErrPasswordVerifyRateLimited once the limit is reached, got %v", err)
+		t.Fatalf("expected ErrPasswordVerifyRateLimited once the limit is exceeded, got %v", err)
 	}
 
 	// While limited, even the CORRECT old password is rejected with
-	// ErrPasswordVerifyRateLimited rather than succeeding -- proving the
-	// limiter is checked (and denies) before Argon2 ever runs, not just
-	// after a failed verification.
+	// ErrPasswordVerifyRateLimited rather than succeeding -- the reservation
+	// is refused before Argon2 ever runs, not just after a failed
+	// verification.
 	if err := engine.ChangePassword(ctx, "u1", "correct-password-123", "new-password-999"); !errors.Is(err, ErrPasswordVerifyRateLimited) {
 		t.Fatalf("expected the correct password to still be rejected while rate limited, got %v", err)
 	}
@@ -192,7 +196,7 @@ func TestVerifyPasswordRateLimitedAfterMaxAttempts(t *testing.T) {
 
 	ctx := context.Background()
 
-	for i := 0; i < cfg.Security.MaxLoginAttempts-1; i++ {
+	for i := 0; i < cfg.Security.MaxLoginAttempts; i++ {
 		if err := engine.VerifyPassword(ctx, "u1", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
 			t.Fatalf("attempt %d: expected ErrInvalidCredentials, got %v", i+1, err)
 		}
@@ -202,6 +206,57 @@ func TestVerifyPasswordRateLimitedAfterMaxAttempts(t *testing.T) {
 	}
 	if err := engine.VerifyPassword(ctx, "u1", "correct-password-123"); !errors.Is(err, ErrPasswordVerifyRateLimited) {
 		t.Fatalf("expected the correct password to still be rejected while rate limited, got %v", err)
+	}
+}
+
+// TestVerifyPasswordConcurrentBurstBoundedByMaxAttempts fires a burst of
+// concurrent VerifyPassword calls, all racing before any of them completes.
+// A check-then-verify limiter (read the count, verify, then record on
+// failure) would let every one of them observe a count below the limit and
+// proceed to Argon2, since none has recorded an attempt yet -- letting an
+// arbitrarily large concurrent burst run unbounded verification CPU despite
+// a small configured limit. The atomic per-attempt reservation this limiter
+// uses instead must cap the number of calls that ever reach Argon2 (and so
+// return ErrInvalidCredentials rather than ErrPasswordVerifyRateLimited) at
+// exactly MaxLoginAttempts, regardless of how many arrive concurrently.
+func TestVerifyPasswordConcurrentBurstBoundedByMaxAttempts(t *testing.T) {
+	cfg := passwordVerifyTestConfig()
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	ctx := context.Background()
+
+	const burst = 50
+	results := make([]error, burst)
+	var wg sync.WaitGroup
+	wg.Add(burst)
+	for i := 0; i < burst; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i] = engine.VerifyPassword(ctx, "u1", "wrong-password")
+		}(i)
+	}
+	wg.Wait()
+
+	var verified, limited int
+	for _, err := range results {
+		switch {
+		case errors.Is(err, ErrInvalidCredentials):
+			verified++
+		case errors.Is(err, ErrPasswordVerifyRateLimited):
+			limited++
+		default:
+			t.Fatalf("unexpected result from concurrent burst: %v", err)
+		}
+	}
+
+	if verified != cfg.Security.MaxLoginAttempts {
+		t.Fatalf("expected exactly MaxLoginAttempts (%d) calls to reach Argon2 verification out of a %d-call burst, got %d (rate limited: %d)",
+			cfg.Security.MaxLoginAttempts, burst, verified, limited)
+	}
+	if limited != burst-cfg.Security.MaxLoginAttempts {
+		t.Fatalf("expected the remaining %d calls to be rate limited, got %d", burst-cfg.Security.MaxLoginAttempts, limited)
 	}
 }
 

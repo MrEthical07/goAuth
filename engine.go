@@ -733,31 +733,19 @@ func (e *Engine) InvalidateUserSessions(ctx context.Context, userID string) erro
 	return mapToAuthErrorOrNil(e.LogoutAll(ctx, userID))
 }
 
-// checkPasswordVerifyLimiter reports whether userID is currently rate
-// limited for password verification (ChangePassword's old-password check,
-// or VerifyPassword), without recording an attempt. It fails open on
-// limiter backend errors -- an explicit rate-limit denial always blocks,
-// but a backend outage never does -- matching every other domain limiter
-// (TOTP, backup codes, account creation).
-func (e *Engine) checkPasswordVerifyLimiter(ctx context.Context, tenantID, userID string) error {
+// reservePasswordVerifyAttempt atomically claims one password-verification
+// attempt (ChangePassword's old-password check, or VerifyPassword) before
+// Argon2 runs, so a rate-limited caller -- including a burst of concurrent
+// callers -- costs no verification CPU. It fails open on limiter backend
+// errors -- an explicit rate-limit denial always blocks, but a backend
+// outage never does -- matching every other domain limiter (TOTP, backup
+// codes, account creation).
+func (e *Engine) reservePasswordVerifyAttempt(ctx context.Context, tenantID, userID string) error {
 	if e == nil || e.passwordVerifyLimiter == nil {
 		return nil
 	}
 	e.metricInc(MetricLimiterCheck)
-	err := e.passwordVerifyLimiter.Check(ctx, tenantID, userID)
-	if err == nil || errors.Is(err, limiters.ErrPasswordVerifyRateLimited) {
-		return err
-	}
-	e.emitLimiterFailOpen(ctx, "password_verify", tenantID, err)
-	return nil
-}
-
-func (e *Engine) recordPasswordVerifyFailure(ctx context.Context, tenantID, userID string) error {
-	if e == nil || e.passwordVerifyLimiter == nil {
-		return nil
-	}
-	e.metricInc(MetricLimiterCheck)
-	err := e.passwordVerifyLimiter.RecordFailure(ctx, tenantID, userID)
+	err := e.passwordVerifyLimiter.Reserve(ctx, tenantID, userID)
 	if err == nil || errors.Is(err, limiters.ErrPasswordVerifyRateLimited) {
 		return err
 	}
@@ -779,8 +767,9 @@ func (e *Engine) resetPasswordVerifyLimiter(ctx context.Context, tenantID, userI
 // all of the user’s sessions so they must re-authenticate. The login rate
 // limiter is also reset on success.
 //
-// Repeated old-password verification failures are rate-limited (shared with
-// [Engine.VerifyPassword], own limiter, checked before Argon2 runs) using
+// Repeated old-password verification attempts are rate-limited (shared with
+// [Engine.VerifyPassword], own limiter, each attempt reserved atomically
+// before Argon2 runs so a concurrent burst cannot exceed the limit) using
 // Security.MaxLoginAttempts / Security.LoginCooldownDuration. This never
 // triggers account auto-lockout.
 //
@@ -802,11 +791,11 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 	}
 
 	limiterTenant := tenantIDFromContext(ctx)
-	// Checked before any lookup or Argon2 verification, so a caller who has
+	// Reserved before any lookup or Argon2 verification, so a caller who has
 	// exhausted the limiter (for example a stolen access token used to
-	// guess the account password) costs no CPU and no extra Redis round
-	// trip per attempt.
-	if err := e.checkPasswordVerifyLimiter(ctx, limiterTenant, userID); err != nil {
+	// guess the account password) -- including a burst of concurrent
+	// callers -- costs no CPU and no extra Redis round trip per attempt.
+	if err := e.reservePasswordVerifyAttempt(ctx, limiterTenant, userID); err != nil {
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, limiterTenant, "", ErrPasswordVerifyRateLimited, func() map[string]string {
 			return map[string]string{
 				"reason": "rate_limited",
@@ -836,14 +825,6 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 	oldOK, err := e.passwordHash.Verify(oldPassword, user.PasswordHash)
 	if err != nil || !oldOK {
 		e.metricInc(MetricPasswordChangeInvalidOld)
-		if err := e.recordPasswordVerifyFailure(ctx, limiterTenant, userID); errors.Is(err, limiters.ErrPasswordVerifyRateLimited) {
-			e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, user.TenantID, "", ErrPasswordVerifyRateLimited, func() map[string]string {
-				return map[string]string{
-					"reason": "rate_limited",
-				}
-			})
-			return mapToAuthError(ErrPasswordVerifyRateLimited)
-		}
 		e.emitAudit(ctx, auditEventPasswordChangeInvalidOld, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
 		return mapToAuthError(ErrInvalidCredentials)
 	}
@@ -919,9 +900,10 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 // the same sentinel [Engine.ChangePassword] uses, and reveals nothing about
 // account existence beyond what ChangePassword already does.
 //
-// Repeated verification failures share [Engine.ChangePassword]'s own
-// rate limiter (Security.MaxLoginAttempts / Security.LoginCooldownDuration,
-// checked before Argon2 runs), and never trigger account auto-lockout.
+// Repeated verification attempts share [Engine.ChangePassword]'s own rate
+// limiter (Security.MaxLoginAttempts / Security.LoginCooldownDuration, each
+// attempt reserved atomically before Argon2 runs so a concurrent burst
+// cannot exceed the limit), and never trigger account auto-lockout.
 //
 //	Flow:        Verify Password
 //	Docs:        docs/password.md
@@ -941,7 +923,7 @@ func (e *Engine) VerifyPassword(ctx context.Context, userID, password string) er
 	}
 
 	limiterTenant := tenantIDFromContext(ctx)
-	if err := e.checkPasswordVerifyLimiter(ctx, limiterTenant, userID); err != nil {
+	if err := e.reservePasswordVerifyAttempt(ctx, limiterTenant, userID); err != nil {
 		e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, limiterTenant, "", ErrPasswordVerifyRateLimited, func() map[string]string {
 			return map[string]string{
 				"reason": "rate_limited",
@@ -971,14 +953,6 @@ func (e *Engine) VerifyPassword(ctx context.Context, userID, password string) er
 	ok, err := e.passwordHash.Verify(password, user.PasswordHash)
 	password = ""
 	if err != nil || !ok {
-		if lerr := e.recordPasswordVerifyFailure(ctx, limiterTenant, userID); errors.Is(lerr, limiters.ErrPasswordVerifyRateLimited) {
-			e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, user.TenantID, "", ErrPasswordVerifyRateLimited, func() map[string]string {
-				return map[string]string{
-					"reason": "rate_limited",
-				}
-			})
-			return mapToAuthError(ErrPasswordVerifyRateLimited)
-		}
 		e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
 		return mapToAuthError(ErrInvalidCredentials)
 	}
