@@ -12,7 +12,7 @@
 #   make example       — build example app to verify compilation
 #   make help          — show available targets
 
-.PHONY: test test-race vet lint fmt bench ci example integration help
+.PHONY: test test-race vet lint fmt bench ci example integration webauthn-compat help
 
 # Default target
 all: test
@@ -50,6 +50,15 @@ integration:
 ## example: Build the example app to verify it compiles
 example:
 	go build ./examples/http-minimal/...
+
+## webauthn-compat: Check both directions of the go-webauthn v0.17.4 <-> v0.18.2
+## rolling-deploy compatibility (see testdata/webauthn_v0.17/gen/README.md)
+webauthn-compat:
+	@echo "--- forward: v0.17.4-written ceremonies under v0.18.2 (main module tests) ---"
+	go test -run 'TestWebAuthnV017|TestWebAuthnOptionsJSONUnchangedAcrossUpgrade' -v .
+	@echo "--- reverse: v0.18.2-written ceremony under v0.17.4 ---"
+	go test -run TestGenerateReverseRollingDeployFixtures -update .
+	cd testdata/webauthn_v0.17/gen && go run . -verify-reverse ../../webauthn_v0.18
 
 ## ci: Run the full CI pipeline locally (fmt → vet → test → race → integration → example)
 ci: fmt vet test test-race integration example
