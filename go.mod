@@ -35,3 +35,5 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 )
+
+retract v0.6.1 // Tagged in error: identical to v0.6.0 and missing the tenant-scoping fix; use v0.6.2.
