@@ -61,7 +61,10 @@ credential, err := engine.FinishWebAuthnRegistration(ctx, userID, challenge.Cere
 ```
 
 Management: `engine.ListWebAuthnCredentials(ctx, userID)` and
-`engine.RemoveWebAuthnCredential(ctx, userID, credentialID)`.
+`engine.RemoveWebAuthnCredential(ctx, userID, credentialID)`. With
+`MultiTenant.Enabled = true`, both first resolve `userID` within the request's
+tenant and return `ErrUserNotFound` for an id from another tenant; see
+[multi_tenancy.md](multi_tenancy.md).
 
 ### Login (second factor)
 

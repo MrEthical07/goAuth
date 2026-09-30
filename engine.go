@@ -1922,6 +1922,12 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 			return e.userProvider.ReplaceBackupCodes(ctx, userID, fromFlowBackupCodeRecords(records))
 		}
 		deps.ConsumeBackupCode = e.userProvider.ConsumeBackupCode
+		if e.tenantScopedLookup() {
+			deps.ResolveUserInTenant = func(ctx context.Context, tenantID, userID string) error {
+				_, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
+				return err
+			}
+		}
 	}
 	if e != nil {
 		deps.VerifyTOTPForUser = func(ctx context.Context, user internalflows.BackupCodeUser, code string) error {

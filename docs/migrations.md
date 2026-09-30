@@ -1,5 +1,20 @@
 # Migrations
 
+## v0.6.1 Migration Notes (Non-Breaking)
+
+No action needed. v0.6.1 is a drop-in replacement for v0.6.0: no exported
+API or config changed, and single-tenant deployments
+(`MultiTenant.Enabled = false`) behave exactly as before.
+
+With `MultiTenant.Enabled = true`, `VerifyBackupCode`,
+`VerifyBackupCodeInTenant`, `ListWebAuthnCredentials`, and
+`RemoveWebAuthnCredential` now resolve the user within the request's tenant
+(the explicit `tenantID` for `VerifyBackupCodeInTenant`) before touching the
+provider. If you expose these methods over HTTP, a user id from another
+tenant now yields `ErrUserNotFound` (map it the way you already map
+`ErrUserNotFound` from `ChangePassword` or the TOTP methods) instead of
+whatever your provider happened to return. Same-tenant calls are unchanged.
+
 ## v0.6.0 Migration Notes (Non-Breaking)
 
 v0.6.0 upgrades `github.com/go-webauthn/webauthn` from v0.17.4 to v0.18.2,

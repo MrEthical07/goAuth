@@ -50,11 +50,15 @@ type BackupCodeDeps struct {
 	TenantIDFromContext func(context.Context) string
 	AccountStatusError  func(uint8) error
 
-	GetUserByID        func(context.Context, string) (BackupCodeUser, error)
-	GetBackupCodes     func(context.Context, string) ([]BackupCodeRecord, error)
-	ReplaceBackupCodes func(context.Context, string, []BackupCodeRecord) error
-	ConsumeBackupCode  func(context.Context, string, [32]byte) (bool, error)
-	VerifyTOTPForUser  func(context.Context, BackupCodeUser, string) error
+	GetUserByID func(context.Context, string) (BackupCodeUser, error)
+	// ResolveUserInTenant, when set, confirms the user exists within the
+	// given tenant before a backup code is consumed. The engine sets it only
+	// under multi-tenancy; nil keeps the tenant-blind consume path.
+	ResolveUserInTenant func(ctx context.Context, tenantID, userID string) error
+	GetBackupCodes      func(context.Context, string) ([]BackupCodeRecord, error)
+	ReplaceBackupCodes  func(context.Context, string, []BackupCodeRecord) error
+	ConsumeBackupCode   func(context.Context, string, [32]byte) (bool, error)
+	VerifyTOTPForUser   func(context.Context, BackupCodeUser, string) error
 
 	CheckLimiter         func(context.Context, string, string) error
 	RecordLimiterFailure func(context.Context, string, string) error
@@ -197,6 +201,20 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 			"reason": "limiter_check_failed",
 		})
 		return deps.Errors.BackupCodeUnavailable
+	}
+
+	if deps.ResolveUserInTenant != nil {
+		if err := deps.ResolveUserInTenant(ctx, tenantID, userID); err != nil {
+			// Counted like a wrong code so cross-tenant probing is
+			// rate-limited. The outcome is not-found regardless of what the
+			// limiter reports; a tripped limit surfaces on the next attempt.
+			deps.MetricInc(deps.Metrics.BackupCodeFailed)
+			_ = deps.RecordLimiterFailure(ctx, tenantID, userID)
+			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.UserNotFound, map[string]string{
+				"reason": "user_not_found",
+			})
+			return deps.Errors.UserNotFound
+		}
 	}
 
 	canonical := CanonicalizeBackupCode(code)
