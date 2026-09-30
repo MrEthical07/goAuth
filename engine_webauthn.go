@@ -75,6 +75,9 @@ func (e *Engine) ListWebAuthnCredentials(ctx context.Context, userID string) ([]
 	if userID == "" {
 		return nil, mapToAuthError(ErrUserNotFound)
 	}
+	if err := e.requireUserInTenant(ctx, userID); err != nil {
+		return nil, err
+	}
 	credentials, err := e.webauthnProvider.GetWebAuthnCredentials(ctx, userID)
 	if err != nil {
 		return nil, ErrWebAuthnUnavailable
@@ -94,6 +97,9 @@ func (e *Engine) RemoveWebAuthnCredential(ctx context.Context, userID string, cr
 	if userID == "" || len(credentialID) == 0 {
 		return ErrWebAuthnCredentialNotFound
 	}
+	if err := e.requireUserInTenant(ctx, userID); err != nil {
+		return err
+	}
 	credentials, err := e.webauthnProvider.GetWebAuthnCredentials(ctx, userID)
 	if err != nil {
 		return ErrWebAuthnUnavailable
@@ -112,6 +118,19 @@ func (e *Engine) RemoveWebAuthnCredential(ctx context.Context, userID string, cr
 		return ErrWebAuthnUnavailable
 	}
 	e.emitAudit(ctx, auditEventWebAuthnCredentialRemoved, true, userID, tenantIDFromContext(ctx), "", nil, nil)
+	return nil
+}
+
+// requireUserInTenant confirms userID belongs to the request's tenant before
+// a credential-provider call. With multi-tenancy off it does nothing, so
+// single-tenant deployments make no extra provider call.
+func (e *Engine) requireUserInTenant(ctx context.Context, userID string) error {
+	if !e.tenantScopedLookup() {
+		return nil
+	}
+	if _, err := e.lookupUserByID(ctx, userID); err != nil {
+		return ErrUserNotFound
+	}
 	return nil
 }
 
