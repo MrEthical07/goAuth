@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.6.1] - 2026-09-30
+## [0.6.2] - 2026-09-30
 
-Patch release (SemVer): a drop-in replacement for v0.6.0. No exported API
+Patch release (SemVer): a drop-in replacement for v0.6.0 and v0.6.1. No exported API
 changed (nothing added, removed, or altered), there are no config changes,
 and single-tenant deployments (`MultiTenant.Enabled = false`, the default)
 are unaffected: same errors, same audit events, same metrics, and no new
@@ -58,6 +58,13 @@ provider calls.
   backup codes through `VerifyBackupCodeInTenant`, now make one additional
   in-tenant user lookup per backup-code attempt. Their outcomes are
   unchanged.
+
+---
+
+## [0.6.1] - 2026-09-30
+
+Tagged in error on the v0.6.0 commit; contains no changes and is retracted in
+`go.mod`. Use v0.6.2.
 
 ---
 

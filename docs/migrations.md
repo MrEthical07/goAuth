@@ -1,10 +1,13 @@
 # Migrations
 
-## v0.6.1 Migration Notes (Non-Breaking)
+## v0.6.2 Migration Notes (Non-Breaking)
 
-No action needed. v0.6.1 is a drop-in replacement for v0.6.0: no exported
-API or config changed, and single-tenant deployments
+No action needed. v0.6.2 is a drop-in replacement for v0.6.0 and v0.6.1: no
+exported API or config changed, and single-tenant deployments
 (`MultiTenant.Enabled = false`) behave exactly as before.
+
+v0.6.1 is retracted: it was tagged in error on the v0.6.0 commit and does not
+contain this fix. Upgrade straight to v0.6.2.
 
 With `MultiTenant.Enabled = true`, `VerifyBackupCode`,
 `VerifyBackupCodeInTenant`, `ListWebAuthnCredentials`, and
