@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] - 2026-09-30
+
+Patch release (SemVer): a drop-in replacement for v0.6.0. No exported API
+changed (nothing added, removed, or altered), there are no config changes,
+and single-tenant deployments (`MultiTenant.Enabled = false`, the default)
+are unaffected: same errors, same audit events, same metrics, and no new
+provider calls.
+
+### Security
+
+- **Three public methods skipped the tenant-scoped user lookup under
+  `MultiTenant.Enabled = true`.** The v0.5.0 guarantee is that every
+  id-keyed path resolves the user within the request's tenant before
+  touching the provider. `VerifyBackupCode` / `VerifyBackupCodeInTenant`,
+  `ListWebAuthnCredentials`, and `RemoveWebAuthnCredential` handed the
+  caller's `userID` straight to the provider (`ConsumeBackupCode`,
+  `GetWebAuthnCredentials`, `RemoveWebAuthnCredential`) without resolving
+  it. A `UserProvider` whose SQL does not scope by tenant, which the
+  documented contract allows because goAuth's lookup is where tenant
+  enforcement lives, could therefore have a user id from another tenant
+  have its backup code consumed, its WebAuthn credentials listed, or its
+  credentials removed. All three now resolve the user through the
+  tenant-scoped lookup, including the record-tenant backstop, and fail
+  closed before any provider call. This completes the v0.5.0 guarantee. It
+  affects `MultiTenant.Enabled = true` deployments only.
+  - For backup codes the resolution runs after the limiter check and before
+    the code is canonicalized or consumed. A failed resolution records a
+    limiter failure (so cross-tenant probing is rate-limited like wrong
+    codes) and emits the existing `backup_code_failed` audit event with
+    `reason: "user_not_found"`. The limiter is keyed by (tenant, user), so
+    probing with a foreign id cannot lock the real owner out.
+  - No account-status check was added to `VerifyBackupCode`: its sibling
+    `VerifyTOTP` does not check status either, so status handling is
+    unchanged.
+  - An audit of every other exported `Engine` method that takes a `userID`
+    found no further gaps: each either resolves through the tenant-scoped
+    lookup or is keyed only by tenant-partitioned Redis state.
+
+### Fixed
+
+- `VerifyBackupCode`, `VerifyBackupCodeInTenant`, `ListWebAuthnCredentials`,
+  and `RemoveWebAuthnCredential` now return `ErrUserNotFound` in
+  multi-tenant mode when `userID` does not belong to the request's tenant
+  (or to the explicit `tenantID` argument of `VerifyBackupCodeInTenant`),
+  matching the user-not-found row for backup codes and WebAuthn in
+  `docs/multi_tenancy.md`. Previously the call reached the provider and its
+  result depended on the provider's own scoping.
+- In multi-tenant mode the MFA-login and password-reset flows, which verify
+  backup codes through `VerifyBackupCodeInTenant`, now make one additional
+  in-tenant user lookup per backup-code attempt. Their outcomes are
+  unchanged.
+
+---
+
 ## [0.6.0] - 2026-09-28
 
 Minor release (SemVer): `gorelease -base=v0.5.1` reports no incompatible

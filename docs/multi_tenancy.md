@@ -100,6 +100,8 @@ and reject a tenant mismatch:
 | Password-reset request | Enumeration-safe response, no record written |
 | Email-verification request | Enumeration-safe response, no record written |
 | Change password, account status, backup codes, TOTP, WebAuthn ceremonies | User-not-found |
+| `VerifyBackupCode`, `VerifyBackupCodeInTenant` (checked against the request tenant or the explicit `tenantID`; a miss also counts toward the backup-code limiter) | User-not-found |
+| `ListWebAuthnCredentials`, `RemoveWebAuthnCredential` | User-not-found |
 
 Refresh needs no explicit guard: the session is loaded from a key built with
 the context tenant, so a token minted in one tenant misses in another and
