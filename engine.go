@@ -61,6 +61,8 @@ type Engine struct {
 	userProvider          UserProvider
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
+	roleSwitchProvider    RoleSwitchProvider
+	roleSwitchLimiter     *limiters.RoleSwitchLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
 }

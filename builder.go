@@ -202,6 +202,12 @@ func (b *Builder) Build() (*Engine, error) {
 
 	roleManager.Freeze()
 
+	for role := range cfg.RoleSwitch.StepUp {
+		if _, ok := roleManager.GetMask(role); !ok {
+			return nil, fmt.Errorf("RoleSwitch StepUp role %q is not a registered role", role)
+		}
+	}
+
 	if cfg.Account.Enabled {
 		if _, ok := roleManager.GetMask(cfg.Account.DefaultRole); !ok {
 			return nil, errors.New("Account DefaultRole does not exist in role manager")
@@ -304,6 +310,18 @@ func (b *Builder) Build() (*Engine, error) {
 		if updater, ok := b.userProvider.(TenantAwarePasswordUpdater); ok {
 			engine.passwordUpdater = updater
 		}
+	}
+	if cfg.RoleSwitch.Enabled {
+		provider, ok := b.userProvider.(RoleSwitchProvider)
+		if !ok {
+			return nil, errors.New("RoleSwitch is enabled but the user provider does not implement RoleSwitchProvider")
+		}
+		engine.roleSwitchProvider = provider
+		engine.roleSwitchLimiter = limiters.NewRoleSwitchLimiter(b.redis, limiters.RoleSwitchConfig{
+			MaxAttempts: cfg.RoleSwitch.MaxAttempts,
+			Cooldown:    cfg.RoleSwitch.Cooldown,
+			WindowMode:  windowMode,
+		})
 	}
 	if cfg.WebAuthn.Enabled {
 		provider, ok := b.userProvider.(WebAuthnCredentialProvider)
