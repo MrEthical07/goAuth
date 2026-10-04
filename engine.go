@@ -60,6 +60,7 @@ type Engine struct {
 	jwtManager            *jwt.Manager
 	userProvider          UserProvider
 	tenantProvider        TenantAwareUserProvider
+	passwordUpdater       TenantAwarePasswordUpdater
 	logger                *slog.Logger
 	flows                 internalflows.Service
 }
@@ -113,6 +114,18 @@ func (e *Engine) lookupUserByIDInTenant(ctx context.Context, tenantID, userID st
 		return UserRecord{}, ErrUserNotFound
 	}
 	return user, nil
+}
+
+// updatePasswordHash persists a new password hash for userID. When
+// multi-tenancy is enabled and the provider implements
+// [TenantAwarePasswordUpdater] the write is scoped to tenantID, the tenant
+// the caller resolved; otherwise it is exactly the legacy
+// [UserProvider.UpdatePasswordHash] call.
+func (e *Engine) updatePasswordHash(ctx context.Context, tenantID, userID, newHash string) error {
+	if e.passwordUpdater != nil {
+		return e.passwordUpdater.UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)
+	}
+	return e.userProvider.UpdatePasswordHash(userID, newHash)
 }
 
 type auditDispatcher = internalaudit.Dispatcher
@@ -847,7 +860,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		return mapToAuthError(ErrPasswordPolicy)
 	}
 
-	if err := e.userProvider.UpdatePasswordHash(userID, newHash); err != nil {
+	if err := e.updatePasswordHash(ctx, user.TenantID, userID, newHash); err != nil {
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, user.TenantID, "", err, func() map[string]string {
 			return map[string]string{
 				"reason": "update_hash_failed",
@@ -2713,6 +2726,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	if e != nil && e.userProvider != nil {
 		e.configureLoginUserLookupDeps(&deps)
 		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
+		if e.passwordUpdater != nil {
+			deps.UpdatePasswordHashInTenant = e.passwordUpdater.UpdatePasswordHashInTenant
+		}
 		deps.GetTOTPSecret = func(ctx context.Context, userID string) (*internalflows.LoginTOTPRecord, error) {
 			record, err := e.userProvider.GetTOTPSecret(ctx, userID)
 			if err != nil {
@@ -3074,6 +3090,9 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 			}, nil
 		}
 		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
+		if e.passwordUpdater != nil {
+			deps.UpdatePasswordHashInTenant = e.passwordUpdater.UpdatePasswordHashInTenant
+		}
 	}
 	if e != nil && e.passwordHash != nil {
 		deps.HashPassword = e.passwordHash.Hash

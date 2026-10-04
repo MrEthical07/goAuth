@@ -143,6 +143,29 @@ type TenantAwareUserProvider interface {
 	GetUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error)
 }
 
+// TenantAwarePasswordUpdater is an optional capability interface a
+// [UserProvider] can additionally implement to scope password-hash writes to
+// a single tenant. It is detected via type assertion at [Builder.Build] and
+// is consulted only when [Config.MultiTenant] is enabled; with it disabled,
+// or when the provider does not implement it, every writer keeps calling
+// [UserProvider.UpdatePasswordHash] exactly as before.
+//
+// [UserProvider.UpdatePasswordHash] addresses a user by ID alone, so in a
+// multi-tenant deployment it can overwrite a hash that the lookup path never
+// resolved for this tenant. When the capability is present the engine calls
+// UpdatePasswordHashInTenant instead, in all three places it writes a hash:
+// [Engine.ChangePassword], the password-reset confirm flow, and the
+// rehash-on-login upgrade. The tenantID is always the one the engine
+// resolved itself, never a caller-supplied value.
+//
+// Implementations MUST constrain the write to tenantID and return an error
+// (not silently succeed) when the user belongs to a different tenant.
+//
+//	Docs: docs/multi_tenancy.md
+type TenantAwarePasswordUpdater interface {
+	UpdatePasswordHashInTenant(ctx context.Context, tenantID, userID, newHash string) error
+}
+
 // UserRecord is the full account record returned by [UserProvider].
 // It carries credential hashes, status, role, and versioning counters.
 type UserRecord struct {

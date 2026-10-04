@@ -139,11 +139,15 @@ type LoginDeps struct {
 
 	// GetUserByIdentifier and GetUserByID take a context so the engine can
 	// scope the lookup to the request's tenant when multi-tenancy is on.
-	GetUserByIdentifier       func(context.Context, string) (LoginUserRecord, error)
-	GetUserByID               func(context.Context, string) (LoginUserRecord, error)
-	UpdatePasswordHash        func(string, string) error
-	GetTOTPSecret             func(context.Context, string) (*LoginTOTPRecord, error)
-	UpdateTOTPLastUsedCounter func(context.Context, string, int64) error
+	GetUserByIdentifier func(context.Context, string) (LoginUserRecord, error)
+	GetUserByID         func(context.Context, string) (LoginUserRecord, error)
+	UpdatePasswordHash  func(string, string) error
+	// UpdatePasswordHashInTenant, when set, replaces UpdatePasswordHash for
+	// the rehash-on-login write. The engine sets it only when multi-tenancy
+	// is enabled and the provider can scope the write to a tenant.
+	UpdatePasswordHashInTenant func(context.Context, string, string, string) error
+	GetTOTPSecret              func(context.Context, string) (*LoginTOTPRecord, error)
+	UpdateTOTPLastUsedCounter  func(context.Context, string, int64) error
 
 	VerifyPassword           func(string, string) (bool, error)
 	PasswordNeedsUpgrade     func(string) (bool, error)
@@ -402,7 +406,13 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 	if deps.PasswordUpgradeOnLogin {
 		if needsUpgrade, err := deps.PasswordNeedsUpgrade(user.PasswordHash); err == nil && needsUpgrade {
 			if upgradedHash, err := deps.HashPassword(password); err == nil {
-				if err := deps.UpdatePasswordHash(user.UserID, upgradedHash); err != nil {
+				var updateErr error
+				if deps.UpdatePasswordHashInTenant != nil {
+					updateErr = deps.UpdatePasswordHashInTenant(ctx, tenantID, user.UserID, upgradedHash)
+				} else {
+					updateErr = deps.UpdatePasswordHash(user.UserID, upgradedHash)
+				}
+				if updateErr != nil {
 					deps.Warn("goAuth: password hash upgrade update failed")
 				}
 			} else {

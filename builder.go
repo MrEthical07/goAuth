@@ -299,6 +299,11 @@ func (b *Builder) Build() (*Engine, error) {
 			return nil, errors.New("MultiTenant is enabled but the user provider does not implement TenantAwareUserProvider")
 		}
 		engine.tenantProvider = provider
+		// Optional: only a provider that can scope password writes to a
+		// tenant opts in. Without it the legacy by-ID write is unchanged.
+		if updater, ok := b.userProvider.(TenantAwarePasswordUpdater); ok {
+			engine.passwordUpdater = updater
+		}
 	}
 	if cfg.WebAuthn.Enabled {
 		provider, ok := b.userProvider.(WebAuthnCredentialProvider)
