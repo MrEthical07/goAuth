@@ -726,7 +726,12 @@ func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess 
 		return err
 	}
 
-	if err := s.redis.Set(ctx, key, encoded, pttl).Err(); err != nil {
+	// XX: the read and this write are not atomic. If the session was deleted
+	// in between (logout, refresh-reuse revocation, a role switch), a plain
+	// SET would write the stale blob back and resurrect a session that was
+	// just revoked, along with its old refresh hash.
+	err = s.redis.SetArgs(ctx, key, encoded, redis.SetArgs{Mode: "XX", TTL: pttl}).Err()
+	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	return nil
