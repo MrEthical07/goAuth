@@ -242,6 +242,26 @@ values between `0` and 1 minute; `0` means unset.
 | `TenantHeader`    | `string`| `"X-Tenant-ID"`| **Deprecated, no-op** — never read by the engine or middleware; tenant scoping comes only from `WithTenantID(ctx)` (lint: `tenant_header_noop`) |
 | `EnforceIsolation`| `bool` | `false`         | **Deprecated, no-op** — never gated anything; tenant enforcement is governed entirely by `Enabled` (lint: `tenant_enforce_isolation_noop`) |
 
+## Role Switch (`Config.RoleSwitch`)
+
+Zero value = disabled. With it disabled, behavior is exactly what it was before the feature existed. Requires the user provider to implement `RoleSwitchProvider` (`Build` fails otherwise). Role switching is only safe on routes validated in `ModeStrict`; read the [per-mode revocation table](role_switching.md#revocation-guarantee-per-validation-mode) before enabling it.
+
+| Field         | Type                          | Default | Description |
+|---------------|-------------------------------|---------|-------------|
+| `Enabled`     | `bool`                        | `false` | Turns `Engine.SwitchRole` on and adds the refresh role re-check (one provider call per refresh). When `false`, `SwitchRole` returns `ErrRoleSwitchDisabled` and changes nothing |
+| `StepUp`      | `map[string]RoleStepUpPolicy` | `nil`   | Proof required to switch **into** a role, keyed by target role. Keys must be registered roles. Setting it also makes MFA logins record a session assurance (`asa:` Redis key) |
+| `MaxAttempts` | `int`                         | `0` (= 10) | Switch attempts per (tenant, session) within `Cooldown` before `ErrRoleSwitchRateLimited` |
+| `Cooldown`    | `time.Duration`               | `0` (= 15m) | Rate-limit window for `MaxAttempts` |
+
+`RoleStepUpPolicy`:
+
+| Field        | Type            | Description |
+|--------------|-----------------|-------------|
+| `RequireMFA` | `bool`          | The session must hold a second-factor assurance (login MFA or an inline TOTP/backup-code proof). Needs `TOTP.Enabled` or `WebAuthn.Enabled` |
+| `MaxAge`     | `time.Duration` | `> 0`: the proof must be newer than this. With `RequireMFA=false` it means "recent authentication" (newest of session creation, MFA assurance, password proof). `0` = no age limit |
+
+> **See also:** [role_switching.md](role_switching.md)
+
 ## No-op sections: Cache (`Config.Cache`) and Database (`Config.Database`)
 
 Both structs are accepted for backward compatibility but are **never read by the
@@ -281,6 +301,7 @@ engine**:
 - TOTP.Issuer non-empty when TOTP enabled
 - MFA challenge TTL and attempt limits positive
 - WebAuthn (when enabled): RPID/RPDisplayName/RPOrigins present, valid attestation and user-verification enums, CeremonyTTL within 10s–10m; `RequireForLogin` requires `Enabled`
+- RoleSwitch: `MaxAttempts`, `Cooldown` and every `StepUp[...].MaxAge` are `>= 0`; `StepUp` keys are non-empty; `RequireMFA` requires `TOTP.Enabled` or `WebAuthn.Enabled`; `StepUp` keys must be registered roles and `Enabled` requires a `RoleSwitchProvider` (both checked by Builder)
 
 ## Config Linting
 
@@ -292,9 +313,10 @@ engine**:
 - `max_session_duration_caps_default` (warn) — explicit MaxSessionDuration below the default session lifetime (caps all sessions)
 - `max_session_duration_long` (warn) — effective session ceiling > 30 days
 - `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on `ModeStrict`-resolved routes
+- `role_switch_stateless_validation` (info) — `RoleSwitch.Enabled` with `ModeJWTOnly`/`ModeHybrid`; a pre-switch access token stays valid on routes resolved in those modes until it expires (see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode))
 - `*_noop` codes — config knobs that are accepted but never read by the engine (see the field tables above)
 
-The complete code list (25 codes: 8 INFO, 13 WARN, 4 HIGH) lives in
+The complete code list (28 codes: 10 INFO, 14 WARN, 4 HIGH) lives in
 [config_lint.md](config_lint.md).
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)

@@ -102,10 +102,49 @@ and reject a tenant mismatch:
 | Change password, account status, backup codes, TOTP, WebAuthn ceremonies | User-not-found |
 | `VerifyBackupCode`, `VerifyBackupCodeInTenant` (checked against the request tenant or the explicit `tenantID`; a miss also counts toward the backup-code limiter) | User-not-found |
 | `ListWebAuthnCredentials`, `RemoveWebAuthnCredential` | User-not-found |
+| `SwitchRole` (the session is read from the request tenant; a token minted in another tenant is session-not-found, never reaches the provider, and still consumes a switch-attempt slot under the request tenant. The account is resolved with the *session's* tenant and a foreign-tenant record is session-not-found) | Session-not-found |
+| Refresh role re-check (only with `RoleSwitch.Enabled`: `CanAssumeRole` is called with the session's own tenant, never a caller-supplied one) | No provider call for a foreign-tenant token |
 
 Refresh needs no explicit guard: the session is loaded from a key built with
 the context tenant, so a token minted in one tenant misses in another and
 fails closed.
+
+### Tenant-aware password writes
+
+`UserProvider.UpdatePasswordHash(userID, newHash)` addresses a user by ID
+alone, so it can write a hash the lookup never resolved for this tenant. A
+provider that implements the optional `TenantAwarePasswordUpdater` closes
+that:
+
+```go
+type TenantAwarePasswordUpdater interface {
+    UpdatePasswordHashInTenant(ctx context.Context, tenantID, userID, newHash string) error
+}
+```
+
+When `MultiTenant.Enabled` is true **and** the provider implements it, the
+engine calls it instead of `UpdatePasswordHash` in all three places a hash is
+written, always with the tenant goAuth resolved itself:
+
+| Writer | Tenant passed |
+|--------|---------------|
+| `ChangePassword` | the resolved user's tenant |
+| Password-reset confirm | the tenant the reset record is bound to |
+| Rehash-on-login | the login's resolved tenant |
+
+Otherwise (multi-tenancy off, or the provider does not implement it) behavior
+is exactly as before and error mapping is unchanged. The implementation must
+constrain the write to `tenantID` and return an error when the user belongs to
+another tenant.
+
+### Reading the tenant back
+
+`goAuth.TenantIDFromContext(ctx)` returns the tenant attached with
+`WithTenantID` as `(tenant, true)`, or `("", false)` when none is attached. It
+never synthesizes the internal default `"0"` (an explicitly attached `"0"` is
+returned as `"0", true`), so a caller can tell "no tenant set" from "tenant
+0". Attach the tenant once, in your HTTP layer; code downstream (including
+your provider implementations) can read it back from the same context.
 
 ## Enumeration resistance
 
@@ -159,6 +198,10 @@ lint warning when set; none affects behavior.
 3. Attach the tenant to every request context with `WithTenantID`.
 4. Set `MultiTenant.Enabled = true`. The build now fails fast if step 1 was
    missed.
+5. Optional: also implement `TenantAwarePasswordUpdater` so password-hash
+   writes are tenant-scoped too (see above).
+6. If you enable [role switching](role_switching.md), `RoleSwitchProvider`'s
+   `CanAssumeRole` receives the session's tenant; scope it by that tenant.
 
 Turning the switch on changes where reset and verification records are
 stored, from the user's tenant to the request's. In-flight reset and
@@ -172,3 +215,4 @@ unchanged.
 - [security-model.md](security-model.md) — threat model
 - [audit.md](audit.md) — audit event shape and `TenantID`
 - [session.md](session.md) — tenant-scoped session keys
+- [role_switching.md](role_switching.md) — tenant-scoped role switching

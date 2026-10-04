@@ -13,6 +13,7 @@ For module-level details, see the linked module docs. For configuration, see [co
 - [Login (with MFA)](#login-with-mfa)
 - [Confirm MFA Login](#confirm-mfa-login)
 - [Refresh Rotation](#refresh-rotation)
+- [Role Switch](#role-switch)
 - [Validate (JWT-Only / Hybrid / Strict)](#validate)
 - [Logout (Single Session)](#logout-single-session)
 - [Logout by Access Token](#logout-by-access-token)
@@ -242,10 +243,78 @@ if result.MFARequired {
 | `ErrAccountDisabled/Locked/Deleted` | Account compromised |
 | `ErrDeviceBindingRejected` | IP/UA mismatch in enforce mode |
 
+### Role re-check (only with `RoleSwitch.Enabled`)
+
+Before step 2 the engine reads the session read-only and, only if it exists, is unexpired and the presented token matches, calls `RoleSwitchProvider.CanAssumeRole(sessionTenant, userID, session.Role)`. `false` deletes the session and returns `ErrRoleNotAllowed` (audit `refresh_invalid`, reason `role_revoked`); a provider error returns `ErrSystemUnavailable` without rotating or deleting. Missing, expired and mismatching sessions skip the re-check, so reuse handling is unchanged. Cost: one extra GET and one provider call per refresh. With the feature off none of this runs. See [role_switching.md](role_switching.md#refresh-semantics).
+
 ### Caller Usage
 
 ```go
 newAccess, newRefresh, err := engine.Refresh(ctx, oldRefreshToken)
+```
+
+---
+
+## Role Switch {#role-switch}
+
+**Entry point:** `Engine.SwitchRole`
+
+### Steps
+
+1. **Disabled check** — `ErrRoleSwitchDisabled` unless `Config.RoleSwitch.Enabled`.
+2. **Decode refresh token** — `ErrRefreshInvalid` on failure, as Refresh.
+3. **Reserve a limiter slot** keyed by (request tenant, session ID), before any provider/Argon2/session work. Limited → `ErrRoleSwitchRateLimited`.
+4. **Read the session** read-only from the request tenant; missing/expired → `ErrSessionNotFound`; presented secret mismatch → handed to `RotateRefreshHash`, which deletes the session (`ErrRefreshReuse`, same metrics/audit/replay tracking as Refresh); device binding checked.
+5. **Same role** → `ErrRoleSwitchSameRole`; **unregistered role** → `ErrRoleNotAllowed` (no provider call).
+6. **Resolve the account** with the session's tenant; `ErrUserNotFound` → `ErrSessionNotFound`, any other lookup error → `ErrSystemUnavailable` (session untouched); account-status failures delete the session.
+7. **`CanAssumeRole`** → `ErrRoleNotAllowed` or `ErrSystemUnavailable`.
+8. **Step-up** for the target role (session assurance or inline TOTP/backup-code/password) → `ErrStepUpRequired`.
+9. **Atomic swap** — one Lua script re-applies the rotation script's checks and replaces the session, keeping `CreatedAt`/`ExpiresAt`, moving the assurance.
+10. **Issue tokens**, audit `role_switched`, reset the limiter.
+
+### Modules
+
+`internal/flows/role_switch.go` → `RunSwitchRole`; `session/role_swap.go` → `Store.SwapSession`
+
+### Stores / Limiters
+
+- `session.Store` (Peek, RotateRefreshHash on mismatch, SwapSession, GetAssurance)
+- `limiters.RoleSwitchLimiter` (`rl:roleswitch:*`)
+- `RoleSwitchProvider`, tenant-scoped `UserProvider` lookup
+
+### Invariants
+
+- The swap is atomic and never extends the session's absolute lifetime.
+- Replay protection is unchanged: a stale token revokes the session exactly as in Refresh.
+- Tenant comes from the request context; the provider is only ever called with the session's own tenant.
+- A pre-switch access token stays valid on `ModeHybrid`/`ModeJWTOnly` routes until it expires; only `ModeStrict` rejects it immediately — see the [per-mode revocation table](role_switching.md#revocation-guarantee-per-validation-mode).
+
+### Redis Op Budget
+
+1 GET (read) + 1 limiter script + 1 swap script, plus 1 GET for the assurance when the target role has a step-up policy.
+
+### Failure Modes
+
+| Error | Cause |
+|-------|-------|
+| `ErrRoleSwitchDisabled` | Feature off |
+| `ErrRefreshInvalid` / `ErrSessionNotFound` | Malformed token / no such (or expired, or foreign-tenant) session |
+| `ErrRefreshReuse` | Token is not the session's current one — session destroyed |
+| `ErrRoleSwitchSameRole` | Target equals the current role |
+| `ErrRoleNotAllowed` | Unregistered role, or the provider says no |
+| `ErrStepUpRequired` | Policy unsatisfied (result carries the accepted factors) |
+| `ErrRoleSwitchRateLimited` | Attempt budget exhausted |
+| `ErrAccountDisabled/Locked/Deleted`, `ErrAccountUnverified` | Account no longer usable — session deleted |
+| `ErrDeviceBindingRejected` | IP/UA mismatch in enforce mode |
+| `ErrSystemUnavailable` | Provider (account lookup or `CanAssumeRole`) or Redis failure; session untouched |
+
+### Caller Usage
+
+```go
+res, err := engine.SwitchRole(ctx, refreshToken, "admin", goAuth.RoleSwitchOptions{})
+if errors.Is(err, goAuth.ErrStepUpRequired) {
+    // res.StepUpFactors lists what to ask for; call again with MFAType/MFACode or Password
+}
 ```
 
 ---
@@ -281,6 +350,7 @@ newAccess, newRefresh, err := engine.Refresh(ctx, oldRefreshToken)
 ### Invariants
 
 - JWT-Only: zero Redis, zero allocations beyond claims.
+- Hybrid and JWT-only never see a role switch until the access token expires; see the [per-mode revocation table](role_switching.md#revocation-guarantee-per-validation-mode). Routes that gate on role or permissions must resolve to Strict.
 - Strict: fail closed on Redis unavailability (`ErrStrictBackendDown`).
 - Version drift deletes stale session.
 
@@ -406,7 +476,7 @@ err := engine.LogoutAll(ctx, userID)
 3. **Reuse check** — reject if new password matches current hash.
 4. **Policy check** — min length, max bytes.
 5. **Hash new password** — `password.Argon2.Hash`.
-6. **Update hash** — `UserProvider.UpdatePasswordHash`.
+6. **Update hash** — `UserProvider.UpdatePasswordHash` (or `TenantAwarePasswordUpdater.UpdatePasswordHashInTenant` with the resolved tenant when `MultiTenant.Enabled` and the provider implements it).
 7. **Invalidate sessions** — `session.Store.DeleteAllForUser`.
 8. **Audit emit** — `password_change_success` or `password_change_invalid_old`.
 9. **Metrics** — `MetricPasswordChangeSuccess` / `MetricPasswordChangeInvalidOld` / `MetricPasswordChangeReuseRejected`.
@@ -466,7 +536,7 @@ challenge, err := engine.RequestPasswordReset(ctx, "alice@example.com")
 3. **MFA verify** (if applicable) — TOTP or backup code.
 4. **Password policy** — min length, max bytes, reuse check.
 5. **Hash new password** — `password.Argon2.Hash`.
-6. **Update hash** — `UserProvider.UpdatePasswordHash`.
+6. **Update hash** — `UserProvider.UpdatePasswordHash` (or `TenantAwarePasswordUpdater.UpdatePasswordHashInTenant` with the resolved tenant when `MultiTenant.Enabled` and the provider implements it).
 7. **Invalidate sessions** — `session.Store.DeleteAllForUser`.
 8. **Audit emit** — `password_reset_confirm_success` or failure.
 9. **Metrics** — `MetricPasswordResetConfirmSuccess` / `MetricPasswordResetConfirmFailure` / `MetricPasswordResetAttemptsExceeded`.

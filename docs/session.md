@@ -17,6 +17,9 @@ The `session` package provides Redis-backed session persistence and compact bina
 | `Delete` | `(ctx, tenantID, sessionID string) error` | Idempotent session deletion |
 | `DeleteAllForUser` | `(ctx, tenantID, userID string) error` | Remove all sessions for a user |
 | `RotateRefreshHash` | `(ctx, tenantID, sessionID string, old, new [32]byte) (*Session, error)` | Atomic Lua rotation |
+| `SwapSession` | `(ctx, tenantID, oldSessionID string, presented [32]byte, next *Session, assurance *Assurance) error` | Atomic Lua swap of one session for another (role switch); same checks and failure side effects as rotation |
+| `Peek` | `(ctx, tenantID, sessionID string) (*Session, error)` | Raw read: no expiry filter, no schema migration, no write |
+| `SaveAssurance` / `GetAssurance` | `(ctx, tenantID, sessionID string, ...)` | Step-up assurance, stored beside (not inside) the session |
 | `TenantSessionCount` | `(ctx, tenantID string) (int, error)` | Current session count for tenant |
 | `ActiveSessionCount` | `(ctx, tenantID, userID string) (int, error)` | User's active session count |
 | `ActiveSessionIDs` | `(ctx, tenantID, userID string) ([]string, error)` | List user's session IDs |
@@ -52,6 +55,10 @@ type Session struct {
 Wire format: `[version][userID_len][userID][tenantID_len][tenantID][role_len][role][permV][roleV][acctV][status][mask_len][mask][refreshHash][ipHash][uaHash][createdAt][expiresAt]`
 
 Supports decoding v1–v5 with forward migration (missing fields get safe defaults).
+
+### Session assurance (role-switch step-up)
+
+When `Config.RoleSwitch.StepUp` is non-empty, a session issued after a successful second factor also gets a Redis key `asa:<tenant>:<sessionID>` holding the MFA-verified time, the factor (`totp`, `backup_code`, `webauthn`) and the last-proof time. It lives **outside** the session blob, so the v5 wire format and `golden_bytes_test.go` are unchanged. Its TTL is the session's remaining absolute lifetime; `SwapSession` moves it to the new session ID; an assurance orphaned by a logout expires by TTL (the delete scripts are untouched). With no `StepUp` configured no `asa:` key is ever written. Sessions created before step-up was configured have none. See [role_switching.md](role_switching.md#step-up).
 
 ### Errors
 
@@ -130,7 +137,8 @@ rotated, err := store.RotateRefreshHash(ctx, "tenant-0", "sid-abc", oldHash, new
 - First Lua call may use 2 commands (EVALSHA miss + EVAL fallback); subsequent calls are 1.
 - `Delete` is idempotent — deleting a non-existent session succeeds silently.
 - Counter can never go negative (Lua script clamps at 0).
-- Session schema migration happens transparently on `Decode` — v1–v4 sessions are read-compatible.
+- Session schema migration happens transparently on `Decode` — v1–v4 sessions are read-compatible. The one-time rewrite uses `SET ... XX`, so a read of a legacy session can never recreate a session that was deleted (logout, reuse revocation, role switch) between the read and the rewrite.
+- `SwapSession` refuses a replacement ID that is empty, equal to the old ID, or held by a live session (`ErrSessionIDInUse`; checked after the rotate-equivalent checks, before any write). It re-reads the old session and applies the rotation script's checks in the same order; a refresh-hash mismatch deletes the old session exactly as a rotation does. It touches keys in more than one hash slot, like the rotation script.
 
 ## Architecture
 
@@ -188,3 +196,4 @@ The store is injected into the engine and consumed by login, refresh, validate, 
 - [JWT](jwt.md)
 - [Introspection](introspection.md)
 - [Device Binding](device_binding.md)
+- [Role Switching](role_switching.md)

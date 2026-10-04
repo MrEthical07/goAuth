@@ -110,7 +110,8 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 | `ConfirmLoginMFAWithType` | `engine.ConfirmLoginMFAWithType(ctx, challengeID, code, mfaType)` | `ctx`, `challengeID string`, `code string`, `mfaType string` (`"totp"` or `"backup"`) | `(*LoginResult, error)` |
 | `LoginWithTOTP` | `engine.LoginWithTOTP(ctx, username, password, totpCode)` | `ctx`, `username`, `password`, `totpCode string` | `(accessToken, refreshToken, error)` |
 | `LoginWithBackupCode` | `engine.LoginWithBackupCode(ctx, username, password, backupCode)` | `ctx`, `username`, `password`, `backupCode string` | `(accessToken, refreshToken, error)` |
-| `Refresh` | `engine.Refresh(ctx, refreshToken)` | `ctx`, `refreshToken string` | `(newAccess string, newRefresh string, err error)` |
+| `Refresh` | `engine.Refresh(ctx, refreshToken)` | `ctx`, `refreshToken string` | `(newAccess string, newRefresh string, err error)`; with `RoleSwitch.Enabled` it first re-checks that the session's role is still held (`ErrRoleNotAllowed` ends the session) |
+| `SwitchRole` | `engine.SwitchRole(ctx, refreshToken, targetRole, opts)` | `ctx`, `refreshToken string`, `targetRole string`, `opts RoleSwitchOptions` | `(*RoleSwitchResult, error)`; swaps the session for one carrying `targetRole`. Result is non-nil only on success or with `ErrStepUpRequired`. See [role_switching.md](role_switching.md) |
 
 ### 5.3 Token Validation and Permissions
 

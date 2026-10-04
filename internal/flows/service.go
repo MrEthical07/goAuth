@@ -28,6 +28,10 @@ func (s Service) Refresh(ctx context.Context, refreshToken string) RefreshResult
 	return RunRefresh(ctx, refreshToken, s.deps.Refresh)
 }
 
+func (s Service) SwitchRole(ctx context.Context, refreshToken, targetRole string, opts RoleSwitchOptions) RoleSwitchResult {
+	return RunSwitchRole(ctx, refreshToken, targetRole, opts, s.deps.RoleSwitch)
+}
+
 func (s Service) Validate(ctx context.Context, tokenStr string, routeMode int) ValidateResult {
 	return RunValidate(ctx, tokenStr, routeMode, s.deps.Validate)
 }

@@ -2,6 +2,7 @@ package flows
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"time"
 
@@ -22,6 +23,12 @@ const (
 	RefreshFailureUnverified
 	RefreshFailureIssueAccess
 	RefreshFailureEncode
+	// RefreshFailureRoleRevoked: the role-switch re-check found that the
+	// session's role is no longer held. The session was deleted.
+	RefreshFailureRoleRevoked
+	// RefreshFailureRoleCheck: the re-check could not reach the provider.
+	// Nothing was rotated or deleted.
+	RefreshFailureRoleCheck
 )
 
 // RefreshResult carries either the issued token pair or failure metadata.
@@ -47,6 +54,15 @@ type RefreshSessionStore interface {
 	Delete(ctx context.Context, tenantID, sessionID string) error
 }
 
+// RefreshRoleRecheck is the optional pre-rotation check that the session's
+// current role is still held. It is wired only while role switching is
+// enabled; a nil RefreshDeps.RoleRecheck leaves refresh exactly as it was.
+type RefreshRoleRecheck struct {
+	Peek          func(ctx context.Context, tenantID, sessionID string) (*session.Session, error)
+	CanAssumeRole func(ctx context.Context, tenantID, userID, role string) (bool, error)
+	Now           func() time.Time
+}
+
 // RefreshDeps captures refresh flow dependencies.
 type RefreshDeps struct {
 	TenantIDFromContext       func(context.Context) string
@@ -64,6 +80,80 @@ type RefreshDeps struct {
 	SessionStore              RefreshSessionStore
 	RefreshHashMismatch       error
 	RedisNil                  error
+
+	// RoleRecheck, when non-nil, confirms the session's role is still held
+	// before the refresh token is rotated.
+	RoleRecheck *RefreshRoleRecheck
+}
+
+type replayTracker interface {
+	TrackReplayAnomaly(ctx context.Context, sessionID string, ttl time.Duration) error
+}
+
+// trackRefreshReuse records a replay anomaly for a reused refresh token when
+// replay tracking is on. Refresh and role switching share it so both treat
+// reuse identically.
+func trackRefreshReuse(
+	ctx context.Context,
+	store replayTracker,
+	enabled bool,
+	sessionID string,
+	lifetime func() time.Duration,
+	warn func(string, ...any),
+) {
+	if !enabled {
+		return
+	}
+	if err := store.TrackReplayAnomaly(ctx, sessionID, lifetime()); err != nil && warn != nil {
+		warn("goAuth: replay anomaly tracking failed")
+	}
+}
+
+// runRefreshRoleRecheck reads the session without mutating it and, only if
+// it exists, is unexpired and the presented token matches its current
+// secret, asks the provider whether the session's role is still held. Every
+// other case reports "no decision" so the normal rotation runs unchanged and
+// reuse detection and deletion behave exactly as without the re-check.
+func runRefreshRoleRecheck(
+	ctx context.Context,
+	tenantID, sessionID string,
+	providedHash [32]byte,
+	deps RefreshDeps,
+) (RefreshResult, bool) {
+	rc := deps.RoleRecheck
+	sess, err := rc.Peek(ctx, tenantID, sessionID)
+	if err != nil || sess == nil {
+		return RefreshResult{}, false
+	}
+	if sess.ExpiresAt <= rc.Now().Unix() {
+		return RefreshResult{}, false
+	}
+	if subtle.ConstantTimeCompare(sess.RefreshHash[:], providedHash[:]) != 1 {
+		return RefreshResult{}, false
+	}
+
+	held, err := rc.CanAssumeRole(ctx, sess.TenantID, sess.UserID, sess.Role)
+	if err != nil {
+		return RefreshResult{
+			Failure:   RefreshFailureRoleCheck,
+			Err:       err,
+			TenantID:  sess.TenantID,
+			SessionID: sessionID,
+			UserID:    sess.UserID,
+			Session:   sess,
+		}, true
+	}
+	if held {
+		return RefreshResult{}, false
+	}
+	_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+	return RefreshResult{
+		Failure:   RefreshFailureRoleRevoked,
+		TenantID:  sess.TenantID,
+		SessionID: sessionID,
+		UserID:    sess.UserID,
+		Session:   sess,
+	}, true
 }
 
 // RunRefresh executes refresh rotation and issuance logic without root package dependencies.
@@ -75,6 +165,12 @@ func RunRefresh(ctx context.Context, refreshToken string, deps RefreshDeps) Refr
 			Failure:  RefreshFailureDecode,
 			Err:      err,
 			TenantID: tenantID,
+		}
+	}
+
+	if deps.RoleRecheck != nil {
+		if result, decided := runRefreshRoleRecheck(ctx, tenantID, sessionID, deps.HashRefreshSecret(providedSecret), deps); decided {
+			return result
 		}
 	}
 
@@ -98,11 +194,7 @@ func RunRefresh(ctx context.Context, refreshToken string, deps RefreshDeps) Refr
 	if err != nil {
 		switch {
 		case deps.RefreshHashMismatch != nil && errors.Is(err, deps.RefreshHashMismatch):
-			if deps.EnableReplayTracking {
-				if trackErr := deps.SessionStore.TrackReplayAnomaly(ctx, sessionID, deps.SessionLifetime()); trackErr != nil && deps.Warn != nil {
-					deps.Warn("goAuth: replay anomaly tracking failed")
-				}
-			}
+			trackRefreshReuse(ctx, deps.SessionStore, deps.EnableReplayTracking, sessionID, deps.SessionLifetime, deps.Warn)
 			return RefreshResult{
 				Failure:   RefreshFailureReuse,
 				Err:       err,

@@ -88,6 +88,7 @@ if needs, _ := hasher.NeedsUpgrade(oldHash); needs {
 - Config validation runs at `NewArgon2` time — invalid params fail early.
 - `NeedsUpgrade` returns true when stored hash uses different parameters than current config.
 - Enable `Config.Password.UpgradeOnLogin` to automatically re-hash on successful login.
+- Hash writes (`ChangePassword`, password-reset confirm and rehash-on-login) call `UserProvider.UpdatePasswordHash`, or, when `MultiTenant.Enabled` and the provider implements the optional `TenantAwarePasswordUpdater`, `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)` with the tenant goAuth resolved. See [multi_tenancy.md](multi_tenancy.md#tenant-aware-password-writes).
 
 ## Architecture
 

@@ -7,6 +7,182 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-10-04
+
+Minor release (SemVer): additive only. `gorelease -base=v0.6.2` reports **no
+incompatible changes** (everything it lists is `added`) and suggests v0.7.0.
+Nothing is removed or altered: no exported signature changed, `Config` only
+gained a field, and the new provider capabilities are optional interfaces
+detected by type assertion. **With the new features unused (the defaults),
+behavior is byte-for-byte what it was in v0.6.2:** the same session bytes in
+Redis (`session/golden_bytes_test.go` passes unmodified), the same
+access-token claims, the same errors, audit events and metrics output, and no
+extra Redis or provider calls. This was checked by running one scenario
+(login, refresh, hybrid/JWT-only/strict validation, a reused refresh token and a
+malformed one) against the v0.6.2 tag and against this release with role
+switching off: identical Redis command sequences, claim sets, errors, audit
+events and metric counters, now pinned by `TestRoleSwitchDisabledMatchesV062`.
+
+`gorelease -base=v0.6.2` (compatible changes only):
+
+```
+# github.com/MrEthical07/goAuth
+(*Engine).SwitchRole, Config.RoleSwitch, RoleSwitchConfig, RoleStepUpPolicy,
+RoleSwitchOptions, RoleSwitchResult, RoleSwitchProvider,
+TenantAwarePasswordUpdater, TenantIDFromContext,
+ErrRoleSwitchDisabled, ErrRoleNotAllowed, ErrRoleSwitchSameRole,
+ErrStepUpRequired, ErrRoleSwitchRateLimited and their five Code* constants: added
+
+# github.com/MrEthical07/goAuth/session
+(*Store).SwapSession, (*Store).Peek, (*Store).SaveAssurance, (*Store).GetAssurance,
+Assurance, EncodeAssurance, DecodeAssurance, ErrAssuranceCorrupt: added
+
+# summary
+Suggested version: v0.7.0
+```
+
+### Added
+
+- **Session role switching: `Engine.SwitchRole(ctx, refreshToken, targetRole,
+  opts) (*RoleSwitchResult, error)`.** One authenticated session can change
+  which of the account's roles it acts as, without logging in again. The
+  session is identified by its refresh token (single-use, the same proof
+  `Refresh` uses) and the tenant comes from the request context. The provider
+  decides whether the account may hold the role; goAuth swaps the session
+  atomically, keeping the old session's `CreatedAt`/`ExpiresAt` so switching
+  can never extend a session past its absolute lifetime or
+  `MaxSessionDuration`. Other sessions of the user are untouched and login-time
+  `SessionHardening` is not re-run. The result is non-nil only on success or
+  alongside `ErrStepUpRequired`. Off by default; see
+  [docs/role_switching.md](docs/role_switching.md).
+  - `Config.RoleSwitch` (`Enabled`, `StepUp`, `MaxAttempts`, `Cooldown`),
+    deep-copied by `WithConfig`, validated by `Validate`/`Build`, with a
+    `role_switch_stateless_validation` lint (info) for `ModeJWTOnly`/`ModeHybrid`.
+    Presets are unchanged.
+  - `RoleSwitchProvider` — optional `UserProvider` capability,
+    `CanAssumeRole(ctx, tenantID, userID, role) (bool, error)`. It must return
+    true for the account's primary role. A yes/no check was chosen over an
+    allowed-roles list: nothing to enumerate, and one call serves both the
+    switch and the refresh re-check. `Build` fails when `RoleSwitch.Enabled`
+    and the provider lacks it.
+  - Step-up policies per target role (`RoleStepUpPolicy{RequireMFA, MaxAge}`),
+    satisfied by an MFA assurance recorded at login, or inline with a TOTP or
+    backup code, or (recent-authentication policies) the password through the
+    `VerifyPassword` path and its limiter. The assurance is stored outside the
+    session blob in `asa:<tenant>:<sessionID>` (written only when `StepUp` is
+    set), so session bytes never change. WebAuthn as an inline factor is a
+    follow-up; a fresh WebAuthn login does satisfy a `RequireMFA` policy.
+  - A per-session attempt limiter (`rl:roleswitch:*`, default 10 per 15 minutes,
+    atomic reserve before any provider, Argon2 or session work, fails open).
+  - Five new sentinels with codes, categories, mapping and audit codes:
+    `ErrRoleSwitchDisabled`, `ErrRoleNotAllowed` (`AUTH_STATE`),
+    `ErrRoleSwitchSameRole` (`AUTH_VALIDATION`), `ErrStepUpRequired`
+    (`AUTH_STATE`), `ErrRoleSwitchRateLimited` (`AUTH_ABUSE`). Decode,
+    not-found, expired and reuse outcomes return exactly the errors `Refresh`
+    returns (`ErrRefreshInvalid`, `ErrSessionNotFound`, `ErrRefreshReuse`).
+    During a switch only `ErrUserNotFound` from the account lookup (which includes
+    the tenant-mismatch backstop) means the session is gone; any other lookup
+    error is a provider outage and returns `ErrSystemUnavailable` with the session
+    untouched, so the same refresh token works on retry. Return
+    `goAuth.ErrUserNotFound` for a missing user from `GetUserByID` /
+    `GetUserByIDInTenant`.
+  - Audit events `role_switched` and `role_switch_failed` (reasons `disabled`,
+    `invalid_session`, `reuse_detected`, `same_role`, `not_allowed`,
+    `step_up_required`, `rate_limited`, `account_status`, `unavailable`).
+    No metric IDs were added.
+  - `session.Store.SwapSession` (one Lua script re-applying the rotation
+    script's checks in the same order, then swapping the sessions, index entry
+    and assurance), `Peek`, `SaveAssurance`/`GetAssurance` and the `Assurance`
+    type. The existing scripts are unchanged. `SwapSession` refuses a
+    replacement session ID that is empty, equal to the old one, or already held by
+    a live session (`session.ErrSessionIDInUse`, checked after every
+    rotate-equivalent check and before the first write, so nothing changes and a
+    stale refresh hash still gets the reuse outcome); `SwitchRole` always uses a
+    fresh random ID and reports that case as `ErrSystemUnavailable`.
+- **`TenantAwarePasswordUpdater`** — optional `UserProvider` capability,
+  `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)`. With
+  `MultiTenant.Enabled` and a provider that implements it, `ChangePassword`,
+  the password-reset confirm flow and rehash-on-login call it, with the tenant
+  goAuth resolved, instead of the by-ID `UpdatePasswordHash`. Otherwise
+  behavior and error mapping are exactly as before.
+- **`TenantIDFromContext(ctx) (string, bool)`** — reads back the tenant attached
+  with `WithTenantID`; `("", false)` when none is attached, never the internal
+  default `"0"` (an explicitly attached `"0"` is returned as `"0", true`).
+- Tests: per-mode revocation of the pre-switch access token (strict,
+  hybrid with Redis healthy and down, JWT-only, after `AccessTTL`), refresh/switch
+  reuse and race semantics (concurrent goroutines, run repeatedly), cross-tenant
+  and tenant-blind-provider cases, limiter, step-up, audit reasons, the swap
+  script against the rotation script's failure handling, and Redis
+  compatibility tests for the swap script (`TestRedisCompat_SwapSession*`).
+
+### Changed
+
+- **When `RoleSwitch.Enabled` is true, `Refresh` re-checks the session's role
+  before rotating.** If the session exists, is unexpired and the presented token
+  matches, the engine calls `CanAssumeRole(sessionTenant, userID,
+  session.Role)`. `false` deletes the session (audit `refresh_invalid`, reason
+  `role_revoked`) and returns `ErrRoleNotAllowed`: the session ends, with no
+  fallback to the primary role. A provider error neither rotates nor deletes and
+  returns `ErrSystemUnavailable`, so the same token works on retry. Missing,
+  expired and mismatching sessions skip the re-check, so reuse detection is
+  unchanged. This costs one extra Redis read and **one provider call per
+  refresh**, covering primary-role sessions too (so the provider must answer
+  true for the primary role); validation still makes no provider calls. With
+  the feature off `Refresh` is untouched.
+- When `RoleSwitch.StepUp` is non-empty, MFA logins (`ConfirmLoginMFA`,
+  `ConfirmLoginMFAWithType`, `LoginWithTOTP`, `LoginWithBackupCode`) record a
+  session assurance with one extra Redis write. With `StepUp` empty nothing is
+  written.
+- `Refresh`'s reuse handling (the three reuse metrics, the audit event and replay
+  tracking) was factored into helpers shared with `SwitchRole`; `Refresh`'s
+  observable behavior is unchanged.
+- Documentation: new `docs/role_switching.md`; updates to `config.md`,
+  `error-model.md`, `api-reference.md`, `goAuth-methods.md`, `session.md`,
+  `mfa.md`, `multi_tenancy.md`, `flows.md`, `security.md`, `migrations.md` and the
+  lint reference (now 28 codes: 10 INFO, 14 WARN, 4 HIGH).
+- New root source file `engine_roleswitch.go` (the per-subsystem pattern of
+  `engine_webauthn.go`); the root source whitelist in
+  `.github/workflows/go-race.yml` was updated.
+
+### Fixed
+
+- **Session schema migration could recreate a deleted session.** Reading a
+  pre-v5 session blob and rewriting it as v5 was a read followed by a plain
+  `SET`. A session deleted in between (logout, refresh-reuse revocation, or now a
+  role switch) could be written back with its old refresh hash, un-revoking it.
+  The rewrite now uses `SET ... XX`, so it only ever updates a key that still
+  exists. Only sessions written under an older schema were ever exposed.
+
+### Security
+
+- **Role switching is only safe on routes validated with `ModeStrict`.** After a
+  switch the old refresh token is dead at once in every mode, and a strict route
+  rejects the old access token on its next use. On **`ModeHybrid` and
+  `ModeJWTOnly` routes the pre-switch access token is still accepted, with its old
+  mask and an empty `Role`, until it expires** (worst case `JWT.AccessTTL`).
+  Hybrid never reads Redis, so this holds whether Redis is healthy or not; there
+  is no fallback path. Any route that gates on role or permissions must resolve
+  to `ModeStrict`; an explicit per-route `ModeStrict` override on a hybrid engine
+  is sufficient. The full table is in `docs/role_switching.md`, linked from
+  `flows.md` and `security.md`, and the `role_switch_stateless_validation` lint
+  flags the configuration.
+- **Replay protection is not weakened.** A switch presenting a stale refresh
+  token is refresh-token reuse: the session is deleted by the existing rotation
+  script and the existing metrics, audit event and replay tracking fire.
+  Concurrent switch and refresh with the same token has exactly one winner; the
+  loser is reuse-with-deletion (refresh won first) or not-found (switch won
+  first), never a second live session.
+- Inline step-up never treats an unenrolled factor as proof: the shared TOTP
+  verifier returns success for a user who has no TOTP (it is meant for optional
+  sensitive-action prompts), which would have made any code a valid proof here,
+  so the engine checks enrollment first (`ErrTOTPNotConfigured`).
+- Tenant handling: the session is read from the request tenant, the account is
+  resolved with the session's tenant (a foreign-tenant record from a tenant-blind
+  provider is rejected), and the provider is only ever called with the session's
+  own tenant. Wrong-tenant attempts consume limiter slots.
+- `TenantAwarePasswordUpdater` closes the by-ID password-write gap for
+  multi-tenant deployments whose providers can scope the write (opt-in).
+
 ## [0.6.2] - 2026-09-30
 
 Patch release (SemVer): a drop-in replacement for v0.6.0 and v0.6.1. No exported API

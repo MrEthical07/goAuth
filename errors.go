@@ -80,6 +80,11 @@ const (
 	CodeAuthInvalidRouteMode               AuthCode = "AUTH_INVALID_ROUTE_MODE"
 	CodeSystemUnavailableStrictBackend     AuthCode = "SYSTEM_UNAVAILABLE_STRICT_BACKEND"
 	CodeAuthRefreshInvalid                 AuthCode = "AUTH_REFRESH_INVALID"
+	CodeAuthRoleSwitchDisabled             AuthCode = "AUTH_ROLE_SWITCH_DISABLED"
+	CodeAuthRoleNotAllowed                 AuthCode = "AUTH_ROLE_NOT_ALLOWED"
+	CodeAuthRoleSwitchSameRole             AuthCode = "AUTH_ROLE_SWITCH_SAME_ROLE"
+	CodeAuthStepUpRequired                 AuthCode = "AUTH_STEP_UP_REQUIRED"
+	CodeAuthRoleSwitchRateLimited          AuthCode = "AUTH_ROLE_SWITCH_RATE_LIMITED"
 	CodeAuthRefreshReuseDetected           AuthCode = "AUTH_REFRESH_REUSE_DETECTED"
 	CodeAuthPermissionDenied               AuthCode = "AUTH_PERMISSION_DENIED"
 	CodeSystemEngineNotReady               AuthCode = "SYSTEM_ENGINE_NOT_READY"
@@ -266,6 +271,16 @@ var (
 	ErrRefreshInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthRefreshInvalid), "invalid refresh token")
 	// ErrRefreshReuse is an exported constant or variable used by the authentication engine.
 	ErrRefreshReuse = NewAuthError(CategoryAuthAbuse, string(CodeAuthRefreshReuseDetected), "refresh token reuse detected")
+	// ErrRoleSwitchDisabled is returned by SwitchRole when Config.RoleSwitch.Enabled is false.
+	ErrRoleSwitchDisabled = NewAuthError(CategoryAuthState, string(CodeAuthRoleSwitchDisabled), "role switching disabled")
+	// ErrRoleNotAllowed is returned when the account may not assume the target role: the provider said no, the role is unknown, or (during refresh) a role the session held was revoked.
+	ErrRoleNotAllowed = NewAuthError(CategoryAuthState, string(CodeAuthRoleNotAllowed), "role not allowed")
+	// ErrRoleSwitchSameRole is returned when the target role is the session's current role.
+	ErrRoleSwitchSameRole = NewAuthError(CategoryAuthValidation, string(CodeAuthRoleSwitchSameRole), "session already holds this role")
+	// ErrStepUpRequired is returned when the target role's step-up policy is not satisfied. Nothing switched.
+	ErrStepUpRequired = NewAuthError(CategoryAuthState, string(CodeAuthStepUpRequired), "step-up authentication required")
+	// ErrRoleSwitchRateLimited is returned when a session exceeded its role-switch attempt budget.
+	ErrRoleSwitchRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthRoleSwitchRateLimited), "role switch attempts rate limited")
 	// ErrPermissionDenied is an exported constant or variable used by the authentication engine.
 	ErrPermissionDenied = NewAuthError(CategoryAuthState, string(CodeAuthPermissionDenied), "permission denied")
 	// ErrEngineNotReady is an exported constant or variable used by the authentication engine.

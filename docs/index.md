@@ -15,6 +15,7 @@ This directory contains the authoritative documentation for the goAuth authentic
 | **Ops & scaling** | [ops.md](ops.md) → [performance.md](performance.md) → [capacity.md](capacity.md) |
 | **Security review** | [security.md](security.md) → [security-model.md](security-model.md) |
 | **Run multiple tenants** | [multi_tenancy.md](multi_tenancy.md) → [config.md § MultiTenant](config.md) |
+| **Let one session switch roles** | [role_switching.md](role_switching.md) → [config.md § Role Switch](config.md#role-switch-configroleswitch) |
 | **Full API surface** | [api-reference.md](api-reference.md) |
 | **Config tuning** | [config.md](config.md) → [config-presets.md](config-presets.md) → [config_lint.md](config_lint.md) |
 
@@ -40,6 +41,7 @@ Per-module guides covering primitives, usage examples, configuration, strategies
 | [introspection.md](introspection.md) | Session introspection: active sessions, health checks |
 | [device_binding.md](device_binding.md) | Device binding: IP/UA fingerprint enforcement |
 | [multi_tenancy.md](multi_tenancy.md) | Multi-tenancy: tenant-scoped user lookup, TenantAwareUserProvider, isolation guarantees |
+| [role_switching.md](role_switching.md) | Role switching: SwitchRole, RoleSwitchProvider, step-up, per-mode revocation table, race semantics |
 | [config.md](config.md) | Full configuration reference (all fields, defaults, types) |
 | [config-presets.md](config-presets.md) | Configuration presets: Default, HighSecurity, HighThroughput |
 | [config_lint.md](config_lint.md) | Configuration lint: severity levels, AsError helper |

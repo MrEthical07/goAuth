@@ -60,6 +60,9 @@ type Engine struct {
 	jwtManager            *jwt.Manager
 	userProvider          UserProvider
 	tenantProvider        TenantAwareUserProvider
+	passwordUpdater       TenantAwarePasswordUpdater
+	roleSwitchProvider    RoleSwitchProvider
+	roleSwitchLimiter     *limiters.RoleSwitchLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
 }
@@ -113,6 +116,18 @@ func (e *Engine) lookupUserByIDInTenant(ctx context.Context, tenantID, userID st
 		return UserRecord{}, ErrUserNotFound
 	}
 	return user, nil
+}
+
+// updatePasswordHash persists a new password hash for userID. When
+// multi-tenancy is enabled and the provider implements
+// [TenantAwarePasswordUpdater] the write is scoped to tenantID, the tenant
+// the caller resolved; otherwise it is exactly the legacy
+// [UserProvider.UpdatePasswordHash] call.
+func (e *Engine) updatePasswordHash(ctx context.Context, tenantID, userID, newHash string) error {
+	if e.passwordUpdater != nil {
+		return e.passwordUpdater.UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)
+	}
+	return e.userProvider.UpdatePasswordHash(userID, newHash)
 }
 
 type auditDispatcher = internalaudit.Dispatcher
@@ -387,11 +402,10 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 		})
 		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureReuse:
-		e.metricInc(MetricRefreshReuseDetected)
-		e.metricInc(MetricReplayDetected)
-		e.metricInc(MetricSessionInvalidated)
-		e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", result.TenantID, result.SessionID, ErrRefreshReuse, nil)
+		e.recordRefreshReuse(ctx, result.TenantID, result.SessionID)
 		return "", "", mapToAuthError(ErrRefreshReuse)
+	case internalflows.RefreshFailureRoleRevoked, internalflows.RefreshFailureRoleCheck:
+		return "", "", mapToAuthError(e.refreshRoleCheckFailure(ctx, result))
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, func() map[string]string {
@@ -448,6 +462,16 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 	e.emitAudit(ctx, auditEventRefreshSuccess, true, result.UserID, result.TenantID, result.SessionID, nil, nil)
 
 	return result.AccessToken, result.RefreshToken, nil
+}
+
+// recordRefreshReuse books a refresh-token reuse: the three reuse metrics
+// and the audit event. Refresh and SwitchRole share it so both treat a
+// reused token identically.
+func (e *Engine) recordRefreshReuse(ctx context.Context, tenantID, sessionID string) {
+	e.metricInc(MetricRefreshReuseDetected)
+	e.metricInc(MetricReplayDetected)
+	e.metricInc(MetricSessionInvalidated)
+	e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", tenantID, sessionID, ErrRefreshReuse, nil)
 }
 
 // ValidateAccess validates an access token using the engine's configured
@@ -847,7 +871,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		return mapToAuthError(ErrPasswordPolicy)
 	}
 
-	if err := e.userProvider.UpdatePasswordHash(userID, newHash); err != nil {
+	if err := e.updatePasswordHash(ctx, user.TenantID, userID, newHash); err != nil {
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, user.TenantID, "", err, func() map[string]string {
 			return map[string]string{
 				"reason": "update_hash_failed",
@@ -1014,6 +1038,7 @@ func (e *Engine) maxSessionLifetime() time.Duration {
 
 func (e *Engine) initFlowDeps() {
 	deps := internalflows.Deps{
+		RoleSwitch: e.roleSwitchFlowDeps(),
 		Refresh: internalflows.RefreshDeps{
 			TenantIDFromContext:       tenantIDFromContext,
 			DecodeRefreshToken:        internal.DecodeRefreshToken,
@@ -1030,6 +1055,7 @@ func (e *Engine) initFlowDeps() {
 			SessionStore:              e.sessionStore,
 			RefreshHashMismatch:       session.ErrRefreshHashMismatch,
 			RedisNil:                  redis.Nil,
+			RoleRecheck:               e.refreshRoleRecheck(),
 		},
 		Validate: internalflows.ValidateDeps{
 			ParseAccess: e.jwtManager.ParseAccess,
@@ -1608,6 +1634,11 @@ const (
 	auditErrInvalidCredentials    AuditErrorCode = "invalid_credentials"
 	auditErrRateLimited           AuditErrorCode = "rate_limited"
 	auditErrRefreshReuse          AuditErrorCode = "refresh_reuse"
+	auditErrRoleSwitchDisabled    AuditErrorCode = "role_switch_disabled"
+	auditErrRoleNotAllowed        AuditErrorCode = "role_not_allowed"
+	auditErrRoleSwitchSameRole    AuditErrorCode = "role_switch_same_role"
+	auditErrStepUpRequired        AuditErrorCode = "step_up_required"
+	auditErrRoleSwitchRateLimited AuditErrorCode = "role_switch_rate_limited"
 	auditErrInvalidToken          AuditErrorCode = "invalid_token"
 	auditErrSessionNotFound       AuditErrorCode = "session_not_found"
 	auditErrUserNotFound          AuditErrorCode = "user_not_found"
@@ -1730,6 +1761,16 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrRateLimited
 	case errors.Is(err, ErrRefreshReuse):
 		return auditErrRefreshReuse
+	case errors.Is(err, ErrRoleSwitchDisabled):
+		return auditErrRoleSwitchDisabled
+	case errors.Is(err, ErrRoleNotAllowed):
+		return auditErrRoleNotAllowed
+	case errors.Is(err, ErrRoleSwitchSameRole):
+		return auditErrRoleSwitchSameRole
+	case errors.Is(err, ErrStepUpRequired):
+		return auditErrStepUpRequired
+	case errors.Is(err, ErrRoleSwitchRateLimited):
+		return auditErrRoleSwitchRateLimited
 	case errors.Is(err, ErrRefreshInvalid),
 		errors.Is(err, ErrPasswordResetInvalid),
 		errors.Is(err, ErrEmailVerificationInvalid),
@@ -2700,6 +2741,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		},
 	}
 	e.configureLoginRateLimiterDeps(&deps)
+	e.configureLoginAssuranceDeps(&deps)
 	if e != nil && e.lockoutLimiter != nil && e.config.Security.AutoLockoutEnabled {
 		deps.AutoLockoutEnabled = true
 		deps.RecordLockoutFailure = func(ctx context.Context, userID string) (bool, error) {
@@ -2713,6 +2755,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	if e != nil && e.userProvider != nil {
 		e.configureLoginUserLookupDeps(&deps)
 		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
+		if e.passwordUpdater != nil {
+			deps.UpdatePasswordHashInTenant = e.passwordUpdater.UpdatePasswordHashInTenant
+		}
 		deps.GetTOTPSecret = func(ctx context.Context, userID string) (*internalflows.LoginTOTPRecord, error) {
 			record, err := e.userProvider.GetTOTPSecret(ctx, userID)
 			if err != nil {
@@ -3074,6 +3119,9 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 			}, nil
 		}
 		deps.UpdatePasswordHash = e.userProvider.UpdatePasswordHash
+		if e.passwordUpdater != nil {
+			deps.UpdatePasswordHashInTenant = e.passwordUpdater.UpdatePasswordHashInTenant
+		}
 	}
 	if e != nil && e.passwordHash != nil {
 		deps.HashPassword = e.passwordHash.Hash

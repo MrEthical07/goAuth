@@ -143,6 +143,95 @@ type TenantAwareUserProvider interface {
 	GetUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error)
 }
 
+// TenantAwarePasswordUpdater is an optional capability interface a
+// [UserProvider] can additionally implement to scope password-hash writes to
+// a single tenant. It is detected via type assertion at [Builder.Build] and
+// is consulted only when [Config.MultiTenant] is enabled; with it disabled,
+// or when the provider does not implement it, every writer keeps calling
+// [UserProvider.UpdatePasswordHash] exactly as before.
+//
+// [UserProvider.UpdatePasswordHash] addresses a user by ID alone, so in a
+// multi-tenant deployment it can overwrite a hash that the lookup path never
+// resolved for this tenant. When the capability is present the engine calls
+// UpdatePasswordHashInTenant instead, in all three places it writes a hash:
+// [Engine.ChangePassword], the password-reset confirm flow, and the
+// rehash-on-login upgrade. The tenantID is always the one the engine
+// resolved itself, never a caller-supplied value.
+//
+// Implementations MUST constrain the write to tenantID and return an error
+// (not silently succeed) when the user belongs to a different tenant.
+//
+//	Docs: docs/multi_tenancy.md
+type TenantAwarePasswordUpdater interface {
+	UpdatePasswordHashInTenant(ctx context.Context, tenantID, userID, newHash string) error
+}
+
+// RoleSwitchProvider is an optional capability interface a [UserProvider]
+// can additionally implement to enable [Engine.SwitchRole]. It is detected
+// via type assertion at [Builder.Build]; when [Config.RoleSwitch] is enabled
+// and the user provider does not implement it, Build fails. Existing
+// UserProvider implementations are unaffected while the feature is off.
+//
+// CanAssumeRole reports whether userID, in tenantID, currently holds role.
+// It MUST return true for the account's primary role (the one
+// [UserRecord.Role] carries) as well as for any other role the account
+// holds. goAuth calls it both when a session switches into a role and, on
+// every refresh while role switching is enabled, to confirm the session's
+// current role is still held -- including a session that never switched --
+// so a provider that answers false for the primary role ends every session
+// at its next refresh.
+//
+// The tenantID is always the one goAuth resolved itself from the session,
+// never a caller-supplied value. A single yes/no check was chosen over an
+// "allowed roles" list: there is nothing to enumerate or keep consistent,
+// and the same call serves both the switch and the refresh re-check.
+//
+// Return an error only for a backend failure; an unknown user or an unheld
+// role is (false, nil).
+//
+//	Docs: docs/role_switching.md
+type RoleSwitchProvider interface {
+	CanAssumeRole(ctx context.Context, tenantID, userID, role string) (bool, error)
+}
+
+// RoleSwitchOptions carries the optional inline proof for [Engine.SwitchRole].
+// Leave it zero when the target role's step-up policy is already satisfied by
+// the session, or to learn what the policy needs ([ErrStepUpRequired] reports
+// the accepted factors).
+type RoleSwitchOptions struct {
+	// MFAType selects an inline second-factor proof: "totp" or
+	// "backup_code". WebAuthn is not accepted inline; a session created by
+	// a WebAuthn login satisfies a RequireMFA policy on its own.
+	MFAType string
+	// MFACode is the code for MFAType.
+	MFACode string
+	// Password re-confirms the account password, which satisfies a
+	// recent-authentication policy (RequireMFA false, MaxAge set). It goes
+	// through the same verification and rate limiting as
+	// [Engine.VerifyPassword].
+	Password string
+}
+
+// RoleSwitchResult is the outcome of [Engine.SwitchRole]. It is non-nil only
+// on success, or alongside [ErrStepUpRequired].
+type RoleSwitchResult struct {
+	// AccessToken and RefreshToken are the new session's tokens. The
+	// presented refresh token is spent; always store these and discard the
+	// old pair.
+	AccessToken  string
+	RefreshToken string
+	// Role is the role the new session now carries.
+	Role string
+	// StepUpRequired is true only together with [ErrStepUpRequired], in
+	// which case no switch happened and the tokens are empty.
+	StepUpRequired bool
+	// StepUpFactors lists the inline factors the caller can supply, limited
+	// to those the user actually has: "totp", "backup_code" for a
+	// RequireMFA policy, "password" for a recent-authentication policy. It
+	// may be empty when only a fresh MFA login can satisfy the policy.
+	StepUpFactors []string
+}
+
 // UserRecord is the full account record returned by [UserProvider].
 // It carries credential hashes, status, role, and versioning counters.
 type UserRecord struct {

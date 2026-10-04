@@ -34,6 +34,7 @@ type Config struct {
 	Metrics           MetricsConfig
 	Security          SecurityConfig
 	MultiTenant       MultiTenantConfig
+	RoleSwitch        RoleSwitchConfig
 	Database          DatabaseConfig
 	Permission        PermissionConfig
 	Cache             CacheConfig
@@ -430,6 +431,58 @@ type MultiTenantConfig struct {
 
 /*
 ====================================
+ROLE SWITCH CONFIG
+====================================
+*/
+
+// RoleSwitchConfig controls in-session role switching ([Engine.SwitchRole]).
+// The zero value disables the feature, and a disabled engine behaves exactly
+// as it did before the feature existed: no extra Redis or provider calls on
+// login, refresh or validation.
+//
+// Enabling it requires the user provider to implement [RoleSwitchProvider]
+// (checked at [Builder.Build]). Role switching is only safe on routes
+// validated in [ModeStrict]; see docs/role_switching.md for the per-mode
+// revocation guarantee.
+//
+//	Docs: docs/config.md, docs/role_switching.md
+type RoleSwitchConfig struct {
+	// Enabled turns role switching on. Default: false. When false,
+	// SwitchRole returns [ErrRoleSwitchDisabled] and changes nothing.
+	Enabled bool
+
+	// StepUp maps a TARGET role to the proof required to switch into it.
+	// Keys must be registered roles. A target role with no entry needs no
+	// extra proof. See [RoleStepUpPolicy].
+	StepUp map[string]RoleStepUpPolicy
+
+	// MaxAttempts is how many switch attempts one session may make within
+	// Cooldown before [ErrRoleSwitchRateLimited]. Zero selects the default
+	// of 10. Attempts are counted per (tenant, session) and reset on a
+	// successful switch.
+	MaxAttempts int
+
+	// Cooldown is the rate-limit window for MaxAttempts. Zero selects the
+	// default of 15 minutes.
+	Cooldown time.Duration
+}
+
+// RoleStepUpPolicy is the proof required to switch into one target role.
+type RoleStepUpPolicy struct {
+	// RequireMFA requires the session to hold a second-factor assurance:
+	// either established at login (TOTP, backup code or WebAuthn) or proved
+	// inline through [RoleSwitchOptions]. It needs TOTP or WebAuthn enabled.
+	RequireMFA bool
+
+	// MaxAge, when > 0, bounds how old the proof may be. With RequireMFA it
+	// is the age of the second-factor assurance; without RequireMFA it means
+	// "recent authentication": the newer of the session's creation time and
+	// its last proof must be within MaxAge. Zero means no age limit.
+	MaxAge time.Duration
+}
+
+/*
+====================================
 DATABASE CONFIG
 ====================================
 */
@@ -755,6 +808,7 @@ func cloneConfig(cfg Config) Config {
 	out.JWT.PublicKey = cloneBytes(cfg.JWT.PublicKey)
 	out.JWT.VerifyKeys = cloneVerifyKeys(cfg.JWT.VerifyKeys)
 	out.WebAuthn.RPOrigins = cloneStrings(cfg.WebAuthn.RPOrigins)
+	out.RoleSwitch.StepUp = cloneStepUp(cfg.RoleSwitch.StepUp)
 	return out
 }
 
@@ -764,6 +818,17 @@ func cloneStrings(s []string) []string {
 	}
 	out := make([]string, len(s))
 	copy(out, s)
+	return out
+}
+
+func cloneStepUp(policies map[string]RoleStepUpPolicy) map[string]RoleStepUpPolicy {
+	if len(policies) == 0 {
+		return nil
+	}
+	out := make(map[string]RoleStepUpPolicy, len(policies))
+	for role, policy := range policies {
+		out[role] = policy
+	}
 	return out
 }
 
@@ -1281,6 +1346,25 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// RoleSwitch
+	if c.RoleSwitch.MaxAttempts < 0 {
+		return errors.New("RoleSwitch MaxAttempts must be >= 0 (0 = default)")
+	}
+	if c.RoleSwitch.Cooldown < 0 {
+		return errors.New("RoleSwitch Cooldown must be >= 0 (0 = default)")
+	}
+	for role, policy := range c.RoleSwitch.StepUp {
+		if strings.TrimSpace(role) == "" {
+			return errors.New("RoleSwitch StepUp keys must be non-empty role names")
+		}
+		if policy.MaxAge < 0 {
+			return errors.New("RoleSwitch StepUp MaxAge must be >= 0 (role \"" + role + "\")")
+		}
+		if policy.RequireMFA && !c.TOTP.Enabled && !c.WebAuthn.Enabled {
+			return errors.New("RoleSwitch StepUp RequireMFA requires TOTP or WebAuthn to be enabled (role \"" + role + "\")")
+		}
+	}
+
 	// Permission
 	switch c.Permission.MaxBits {
 	case 64, 128, 256, 512:
@@ -1518,6 +1602,11 @@ func (c *Config) Lint() LintResult {
 	if c.Account.AllowDuplicateIdentifierAcrossTenants {
 		warn(LintInfo, "account_duplicate_identifier_provider_owned",
 			"Account.AllowDuplicateIdentifierAcrossTenants is a provider-owned contract; goAuth cannot enforce identifier uniqueness it cannot query — implement the rule in your UserProvider schema")
+	}
+
+	if c.RoleSwitch.Enabled && (c.ValidationMode == ModeJWTOnly || c.ValidationMode == ModeHybrid) {
+		warn(LintInfo, "role_switch_stateless_validation",
+			"RoleSwitch is enabled with ValidationMode JWTOnly/Hybrid; a pre-switch access token stays valid on routes resolved in those modes until it expires — route role- or permission-gated endpoints through ModeStrict (see the per-mode revocation table in docs/role_switching.md)")
 	}
 
 	// --- Production readiness ---

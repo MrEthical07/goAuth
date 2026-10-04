@@ -4,6 +4,7 @@ package flows
 // request methods to the matching flow implementation.
 type Deps struct {
 	Refresh           RefreshDeps
+	RoleSwitch        RoleSwitchDeps
 	Validate          ValidateDeps
 	Logout            LogoutDeps
 	Introspection     IntrospectionDeps

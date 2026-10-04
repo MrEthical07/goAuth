@@ -77,7 +77,11 @@ type PasswordResetDeps struct {
 	GetUserByID         func(context.Context, string) (PasswordResetUser, error)
 	HashPassword        func(string) (string, error)
 	UpdatePasswordHash  func(string, string) error
-	LogoutAllInTenant   func(context.Context, string, string) error
+	// UpdatePasswordHashInTenant, when set, replaces UpdatePasswordHash. The
+	// engine sets it only when multi-tenancy is enabled and the provider can
+	// scope the write to a tenant.
+	UpdatePasswordHashInTenant func(context.Context, string, string, string) error
+	LogoutAllInTenant          func(context.Context, string, string) error
 
 	SaveResetRecord    func(context.Context, string, string, PasswordResetStoreRecord, time.Duration) error
 	GetResetRecord     func(context.Context, string, string) (PasswordResetStoreRecord, error)
@@ -385,7 +389,13 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 		return deps.Errors.PasswordPolicy
 	}
 
-	if err := deps.UpdatePasswordHash(record.UserID, newHash); err != nil {
+	var updateErr error
+	if deps.UpdatePasswordHashInTenant != nil {
+		updateErr = deps.UpdatePasswordHashInTenant(ctx, tenantID, record.UserID, newHash)
+	} else {
+		updateErr = deps.UpdatePasswordHash(record.UserID, newHash)
+	}
+	if err := updateErr; err != nil {
 		deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 		deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, record.UserID, user.TenantID, "", err, func() map[string]string {
 			return map[string]string{

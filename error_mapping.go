@@ -76,6 +76,11 @@ var publicAuthSentinels = []*AuthError{
 	ErrStrictBackendDown,
 	ErrRefreshInvalid,
 	ErrRefreshReuse,
+	ErrRoleSwitchDisabled,
+	ErrRoleNotAllowed,
+	ErrRoleSwitchSameRole,
+	ErrStepUpRequired,
+	ErrRoleSwitchRateLimited,
 	ErrPermissionDenied,
 	ErrEngineNotReady,
 	ErrProviderDuplicateIdentifier,
@@ -123,6 +128,10 @@ func mapToAuthError(err error) *AuthError {
 	case errors.Is(err, limiters.ErrPasswordVerifyRateLimited):
 		return WrapAuthError(ErrPasswordVerifyRateLimited, err)
 	case errors.Is(err, limiters.ErrPasswordVerifyUnavailable):
+		return WrapAuthError(ErrSystemUnavailable, err)
+	case errors.Is(err, limiters.ErrRoleSwitchRateLimited):
+		return WrapAuthError(ErrRoleSwitchRateLimited, err)
+	case errors.Is(err, limiters.ErrRoleSwitchUnavailable):
 		return WrapAuthError(ErrSystemUnavailable, err)
 	case errors.Is(err, limiters.ErrBackupCodeRateLimited):
 		return WrapAuthError(ErrBackupCodeRateLimited, err)

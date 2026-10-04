@@ -139,11 +139,15 @@ type LoginDeps struct {
 
 	// GetUserByIdentifier and GetUserByID take a context so the engine can
 	// scope the lookup to the request's tenant when multi-tenancy is on.
-	GetUserByIdentifier       func(context.Context, string) (LoginUserRecord, error)
-	GetUserByID               func(context.Context, string) (LoginUserRecord, error)
-	UpdatePasswordHash        func(string, string) error
-	GetTOTPSecret             func(context.Context, string) (*LoginTOTPRecord, error)
-	UpdateTOTPLastUsedCounter func(context.Context, string, int64) error
+	GetUserByIdentifier func(context.Context, string) (LoginUserRecord, error)
+	GetUserByID         func(context.Context, string) (LoginUserRecord, error)
+	UpdatePasswordHash  func(string, string) error
+	// UpdatePasswordHashInTenant, when set, replaces UpdatePasswordHash for
+	// the rehash-on-login write. The engine sets it only when multi-tenancy
+	// is enabled and the provider can scope the write to a tenant.
+	UpdatePasswordHashInTenant func(context.Context, string, string, string) error
+	GetTOTPSecret              func(context.Context, string) (*LoginTOTPRecord, error)
+	UpdateTOTPLastUsedCounter  func(context.Context, string, int64) error
 
 	VerifyPassword           func(string, string) (bool, error)
 	PasswordNeedsUpgrade     func(string) (bool, error)
@@ -156,6 +160,15 @@ type LoginDeps struct {
 	DeleteMFAChallenge func(context.Context, string) (bool, error)
 	RecordMFAFailure   func(context.Context, string, int) (bool, error)
 	MapMFAStoreError   func(error) error
+
+	// RecordAssurance, when set, records that the session just issued after
+	// a successful second factor holds an MFA assurance. It receives the
+	// refresh token of the new session (which names its ID) and the factor
+	// ("totp", "backup_code" or "webauthn"). The engine sets it only while
+	// role-switch step-up policies are configured; it is best effort, since
+	// a missing assurance only means a later step-up asks for the factor
+	// again.
+	RecordAssurance func(ctx context.Context, tenantID, refreshToken, method string, rememberMe bool)
 
 	CreateMFALoginChallenge func(context.Context, string, string, bool) (string, error)
 	IssueLoginSessionTokens func(context.Context, string, LoginUserRecord, string, bool) (string, string, error)
@@ -402,7 +415,13 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 	if deps.PasswordUpgradeOnLogin {
 		if needsUpgrade, err := deps.PasswordNeedsUpgrade(user.PasswordHash); err == nil && needsUpgrade {
 			if upgradedHash, err := deps.HashPassword(password); err == nil {
-				if err := deps.UpdatePasswordHash(user.UserID, upgradedHash); err != nil {
+				var updateErr error
+				if deps.UpdatePasswordHashInTenant != nil {
+					updateErr = deps.UpdatePasswordHashInTenant(ctx, tenantID, user.UserID, upgradedHash)
+				} else {
+					updateErr = deps.UpdatePasswordHash(user.UserID, upgradedHash)
+				}
+				if updateErr != nil {
 					deps.Warn("goAuth: password hash upgrade update failed")
 				}
 			} else {
@@ -718,12 +737,29 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, err
 	}
 
+	if deps.RecordAssurance != nil {
+		deps.RecordAssurance(ctx, record.TenantID, refresh, loginAssuranceMethod(mfaType), record.RememberMe)
+	}
+
 	deps.MetricInc(deps.Metrics.MFALoginSuccess)
 	deps.EmitAudit(ctx, deps.Events.MFASuccess, true, user.UserID, record.TenantID, "", nil, nil)
 	return &LoginResult{
 		AccessToken:  access,
 		RefreshToken: refresh,
 	}, nil
+}
+
+// loginAssuranceMethod maps the login confirmation type to the factor name
+// stored in a session assurance.
+func loginAssuranceMethod(mfaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mfaType)) {
+	case "backup":
+		return StepUpMethodBackupCode
+	case "webauthn":
+		return "webauthn"
+	default:
+		return StepUpMethodTOTP
+	}
 }
 
 // loadLoginTOTPRecord fetches and gates the user's TOTP record for the

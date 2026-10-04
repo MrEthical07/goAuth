@@ -50,6 +50,18 @@ The root package contains the authentication engine, builder, configuration, typ
 | `ConfirmLoginMFA` | method | Completes a pending MFA challenge with a TOTP code. |
 | `ConfirmLoginMFAWithType` | method | Completes a pending MFA challenge with a specified factor type (`totp`, `backup`, or `webauthn`). |
 
+### Role Switching
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `SwitchRole` | method | Replaces the session identified by a refresh token with one carrying a target role; returns a new token pair. Single-use proof, atomic, keeps the session's absolute lifetime. See [role_switching.md](role_switching.md). |
+| `RoleSwitchOptions` | struct | Optional inline step-up proof (`MFAType` `totp`/`backup_code` + `MFACode`, or `Password`). |
+| `RoleSwitchResult` | struct | Tokens + role; `StepUpRequired`/`StepUpFactors` accompany `ErrStepUpRequired`. Non-nil only on success or with `ErrStepUpRequired`. |
+| `RoleSwitchProvider` | interface | Optional `UserProvider` capability: `CanAssumeRole(ctx, tenantID, userID, role) (bool, error)`; must be true for the primary role. |
+| `RoleSwitchConfig` | type | `Config.RoleSwitch`: `Enabled`, `StepUp`, `MaxAttempts`, `Cooldown`. |
+| `RoleStepUpPolicy` | type | Per-target-role proof: `RequireMFA`, `MaxAge`. |
+| `ErrRoleSwitchDisabled`, `ErrRoleNotAllowed`, `ErrRoleSwitchSameRole`, `ErrStepUpRequired`, `ErrRoleSwitchRateLimited` | var | Role-switch sentinels (see [error-model.md](error-model.md)). `Refresh` also returns `ErrRoleNotAllowed` when the re-check finds the session's role revoked. |
+
 ### WebAuthn / FIDO2
 
 | Symbol | Kind | Description |
@@ -205,6 +217,8 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `MetricsConfig` | type | Counter/histogram enable flags. |
 | `PermissionConfig` | type | Bitmask width selection (64/128/256/512). |
 | `MultiTenantConfig` | type | Tenant isolation and session caps. |
+| `RoleSwitchConfig` | type | Role switching, per-role step-up policies and the switch-attempt limiter. |
+| `RoleStepUpPolicy` | type | Proof required to switch into one target role. |
 | `ValidationMode` | type | Enum: `JWTOnly`, `Hybrid`, `Strict`. |
 | `RouteMode` | type | Per-route validation override. |
 | `ResetStrategyType` | type | Enum: `token`, `otp`, `uuid`. |
@@ -225,6 +239,9 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `RoleStore` | type | Interface for role → permission lookups. |
 | `KeyBuilder` | type | Interface for generating Redis key prefixes. |
 | `UserProvider` | type | Unified user-store adapter used by the engine. |
+| `TenantAwareUserProvider` | interface | Optional `UserProvider` capability: tenant-scoped user lookup (required when `MultiTenant.Enabled`). |
+| `TenantAwarePasswordUpdater` | interface | Optional `UserProvider` capability: `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)`; used instead of `UpdatePasswordHash` by `ChangePassword`, password-reset confirm and rehash-on-login when `MultiTenant.Enabled`. |
+| `RoleSwitchProvider` | interface | Optional `UserProvider` capability for `SwitchRole` (see above). |
 | `UserRecord` | type | Full user record including password hash and status. |
 | `TOTPProvision` | type | Provisioning result: secret + URI. |
 | `TOTPSetup` | type | Alias for `TOTPProvision`. |
@@ -268,6 +285,7 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 |--------|------|-------------|
 | `WithClientIP` | func | Attaches a client IP address to a `context.Context`. |
 | `WithTenantID` | func | Attaches a tenant ID to a `context.Context`. |
+| `TenantIDFromContext` | func | Returns the tenant attached with `WithTenantID` as `(tenant, true)`, or `("", false)` when none is attached. Never synthesizes the internal default `"0"`. |
 | `WithUserAgent` | func | Attaches a User-Agent string to a `context.Context`. |
 
 ---
@@ -311,6 +329,10 @@ Redis-backed session storage with binary encoding.
 | `Delete` | method | Removes a single session from Redis. |
 | `DeleteAllForUser` | method | Removes all sessions for a user (and optional tenant). |
 | `RotateRefreshHash` | method | Atomically replaces the refresh hash on an existing session. |
+| `SwapSession` | method | Atomically replaces one session with another (role switch): same checks as `RotateRefreshHash`, keeps the absolute lifetime, moves the assurance. |
+| `Peek` | method | Reads a session exactly as stored: no expiry filter, no schema migration, no Redis write. |
+| `SaveAssurance` / `GetAssurance` | method | Store and read a session's step-up assurance (`asa:<tenant>:<sid>`), outside the session blob. |
+| `Assurance` | struct | MFA time + method and last-proof time. `EncodeAssurance`/`DecodeAssurance` serialize it; `ErrAssuranceCorrupt` reports a bad value. |
 | `ActiveSessionCount` | method | Returns the number of active sessions for a user. |
 | `ActiveSessionIDs` | method | Returns all session IDs for a user. |
 | `EstimateActiveSessions` | method | HyperLogLog-based estimate of total active sessions. |

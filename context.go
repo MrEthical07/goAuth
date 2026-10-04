@@ -23,6 +23,21 @@ func WithTenantID(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, tenantIDContextKey{}, tenantID)
 }
 
+// TenantIDFromContext returns the tenant attached to ctx with [WithTenantID].
+// The boolean is false, and the tenant empty, when none was attached or the
+// attached value is empty. It never synthesizes the internal default tenant
+// "0": that value is returned only when it was attached explicitly, so a
+// caller can tell "no tenant set" apart from "tenant 0".
+//
+// Host code that needs the request's tenant (for example a provider
+// implementation reached through the engine) can read it here instead of
+// threading it through a second channel.
+//
+//	Docs: docs/multi_tenancy.md
+func TenantIDFromContext(ctx context.Context) (string, bool) {
+	return tenantIDFromContextExplicit(ctx)
+}
+
 // WithUserAgent attaches the HTTP User-Agent string to ctx. Used by the
 // device binding subsystem to detect session hijacking.
 //
