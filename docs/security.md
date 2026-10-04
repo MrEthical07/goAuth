@@ -51,6 +51,7 @@ goAuth assumes attackers may:
 | **Session fixation** | New session ID on every login | Unique `crypto/rand` 16-byte IDs |
 | **Session hijacking** | IP + UA binding (enforce or detect) | `ErrDeviceBindingRejected` or anomaly audit |
 | **Stale sessions** | Strict mode + version drift checks | Version mismatch → session deleted |
+| **Stale role after a role switch** | Atomic session swap; old refresh token dead immediately | Old access token rejected at once on `ModeStrict` routes only; on Hybrid/JWT-only it lives until it expires (≤ `JWT.AccessTTL`) — see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode) |
 
 > **Route-mode overrides are not bounded by the engine mode.** An explicit per-route
 > mode (`Validate(ctx, token, ModeJWTOnly)` / `ModeHybrid`, or the corresponding
@@ -59,6 +60,8 @@ goAuth assumes attackers may:
 > the access token expires. Route modes are chosen in code and are never influenced by
 > the request, so this is a deliberate developer decision; audit route-mode overrides
 > like any other authorization rule.
+
+> **Role switching is only safe on `ModeStrict` routes.** Hybrid and JWT-only validation never read Redis, whether Redis is healthy or not, so an access token minted before a switch keeps its old mask there until it expires. Every route that gates on role or permissions must resolve to `ModeStrict`; an explicit per-route `ModeStrict` on a hybrid engine is enough. Full table and race semantics: [role_switching.md](role_switching.md).
 
 ### MFA Security
 

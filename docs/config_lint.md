@@ -58,6 +58,7 @@ func (c *Config) Lint() LintResult
 | `jwtonly_single_session` | HIGH | JWT-only mode + single-session enforcement |
 | `jwtonly_perm_version` | WARN | JWT-only mode + permission version check |
 | `hybrid_enforcement_strict_routes_only` | INFO | Hybrid mode + enforced device binding (enforcement runs only on Strict-resolved routes) |
+| `role_switch_stateless_validation` | INFO | `RoleSwitch.Enabled` with JWT-only or Hybrid mode (a pre-switch access token stays valid on stateless routes until it expires; see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode)) |
 | `login_failure_limiter_disabled` | HIGH | `Security.EnableLoginFailureLimiter == false` |
 | `session_lifetime_long` | WARN | Absolute session lifetime > 30 days |
 | `session_shorter_than_refresh` | HIGH | Session lifetime < refresh TTL |
@@ -76,7 +77,7 @@ func (c *Config) Lint() LintResult
 | `tenant_enforce_isolation_noop` | WARN | `MultiTenant.EnforceIsolation` is deprecated and never read; tenant enforcement is governed entirely by `MultiTenant.Enabled` |
 | `account_duplicate_identifier_provider_owned` | INFO | `Account.AllowDuplicateIdentifierAcrossTenants` is a provider-owned contract; goAuth cannot enforce uniqueness it cannot query |
 
-Summary: 9 INFO, 14 WARN, 4 HIGH.
+Summary: 10 INFO, 14 WARN, 4 HIGH.
 
 ### No-op knob warnings
 

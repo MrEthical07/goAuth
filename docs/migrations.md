@@ -1,5 +1,67 @@
 # Migrations
 
+## v0.7.0 Migration Notes (Non-Breaking)
+
+No action needed unless you adopt the features. v0.7.0 is additive: no exported
+signature changed, `gorelease -base=v0.6.2` reports no incompatible changes, and
+with the new features unused (the defaults) behavior is byte-for-byte what it was
+in v0.6.2: the same session bytes in Redis, the same access-token claims, the
+same errors, audit events and metrics, and no extra Redis or provider calls.
+
+### Optional: adopt role switching
+
+1. Implement `RoleSwitchProvider.CanAssumeRole(ctx, tenantID, userID, role) (bool, error)`
+   on your user provider. It **must return true for the account's primary role**
+   as well as any other role it holds (it is also used by the refresh re-check).
+   Scope it by `tenantID`.
+2. Set `Config.RoleSwitch.Enabled = true`. Optionally add step-up policies, for
+   example `StepUp["admin"] = RoleStepUpPolicy{RequireMFA: true}`. `Build` fails if
+   the provider lacks the capability, a `StepUp` key is not a registered role, or
+   `RequireMFA` is used with neither TOTP nor WebAuthn enabled.
+3. **Route every endpoint that gates on role or permissions through `ModeStrict`.**
+   A per-route `ModeStrict` override on a hybrid engine is enough. On Hybrid and
+   JWT-only routes an access token minted before a switch stays valid, with its old
+   mask, until it expires. See the [per-mode revocation table](role_switching.md#revocation-guarantee-per-validation-mode).
+4. Call `engine.SwitchRole(ctx, refreshToken, targetRole, goAuth.RoleSwitchOptions{})`
+   from your HTTP layer, with the tenant on the context as for `Refresh`. Map the
+   new errors: `ErrRoleNotAllowed`, `ErrStepUpRequired` and `ErrRoleSwitchDisabled`
+   to 403 (return `StepUpFactors` for step-up), `ErrRoleSwitchSameRole` to 409,
+   `ErrRoleSwitchRateLimited` to 429, `ErrRefreshReuse`/`ErrSessionNotFound` to 401.
+5. Make clients serialize refresh and switch per session (single-flight), always
+   store the most recently returned tokens, and retry an in-flight 401 only after
+   re-reading the stored tokens. Presenting a pre-refresh token to `SwitchRole` is
+   refresh-token reuse and ends the session.
+
+What changes once `RoleSwitch.Enabled` is true, whether or not anyone switches:
+`Refresh` first re-checks the session's role (one extra Redis read and **one
+provider call per refresh**, primary-role sessions included); a revoked role ends
+the session with `ErrRoleNotAllowed` and a provider outage returns
+`ErrSystemUnavailable` without consuming the refresh token. Validation makes no
+provider calls. If `StepUp` is non-empty, MFA logins also write an `asa:` Redis key
+per session (sessions created before you configured step-up have none).
+
+### Optional: `TenantAwarePasswordUpdater`
+
+With `MultiTenant.Enabled`, implement
+`UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash) error` on your provider
+and `ChangePassword`, password-reset confirm and rehash-on-login will call it, with
+the tenant goAuth resolved, instead of the tenant-blind `UpdatePasswordHash`. Not
+implementing it changes nothing.
+
+### Optional: `TenantIDFromContext`
+
+`goAuth.TenantIDFromContext(ctx) (string, bool)` reads back the tenant attached with
+`WithTenantID`; it returns `("", false)` when none is attached and never invents the
+default tenant `"0"`.
+
+### Fixed: schema migration could resurrect a deleted session
+
+The one-time rewrite of a pre-v5 session blob read the session and then wrote it
+back with a plain `SET`. A session deleted in between (logout, reuse revocation, a
+role switch) could be recreated with its old refresh hash. The rewrite now uses
+`SET ... XX`. This only ever mattered for sessions written by goAuth versions older
+than the v5 schema.
+
 ## v0.6.2 Migration Notes (Non-Breaking)
 
 No action needed. v0.6.2 is a drop-in replacement for v0.6.0 and v0.6.1: no

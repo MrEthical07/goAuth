@@ -109,6 +109,11 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `CodeSystemUnavailableStrictBackend` | `SYSTEM_UNAVAILABLE_STRICT_BACKEND` |
 | `CodeAuthRefreshInvalid` | `AUTH_REFRESH_INVALID` |
 | `CodeAuthRefreshReuseDetected` | `AUTH_REFRESH_REUSE_DETECTED` |
+| `CodeAuthRoleSwitchDisabled` | `AUTH_ROLE_SWITCH_DISABLED` |
+| `CodeAuthRoleNotAllowed` | `AUTH_ROLE_NOT_ALLOWED` |
+| `CodeAuthRoleSwitchSameRole` | `AUTH_ROLE_SWITCH_SAME_ROLE` |
+| `CodeAuthStepUpRequired` | `AUTH_STEP_UP_REQUIRED` |
+| `CodeAuthRoleSwitchRateLimited` | `AUTH_ROLE_SWITCH_RATE_LIMITED` |
 | `CodeAuthPermissionDenied` | `AUTH_PERMISSION_DENIED` |
 | `CodeSystemEngineNotReady` | `SYSTEM_ENGINE_NOT_READY` |
 | `CodeSystemProviderDuplicateIdentifier` | `SYSTEM_PROVIDER_DUPLICATE_IDENTIFIER` |
@@ -177,6 +182,11 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `ErrStrictBackendDown` | `CategorySystem` | `CodeSystemUnavailableStrictBackend` | `strict validation backend unavailable` |
 | `ErrRefreshInvalid` | `CategoryAuthValidation` | `CodeAuthRefreshInvalid` | `invalid refresh token` |
 | `ErrRefreshReuse` | `CategoryAuthAbuse` | `CodeAuthRefreshReuseDetected` | `refresh token reuse detected` |
+| `ErrRoleSwitchDisabled` | `CategoryAuthState` | `CodeAuthRoleSwitchDisabled` | `role switching disabled` |
+| `ErrRoleNotAllowed` | `CategoryAuthState` | `CodeAuthRoleNotAllowed` | `role not allowed` |
+| `ErrRoleSwitchSameRole` | `CategoryAuthValidation` | `CodeAuthRoleSwitchSameRole` | `session already holds this role` |
+| `ErrStepUpRequired` | `CategoryAuthState` | `CodeAuthStepUpRequired` | `step-up authentication required` |
+| `ErrRoleSwitchRateLimited` | `CategoryAuthAbuse` | `CodeAuthRoleSwitchRateLimited` | `role switch attempts rate limited` |
 | `ErrPermissionDenied` | `CategoryAuthState` | `CodeAuthPermissionDenied` | `permission denied` |
 | `ErrEngineNotReady` | `CategorySystem` | `CodeSystemEngineNotReady` | `engine not initialized` |
 | `ErrProviderDuplicateIdentifier` | `CategorySystem` | `CodeSystemProviderDuplicateIdentifier` | `provider duplicate identifier` |
@@ -208,11 +218,13 @@ These status mappings are recommended for API adapters wrapping goAuth.
 | `AUTH_UNAUTHORIZED`, `AUTH_INVALID_CREDENTIALS`, `AUTH_INVALID_TOKEN`, `AUTH_REFRESH_INVALID` | `401 Unauthorized` |
 | `AUTH_MFA_REQUIRED`, `AUTH_TOTP_REQUIRED` | `401 Unauthorized` |
 | `AUTH_PERMISSION_DENIED` | `403 Forbidden` |
+| `AUTH_ROLE_NOT_ALLOWED`, `AUTH_STEP_UP_REQUIRED`, `AUTH_ROLE_SWITCH_DISABLED` | `403 Forbidden` (see [role_switching.md](role_switching.md#errors-and-http-mapping)) |
+| `AUTH_ROLE_SWITCH_SAME_ROLE` | `409 Conflict` |
 | `AUTH_ACCOUNT_DISABLED`, `AUTH_ACCOUNT_LOCKED`, `AUTH_ACCOUNT_DELETED`, `AUTH_VERIFICATION_REQUIRED` | `403 Forbidden` |
 | `AUTH_ACCOUNT_EXISTS` | `409 Conflict` |
 | `AUTH_TOTP_ALREADY_ENABLED` | `409 Conflict` |
 | Validation failures (`AUTH_*_INVALID`, password policy, route mode) | `400 Bad Request` |
-| Abuse and attempt limits (`AUTH_*_LIMITED`, `AUTH_*_ATTEMPTS_*`, `AUTH_REFRESH_REUSE_DETECTED`) | `429 Too Many Requests` |
+| Abuse and attempt limits (`AUTH_*_LIMITED`, `AUTH_*_ATTEMPTS_*`, `AUTH_REFRESH_REUSE_DETECTED`) | `429 Too Many Requests` (`AUTH_ROLE_SWITCH_RATE_LIMITED` included; for the role-switch endpoint `AUTH_REFRESH_REUSE_DETECTED` is better served as `401`, since the session no longer exists) |
 | Unavailable dependency codes (`SYSTEM_UNAVAILABLE*`) | `503 Service Unavailable` |
 | `SYSTEM_INTERNAL_ERROR` | `500 Internal Server Error` |
 
