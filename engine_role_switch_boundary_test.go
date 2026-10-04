@@ -19,8 +19,9 @@ func TestRoleSwitchErrorBoundaryStatic(t *testing.T) {
 	t.Parallel()
 
 	audited := map[string]struct{}{
-		"SwitchRole":        {},
-		"roleSwitchFailure": {},
+		"SwitchRole":              {},
+		"roleSwitchFailure":       {},
+		"refreshRoleCheckFailure": {},
 	}
 
 	fset := token.NewFileSet()

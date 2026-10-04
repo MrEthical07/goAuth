@@ -404,6 +404,8 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 	case internalflows.RefreshFailureReuse:
 		e.recordRefreshReuse(ctx, result.TenantID, result.SessionID)
 		return "", "", mapToAuthError(ErrRefreshReuse)
+	case internalflows.RefreshFailureRoleRevoked, internalflows.RefreshFailureRoleCheck:
+		return "", "", mapToAuthError(e.refreshRoleCheckFailure(ctx, result))
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, func() map[string]string {
@@ -1053,6 +1055,7 @@ func (e *Engine) initFlowDeps() {
 			SessionStore:              e.sessionStore,
 			RefreshHashMismatch:       session.ErrRefreshHashMismatch,
 			RedisNil:                  redis.Nil,
+			RoleRecheck:               e.refreshRoleRecheck(),
 		},
 		Validate: internalflows.ValidateDeps{
 			ParseAccess: e.jwtManager.ParseAccess,

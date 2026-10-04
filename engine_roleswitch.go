@@ -174,6 +174,37 @@ func (e *Engine) auditRoleSwitchFailure(ctx context.Context, result internalflow
 	})
 }
 
+// refreshRoleCheckFailure books and maps a failed refresh role re-check.
+// A revoked role has already ended the session; a provider failure left the
+// session and its refresh token untouched.
+func (e *Engine) refreshRoleCheckFailure(ctx context.Context, result internalflows.RefreshResult) error {
+	e.metricInc(MetricRefreshFailure)
+	if result.Failure == internalflows.RefreshFailureRoleRevoked {
+		e.metricInc(MetricSessionInvalidated)
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrRoleNotAllowed, func() map[string]string {
+			return map[string]string{"reason": "role_revoked"}
+		})
+		return mapToAuthError(ErrRoleNotAllowed)
+	}
+	e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrSystemUnavailable, func() map[string]string {
+		return map[string]string{"reason": "role_check_unavailable"}
+	})
+	return mapToAuthError(ErrSystemUnavailable)
+}
+
+// refreshRoleRecheck wires the optional refresh role re-check. It is nil
+// unless role switching is enabled, so the disabled path adds no reads.
+func (e *Engine) refreshRoleRecheck() *internalflows.RefreshRoleRecheck {
+	if !e.roleSwitchActive() {
+		return nil
+	}
+	return &internalflows.RefreshRoleRecheck{
+		Peek:          e.sessionStore.Peek,
+		CanAssumeRole: e.roleSwitchProvider.CanAssumeRole,
+		Now:           time.Now,
+	}
+}
+
 func (e *Engine) roleSwitchFlowDeps() internalflows.RoleSwitchDeps {
 	if !e.roleSwitchActive() {
 		return internalflows.RoleSwitchDeps{}
