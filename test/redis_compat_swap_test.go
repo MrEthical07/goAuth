@@ -161,3 +161,57 @@ func TestRedisCompat_SwapSessionVersusRotateRace(t *testing.T) {
 		})
 	}
 }
+
+// TestRedisCompat_SwapSessionRefusesOccupiedID validates the replacement-ID
+// guard and its check order across backends.
+func TestRedisCompat_SwapSessionRefusesOccupiedID(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+
+			store := session.NewStore(rdb, "as", true, false, 0)
+			ctx := context.Background()
+
+			old := makeCompatSession("tenant-inuse", "user-a", "sid-old", hashByte(0x81))
+			occupant := makeCompatSession("tenant-inuse", "user-b", "sid-occupied", hashByte(0x82))
+			for _, sess := range []*session.Session{old, occupant} {
+				if err := store.Save(ctx, sess, time.Hour); err != nil {
+					t.Fatalf("save: %v", err)
+				}
+			}
+			countBefore, _ := store.TenantSessionCount(ctx, old.TenantID)
+			occupantBefore, err := store.Peek(ctx, occupant.TenantID, occupant.SessionID)
+			if err != nil {
+				t.Fatalf("peek: %v", err)
+			}
+
+			err = store.SwapSession(ctx, old.TenantID, old.SessionID, old.RefreshHash, swapTargetSession(old, occupant.SessionID, hashByte(0x83)), nil)
+			if !errors.Is(err, session.ErrSessionIDInUse) {
+				t.Fatalf("occupied id = %v, want ErrSessionIDInUse", err)
+			}
+			if err := store.SwapSession(ctx, old.TenantID, old.SessionID, old.RefreshHash, swapTargetSession(old, old.SessionID, hashByte(0x84)), nil); err == nil {
+				t.Fatal("a replacement with the old id must be refused")
+			}
+			occupantAfter, err := store.Peek(ctx, occupant.TenantID, occupant.SessionID)
+			if err != nil || occupantAfter.RefreshHash != occupantBefore.RefreshHash || occupantAfter.UserID != "user-b" {
+				t.Fatalf("occupant changed: %+v %v", occupantAfter, err)
+			}
+			if n, _ := store.TenantSessionCount(ctx, old.TenantID); n != countBefore {
+				t.Fatalf("tenant count %d -> %d", countBefore, n)
+			}
+			if _, err := store.RotateRefreshHash(ctx, old.TenantID, old.SessionID, old.RefreshHash, hashByte(0x85)); err != nil {
+				t.Fatalf("the old session must still refresh: %v", err)
+			}
+
+			// A stale hash still wins over an occupied id.
+			err = store.SwapSession(ctx, old.TenantID, old.SessionID, hashByte(0x99), swapTargetSession(old, occupant.SessionID, hashByte(0x86)), nil)
+			if !errors.Is(err, session.ErrRefreshHashMismatch) {
+				t.Fatalf("stale hash = %v, want ErrRefreshHashMismatch", err)
+			}
+			if _, err := store.Peek(ctx, old.TenantID, old.SessionID); !errors.Is(err, redis.Nil) {
+				t.Fatalf("reuse must delete the old session, got %v", err)
+			}
+		})
+	}
+}

@@ -87,7 +87,12 @@ Suggested version: v0.7.0
   - `session.Store.SwapSession` (one Lua script re-applying the rotation
     script's checks in the same order, then swapping the sessions, index entry
     and assurance), `Peek`, `SaveAssurance`/`GetAssurance` and the `Assurance`
-    type. The existing scripts are unchanged.
+    type. The existing scripts are unchanged. `SwapSession` refuses a
+    replacement session ID that is empty, equal to the old one, or already held by
+    a live session (`session.ErrSessionIDInUse`, checked after every
+    rotate-equivalent check and before the first write, so nothing changes and a
+    stale refresh hash still gets the reuse outcome); `SwitchRole` always uses a
+    fresh random ID and reports that case as `ErrSystemUnavailable`.
 - **`TenantAwarePasswordUpdater`** — optional `UserProvider` capability,
   `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)`. With
   `MultiTenant.Enabled` and a provider that implements it, `ChangePassword`,

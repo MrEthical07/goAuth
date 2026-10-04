@@ -138,7 +138,7 @@ rotated, err := store.RotateRefreshHash(ctx, "tenant-0", "sid-abc", oldHash, new
 - `Delete` is idempotent — deleting a non-existent session succeeds silently.
 - Counter can never go negative (Lua script clamps at 0).
 - Session schema migration happens transparently on `Decode` — v1–v4 sessions are read-compatible. The one-time rewrite uses `SET ... XX`, so a read of a legacy session can never recreate a session that was deleted (logout, reuse revocation, role switch) between the read and the rewrite.
-- `SwapSession` re-reads the old session and applies the rotation script's checks in the same order; a refresh-hash mismatch deletes the old session exactly as a rotation does. It touches keys in more than one hash slot, like the rotation script.
+- `SwapSession` refuses a replacement ID that is empty, equal to the old ID, or held by a live session (`ErrSessionIDInUse`; checked after the rotate-equivalent checks, before any write). It re-reads the old session and applies the rotation script's checks in the same order; a refresh-hash mismatch deletes the old session exactly as a rotation does. It touches keys in more than one hash slot, like the rotation script.
 
 ## Architecture
 

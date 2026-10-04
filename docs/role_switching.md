@@ -192,7 +192,10 @@ All failures leave the old session untouched unless stated.
 11. One atomic Lua script swaps the sessions. It re-reads the old session and
     applies exactly the rotation script's checks in the same order (missing,
     expired, refresh-hash mismatch, remaining TTL), with the same side
-    effects on the failing branches. Only when they all pass does it delete
+    effects on the failing branches. Then it refuses to overwrite a live
+    session: a replacement ID that is already in use (`session.ErrSessionIDInUse`,
+    impossible for the random IDs `SwitchRole` generates) changes nothing and is
+    reported as `ErrSystemUnavailable`. Only when every check passes does it delete
     the old session, write the new one with the old session's **remaining
     absolute lifetime**, swap the user-index entry, and move or write the
     assurance key. There is no separate "conflict" outcome: a switch that

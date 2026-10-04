@@ -301,6 +301,13 @@ if ttl <= 0 then
   return {1}
 end
 
+-- Never overwrite a live session: the replacement ID must be unused. This
+-- runs after every rotate-equivalent check (including the deleting reuse
+-- branch) and before the first mutation, and has no side effects.
+if redis.call("EXISTS", new_key) == 1 then
+  return {5}
+end
+
 -- The new session lives for exactly the old one's remaining absolute
 -- lifetime, so a switch can never extend a session.
 local lifetime_ms = (parsed.expires_at - now_unix) * 1000
@@ -326,12 +333,28 @@ return {3}
 
 var swapSessionLua = redis.NewScript(swapSessionScript)
 
+// swapStatusIDInUse is the swap script's own status: the replacement session
+// ID already names a live session. Nothing was changed.
+const swapStatusIDInUse int64 = 5
+
+// ErrSessionIDInUse is returned by [Store.SwapSession] when the replacement
+// session ID is already in use by a live session. Nothing is written and the
+// old session is untouched.
+var ErrSessionIDInUse = errors.New("replacement session id already in use")
+
 // SwapSession atomically replaces the session oldSessionID with next. The
 // old session is identified by the refresh hash the caller presented: the
 // script re-reads it and applies the same checks, in the same order, as
 // [Store.RotateRefreshHash], and the failures it reports are the same errors
 // (not found, expired, [ErrRefreshHashMismatch] -- which deletes the old
 // session exactly as a refresh-token reuse does -- and corrupt blob).
+//
+// next must carry a session ID that is non-empty, different from
+// oldSessionID, and not held by any live session; next.UserID must be
+// non-empty. The first two are checked before any Redis call, the last by the
+// script after every rotate-equivalent check and before the first write, so
+// an occupied ID returns [ErrSessionIDInUse] with nothing changed (a stale
+// refresh hash still gets the reuse outcome first).
 //
 // On success the old session key and its user-index entry are removed and next
 // is stored with the old session's remaining absolute lifetime; the tenant
@@ -355,6 +378,12 @@ func (s *Store) SwapSession(
 	}
 	if normalizeTenantID(next.TenantID) != normalizeTenantID(tenantID) {
 		return errors.New("swap session: tenant mismatch")
+	}
+	if next.SessionID == "" || next.SessionID == oldSessionID {
+		return errors.New("swap session: replacement session id must be new")
+	}
+	if next.UserID == "" {
+		return errors.New("swap session: replacement session needs a user")
 	}
 	blob, err := Encode(next)
 	if err != nil {
@@ -407,6 +436,8 @@ func (s *Store) SwapSession(
 		return ErrRefreshHashMismatch
 	case rotateStatusRotated:
 		return nil
+	case swapStatusIDInUse:
+		return ErrSessionIDInUse
 	case rotateStatusInvalidBlob:
 		return errors.Join(ErrRedisUnavailable, ErrRefreshSessionCorrupt)
 	default:
