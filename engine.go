@@ -2738,6 +2738,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		},
 	}
 	e.configureLoginRateLimiterDeps(&deps)
+	e.configureLoginAssuranceDeps(&deps)
 	if e != nil && e.lockoutLimiter != nil && e.config.Security.AutoLockoutEnabled {
 		deps.AutoLockoutEnabled = true
 		deps.RecordLockoutFailure = func(ctx context.Context, userID string) (bool, error) {

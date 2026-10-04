@@ -161,6 +161,15 @@ type LoginDeps struct {
 	RecordMFAFailure   func(context.Context, string, int) (bool, error)
 	MapMFAStoreError   func(error) error
 
+	// RecordAssurance, when set, records that the session just issued after
+	// a successful second factor holds an MFA assurance. It receives the
+	// refresh token of the new session (which names its ID) and the factor
+	// ("totp", "backup_code" or "webauthn"). The engine sets it only while
+	// role-switch step-up policies are configured; it is best effort, since
+	// a missing assurance only means a later step-up asks for the factor
+	// again.
+	RecordAssurance func(ctx context.Context, tenantID, refreshToken, method string, rememberMe bool)
+
 	CreateMFALoginChallenge func(context.Context, string, string, bool) (string, error)
 	IssueLoginSessionTokens func(context.Context, string, LoginUserRecord, string, bool) (string, string, error)
 	EnforceSessionHardening func(context.Context, string, string) error
@@ -728,12 +737,29 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, err
 	}
 
+	if deps.RecordAssurance != nil {
+		deps.RecordAssurance(ctx, record.TenantID, refresh, loginAssuranceMethod(mfaType), record.RememberMe)
+	}
+
 	deps.MetricInc(deps.Metrics.MFALoginSuccess)
 	deps.EmitAudit(ctx, deps.Events.MFASuccess, true, user.UserID, record.TenantID, "", nil, nil)
 	return &LoginResult{
 		AccessToken:  access,
 		RefreshToken: refresh,
 	}, nil
+}
+
+// loginAssuranceMethod maps the login confirmation type to the factor name
+// stored in a session assurance.
+func loginAssuranceMethod(mfaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mfaType)) {
+	case "backup":
+		return StepUpMethodBackupCode
+	case "webauthn":
+		return "webauthn"
+	default:
+		return StepUpMethodTOTP
+	}
 }
 
 // loadLoginTOTPRecord fetches and gates the user's TOTP record for the

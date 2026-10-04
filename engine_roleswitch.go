@@ -309,3 +309,33 @@ func (e *Engine) roleSwitchStepUpFactors(ctx context.Context, user internalflows
 	}
 	return factors
 }
+
+// roleSwitchRecordsAssurance reports whether sessions issued after a second
+// factor must carry an assurance: only while role switching is active and at
+// least one step-up policy exists. Otherwise no assurance key is ever
+// written and login behaves exactly as without the feature.
+func (e *Engine) roleSwitchRecordsAssurance() bool {
+	return e.roleSwitchActive() && len(e.config.RoleSwitch.StepUp) > 0
+}
+
+func (e *Engine) configureLoginAssuranceDeps(deps *internalflows.LoginDeps) {
+	if e.roleSwitchRecordsAssurance() {
+		deps.RecordAssurance = e.recordLoginAssurance
+	}
+}
+
+// recordLoginAssurance stores the assurance of a session issued after a
+// successful second factor. It is best effort: a failure only means a later
+// step-up policy asks for the factor again.
+func (e *Engine) recordLoginAssurance(ctx context.Context, tenantID, refreshToken, method string, rememberMe bool) {
+	sessionID, _, err := internal.DecodeRefreshToken(refreshToken)
+	if err != nil {
+		e.warn("goAuth: session assurance skipped; refresh token undecodable")
+		return
+	}
+	now := time.Now().Unix()
+	assurance := session.Assurance{MFAAt: now, MFAMethod: method, AuthAt: now}
+	if err := e.sessionStore.SaveAssurance(ctx, tenantID, sessionID, assurance, e.sessionLifetimeFor(rememberMe)); err != nil {
+		e.warn("goAuth: session assurance write failed")
+	}
+}
