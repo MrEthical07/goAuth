@@ -1621,6 +1621,11 @@ const (
 	auditErrInvalidCredentials    AuditErrorCode = "invalid_credentials"
 	auditErrRateLimited           AuditErrorCode = "rate_limited"
 	auditErrRefreshReuse          AuditErrorCode = "refresh_reuse"
+	auditErrRoleSwitchDisabled    AuditErrorCode = "role_switch_disabled"
+	auditErrRoleNotAllowed        AuditErrorCode = "role_not_allowed"
+	auditErrRoleSwitchSameRole    AuditErrorCode = "role_switch_same_role"
+	auditErrStepUpRequired        AuditErrorCode = "step_up_required"
+	auditErrRoleSwitchRateLimited AuditErrorCode = "role_switch_rate_limited"
 	auditErrInvalidToken          AuditErrorCode = "invalid_token"
 	auditErrSessionNotFound       AuditErrorCode = "session_not_found"
 	auditErrUserNotFound          AuditErrorCode = "user_not_found"
@@ -1743,6 +1748,16 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrRateLimited
 	case errors.Is(err, ErrRefreshReuse):
 		return auditErrRefreshReuse
+	case errors.Is(err, ErrRoleSwitchDisabled):
+		return auditErrRoleSwitchDisabled
+	case errors.Is(err, ErrRoleNotAllowed):
+		return auditErrRoleNotAllowed
+	case errors.Is(err, ErrRoleSwitchSameRole):
+		return auditErrRoleSwitchSameRole
+	case errors.Is(err, ErrStepUpRequired):
+		return auditErrStepUpRequired
+	case errors.Is(err, ErrRoleSwitchRateLimited):
+		return auditErrRoleSwitchRateLimited
 	case errors.Is(err, ErrRefreshInvalid),
 		errors.Is(err, ErrPasswordResetInvalid),
 		errors.Is(err, ErrEmailVerificationInvalid),
