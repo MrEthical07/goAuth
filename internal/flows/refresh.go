@@ -66,6 +66,29 @@ type RefreshDeps struct {
 	RedisNil                  error
 }
 
+type replayTracker interface {
+	TrackReplayAnomaly(ctx context.Context, sessionID string, ttl time.Duration) error
+}
+
+// trackRefreshReuse records a replay anomaly for a reused refresh token when
+// replay tracking is on. Refresh and role switching share it so both treat
+// reuse identically.
+func trackRefreshReuse(
+	ctx context.Context,
+	store replayTracker,
+	enabled bool,
+	sessionID string,
+	lifetime func() time.Duration,
+	warn func(string, ...any),
+) {
+	if !enabled {
+		return
+	}
+	if err := store.TrackReplayAnomaly(ctx, sessionID, lifetime()); err != nil && warn != nil {
+		warn("goAuth: replay anomaly tracking failed")
+	}
+}
+
 // RunRefresh executes refresh rotation and issuance logic without root package dependencies.
 func RunRefresh(ctx context.Context, refreshToken string, deps RefreshDeps) RefreshResult {
 	tenantID := deps.TenantIDFromContext(ctx)
@@ -98,11 +121,7 @@ func RunRefresh(ctx context.Context, refreshToken string, deps RefreshDeps) Refr
 	if err != nil {
 		switch {
 		case deps.RefreshHashMismatch != nil && errors.Is(err, deps.RefreshHashMismatch):
-			if deps.EnableReplayTracking {
-				if trackErr := deps.SessionStore.TrackReplayAnomaly(ctx, sessionID, deps.SessionLifetime()); trackErr != nil && deps.Warn != nil {
-					deps.Warn("goAuth: replay anomaly tracking failed")
-				}
-			}
+			trackRefreshReuse(ctx, deps.SessionStore, deps.EnableReplayTracking, sessionID, deps.SessionLifetime, deps.Warn)
 			return RefreshResult{
 				Failure:   RefreshFailureReuse,
 				Err:       err,

@@ -402,10 +402,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 		})
 		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureReuse:
-		e.metricInc(MetricRefreshReuseDetected)
-		e.metricInc(MetricReplayDetected)
-		e.metricInc(MetricSessionInvalidated)
-		e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", result.TenantID, result.SessionID, ErrRefreshReuse, nil)
+		e.recordRefreshReuse(ctx, result.TenantID, result.SessionID)
 		return "", "", mapToAuthError(ErrRefreshReuse)
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
@@ -463,6 +460,16 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 	e.emitAudit(ctx, auditEventRefreshSuccess, true, result.UserID, result.TenantID, result.SessionID, nil, nil)
 
 	return result.AccessToken, result.RefreshToken, nil
+}
+
+// recordRefreshReuse books a refresh-token reuse: the three reuse metrics
+// and the audit event. Refresh and SwitchRole share it so both treat a
+// reused token identically.
+func (e *Engine) recordRefreshReuse(ctx context.Context, tenantID, sessionID string) {
+	e.metricInc(MetricRefreshReuseDetected)
+	e.metricInc(MetricReplayDetected)
+	e.metricInc(MetricSessionInvalidated)
+	e.emitAudit(ctx, auditEventRefreshReuseDetected, false, "", tenantID, sessionID, ErrRefreshReuse, nil)
 }
 
 // ValidateAccess validates an access token using the engine's configured
@@ -1029,6 +1036,7 @@ func (e *Engine) maxSessionLifetime() time.Duration {
 
 func (e *Engine) initFlowDeps() {
 	deps := internalflows.Deps{
+		RoleSwitch: e.roleSwitchFlowDeps(),
 		Refresh: internalflows.RefreshDeps{
 			TenantIDFromContext:       tenantIDFromContext,
 			DecodeRefreshToken:        internal.DecodeRefreshToken,
