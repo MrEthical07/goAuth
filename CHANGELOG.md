@@ -80,6 +80,12 @@ Suggested version: v0.7.0
     (`AUTH_STATE`), `ErrRoleSwitchRateLimited` (`AUTH_ABUSE`). Decode,
     not-found, expired and reuse outcomes return exactly the errors `Refresh`
     returns (`ErrRefreshInvalid`, `ErrSessionNotFound`, `ErrRefreshReuse`).
+    During a switch only `ErrUserNotFound` from the account lookup (which includes
+    the tenant-mismatch backstop) means the session is gone; any other lookup
+    error is a provider outage and returns `ErrSystemUnavailable` with the session
+    untouched, so the same refresh token works on retry. Return
+    `goAuth.ErrUserNotFound` for a missing user from `GetUserByID` /
+    `GetUserByIDInTenant`.
   - Audit events `role_switched` and `role_switch_failed` (reasons `disabled`,
     `invalid_session`, `reuse_detected`, `same_role`, `not_allowed`,
     `step_up_required`, `rate_limited`, `account_status`, `unavailable`).

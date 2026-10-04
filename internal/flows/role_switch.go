@@ -131,9 +131,11 @@ type RoleSwitchDeps struct {
 	ReserveAttempt func(ctx context.Context, tenantID, sessionID string) bool
 	ResetAttempts  func(ctx context.Context, tenantID, sessionID string)
 
-	// LookupUser resolves the account in the session's tenant. Any failure,
-	// including a tenant mismatch, is reported as an error.
+	// LookupUser resolves the account in the session's tenant. A missing
+	// account (including the tenant-mismatch backstop) must satisfy
+	// errors.Is(err, UserNotFound); any other error is a provider failure.
 	LookupUser    func(ctx context.Context, tenantID, userID string) (RoleSwitchUser, error)
+	UserNotFound  error
 	CanAssumeRole func(ctx context.Context, tenantID, userID, role string) (bool, error)
 
 	// StepUp holds the per-target-role policies. Nil when none configured.
@@ -227,8 +229,15 @@ func RunSwitchRole(
 	}
 
 	user, err := deps.LookupUser(ctx, sess.TenantID, sess.UserID)
-	if err != nil || user.UserID != sess.UserID {
+	switch {
+	case err != nil && deps.UserNotFound != nil && errors.Is(err, deps.UserNotFound):
 		return failRoleSwitch(base, RoleSwitchFailureSessionNotFound, err)
+	case err != nil:
+		// A provider or database failure says nothing about the session:
+		// it stays untouched and the same refresh token works on retry.
+		return failRoleSwitch(base, RoleSwitchFailureUnavailable, err)
+	case user.UserID != sess.UserID:
+		return failRoleSwitch(base, RoleSwitchFailureSessionNotFound, nil)
 	}
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
 		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)

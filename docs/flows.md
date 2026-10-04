@@ -266,7 +266,7 @@ newAccess, newRefresh, err := engine.Refresh(ctx, oldRefreshToken)
 3. **Reserve a limiter slot** keyed by (request tenant, session ID), before any provider/Argon2/session work. Limited → `ErrRoleSwitchRateLimited`.
 4. **Read the session** read-only from the request tenant; missing/expired → `ErrSessionNotFound`; presented secret mismatch → handed to `RotateRefreshHash`, which deletes the session (`ErrRefreshReuse`, same metrics/audit/replay tracking as Refresh); device binding checked.
 5. **Same role** → `ErrRoleSwitchSameRole`; **unregistered role** → `ErrRoleNotAllowed` (no provider call).
-6. **Resolve the account** with the session's tenant; account-status failures delete the session.
+6. **Resolve the account** with the session's tenant; `ErrUserNotFound` → `ErrSessionNotFound`, any other lookup error → `ErrSystemUnavailable` (session untouched); account-status failures delete the session.
 7. **`CanAssumeRole`** → `ErrRoleNotAllowed` or `ErrSystemUnavailable`.
 8. **Step-up** for the target role (session assurance or inline TOTP/backup-code/password) → `ErrStepUpRequired`.
 9. **Atomic swap** — one Lua script re-applies the rotation script's checks and replaces the session, keeping `CreatedAt`/`ExpiresAt`, moving the assurance.
@@ -306,7 +306,7 @@ newAccess, newRefresh, err := engine.Refresh(ctx, oldRefreshToken)
 | `ErrRoleSwitchRateLimited` | Attempt budget exhausted |
 | `ErrAccountDisabled/Locked/Deleted`, `ErrAccountUnverified` | Account no longer usable — session deleted |
 | `ErrDeviceBindingRejected` | IP/UA mismatch in enforce mode |
-| `ErrSystemUnavailable` | Provider or Redis failure |
+| `ErrSystemUnavailable` | Provider (account lookup or `CanAssumeRole`) or Redis failure; session untouched |
 
 ### Caller Usage
 

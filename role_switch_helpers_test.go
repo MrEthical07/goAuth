@@ -23,6 +23,36 @@ type roleSwitchMockProvider struct {
 	canCalls     []canAssumeCall
 	canErr       error
 	ignoreTenant bool
+
+	// lookupErr, when set, is returned by every user-by-ID lookup (a
+	// transient provider failure). typedNotFound makes a missing user
+	// surface as goAuth.ErrUserNotFound, as the provider contract requires.
+	lookupErr     error
+	typedNotFound bool
+}
+
+func (p *roleSwitchMockProvider) setLookupErr(err error) {
+	p.rmu.Lock()
+	defer p.rmu.Unlock()
+	p.lookupErr = err
+}
+
+func (p *roleSwitchMockProvider) mapLookup(user UserRecord, err error) (UserRecord, error) {
+	if p.lookupErr != nil {
+		return UserRecord{}, p.lookupErr
+	}
+	if err != nil && p.typedNotFound {
+		return UserRecord{}, ErrUserNotFound
+	}
+	return user, err
+}
+
+// GetUserByID serves single-tenant lookups with the same failure injection.
+func (p *roleSwitchMockProvider) GetUserByID(userID string) (UserRecord, error) {
+	p.rmu.Lock()
+	defer p.rmu.Unlock()
+	user, err := p.tenantMockProvider.GetUserByID(userID)
+	return p.mapLookup(user, err)
 }
 
 func newRoleSwitchMockProvider() *roleSwitchMockProvider {
@@ -77,7 +107,8 @@ func (p *roleSwitchMockProvider) lastCall() canAssumeCall {
 func (p *roleSwitchMockProvider) GetUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error) {
 	p.rmu.Lock()
 	defer p.rmu.Unlock()
-	return p.tenantMockProvider.GetUserByIDInTenant(ctx, tenantID, userID)
+	user, err := p.tenantMockProvider.GetUserByIDInTenant(ctx, tenantID, userID)
+	return p.mapLookup(user, err)
 }
 
 func (p *roleSwitchMockProvider) CanAssumeRole(ctx context.Context, tenantID, userID, role string) (bool, error) {

@@ -108,6 +108,14 @@ Return `(false, nil)` for an unknown user or an unheld role. Return an error
 only for a backend failure; goAuth reports that as `ErrSystemUnavailable`
 without changing anything.
 
+The same split applies to the account lookup `SwitchRole` performs
+(`GetUserByID` / `GetUserByIDInTenant`): **return `goAuth.ErrUserNotFound` for a
+missing user** and any other error for a backend failure. Only `ErrUserNotFound`
+(including goAuth's own tenant-mismatch backstop, which already returns it)
+means the account is gone and is reported as `ErrSessionNotFound`. A provider
+that returns a plain error for a missing user is indistinguishable from an
+outage and gets `ErrSystemUnavailable`.
+
 **Why a yes/no check and not an `AllowedRoles(userID) []string` list.** There
 is nothing to enumerate and no list to keep consistent with the role registry;
 the provider answers the one question goAuth has. The same call serves both
@@ -176,8 +184,11 @@ All failures leave the old session untouched unless stated.
 6. Target is not a registered role → `ErrRoleNotAllowed`. The provider is not
    called and the role's absence is not revealed.
 7. Resolve the account through the tenant-scoped lookup with the **session's**
-   tenant. Not found, or a record from another tenant (a provider that
-   ignores the tenant predicate) → `ErrSessionNotFound`. A non-active account
+   tenant. `ErrUserNotFound`, or a record from another tenant (a provider that
+   ignores the tenant predicate) → `ErrSessionNotFound`. Any other lookup error
+   is a provider failure → `ErrSystemUnavailable` (503, reason `unavailable`);
+   the session is not deleted and the same refresh token works on retry, like
+   the refresh role re-check. A non-active account
    status deletes the session and returns the status error; a
    pending-verification account is handled as `Refresh` does.
 8. `CanAssumeRole(sessionTenant, userID, targetRole)`: `false` →
@@ -375,14 +386,14 @@ open (`limiter_fail_open` audit event).
 | Reason | Cause |
 |--------|-------|
 | `disabled` | `RoleSwitch.Enabled` is false |
-| `invalid_session` | undecodable token, missing/expired/unknown session, a foreign-tenant account, or a device-binding rejection |
+| `invalid_session` | undecodable token, missing/expired/unknown session, an account the provider reports as `ErrUserNotFound` or a foreign-tenant account, or a device-binding rejection |
 | `reuse_detected` | the presented token was not the session's current one |
 | `same_role` | target equals the current role |
 | `not_allowed` | unregistered target role, or the provider said no |
 | `step_up_required` | the policy is unsatisfied, or an inline proof failed |
 | `rate_limited` | the attempt budget is exhausted |
 | `account_status` | the account is disabled, locked, deleted or pending verification |
-| `unavailable` | the provider, Redis or token issuance failed |
+| `unavailable` | the provider (`CanAssumeRole` or the account lookup), Redis or token issuance failed |
 
 No metric IDs were added. A switch books the existing limiter-check metric,
 and reuse books the same three metrics as `Refresh` (`refresh_reuse_detected`,
@@ -401,7 +412,7 @@ the feature is unused.
 | `ErrRefreshReuse` | `AUTH_REFRESH_REUSE_DETECTED` | `AUTH_ABUSE` | `401` (the session is gone; log in again) |
 | `ErrSessionNotFound` | `AUTH_SESSION_EXPIRED` | `AUTH_STATE` | `401` |
 | `ErrRefreshInvalid` | `AUTH_REFRESH_INVALID` | `AUTH_VALIDATION` | `401` |
-| `ErrSystemUnavailable` | `SYSTEM_UNAVAILABLE` | `SYSTEM` | `503` |
+| `ErrSystemUnavailable` | `SYSTEM_UNAVAILABLE` | `SYSTEM` | `503` (provider, account-lookup or Redis failure; the session is untouched, retry with the same token) |
 
 Decode, not-found, expired and reuse cases return **exactly** the errors
 `Refresh` returns for them; no new sentinels were added for them. Inline

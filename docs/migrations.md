@@ -13,7 +13,10 @@ same errors, audit events and metrics, and no extra Redis or provider calls.
 1. Implement `RoleSwitchProvider.CanAssumeRole(ctx, tenantID, userID, role) (bool, error)`
    on your user provider. It **must return true for the account's primary role**
    as well as any other role it holds (it is also used by the refresh re-check).
-   Scope it by `tenantID`.
+   Scope it by `tenantID`. Make sure your `GetUserByID` / `GetUserByIDInTenant`
+   return `goAuth.ErrUserNotFound` for a missing user: `SwitchRole` treats only
+   that as "session not found" (401) and every other lookup error as a provider
+   outage (`ErrSystemUnavailable`, 503, session untouched).
 2. Set `Config.RoleSwitch.Enabled = true`. Optionally add step-up policies, for
    example `StepUp["admin"] = RoleStepUpPolicy{RequireMFA: true}`. `Build` fails if
    the provider lacks the capability, a `StepUp` key is not a registered role, or

@@ -236,6 +236,7 @@ func (e *Engine) roleSwitchFlowDeps() internalflows.RoleSwitchDeps {
 		ReserveAttempt:            e.reserveRoleSwitchAttempt,
 		ResetAttempts:             e.resetRoleSwitchAttempts,
 		LookupUser:                e.lookupRoleSwitchUser,
+		UserNotFound:              ErrUserNotFound,
 		CanAssumeRole:             e.roleSwitchProvider.CanAssumeRole,
 		VerifyMFA:                 e.verifyRoleSwitchMFA,
 		VerifyPassword:            e.VerifyPassword,
@@ -275,7 +276,9 @@ func (e *Engine) resetRoleSwitchAttempts(ctx context.Context, tenantID, sessionI
 }
 
 // lookupRoleSwitchUser resolves the account in the session's own tenant,
-// never one taken from the caller.
+// never one taken from the caller. Provider errors pass through unchanged:
+// only [ErrUserNotFound] (returned by the provider for a missing user, and by
+// the tenant-mismatch backstop) means the account is gone.
 func (e *Engine) lookupRoleSwitchUser(ctx context.Context, tenantID, userID string) (internalflows.RoleSwitchUser, error) {
 	user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
 	if err != nil {
