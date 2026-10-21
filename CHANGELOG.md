@@ -381,6 +381,18 @@ v0.8.0 is a valid semantic version for this release.
 
 ### Part 3 of 3: change-email, atomic logout-all and hardening
 
+Additive, with two documented improvements to existing behavior (the atomic
+logout-all and the MFA-proof key cleanup below). No exported signature changed
+and no module dependency was added: `Config` gained `EmailChange`,
+`SecurityConfig` one bool, the user provider one **optional** capability, and
+`session.Store` one method. **With every new feature off (the default), behavior
+is what it was before this part**, apart from those two improvements:
+`TestSessionProfilesUnusedMatchesV070` and `TestExternalAuthUnusedMatchesMain`
+still pin the Redis commands, bytes, errors, audit events and metrics of login,
+refresh, validation, password verification and change, and both logouts, with
+only their "logout all" block updated for the script, and the golden-bytes tests
+pass unmodified. `gorelease -base=v0.7.0` reports only compatible changes.
+
 #### Changed
 
 - **`session.Store.DeleteAllForUser` is atomic.** It was several round trips
@@ -466,6 +478,23 @@ v0.8.0 is a valid semantic version for this release.
   argument printer read a random 32-byte refresh hash that started with the byte 2
   as an MFA challenge record. A test-only change; 36 of 2000 runs failed before
   it and none after.
+
+#### Notes
+
+- Rolling deploys: nothing is migrated. The new Lua scripts load on first use, a
+  v0.8.0 instance and an earlier one can share a Redis (the old
+  `DeleteAllForUser` is simply not atomic), and the email-change keys (`aec:*`,
+  `aecp:*`, `aeci:*`, `rl:emailchange:*`) appear only while the feature is on and
+  expire by TTL, so rolling it back is `EmailChange.Enabled = false`.
+- Like the rotation and swap scripts, the atomic `DeleteAllForUser` touches keys
+  in more than one hash slot, so it needs a single-node or non-sharded Redis.
+- `Security.LimiterFailClosed` does not cover limiter *resets*, the auto-lockout
+  counter or WebAuthn assertions (which have no limiter of their own).
+- The application must step the current user up before `RequestEmailChange` and
+  should notify `EmailChangeResult.OldEmail`; see `docs/email_change.md`.
+- `Engine.ConfirmEmailChange` can return its result together with
+  `ErrSessionInvalidationFailed` when the address changed but the other sessions
+  could not be revoked.
 
 ---
 
