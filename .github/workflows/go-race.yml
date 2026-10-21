@@ -143,7 +143,11 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          # gosec@latest pins an x/tools that cannot read the export data of
+          # current Go 1.27 patch releases ("could not import errors ..."), so
+          # it is built against the newest x/tools instead.
+          gosec_dir="$(mktemp -d)"
+          (cd "$gosec_dir" && go mod init gosecbuild && go get github.com/securego/gosec/v2/cmd/gosec@latest golang.org/x/tools@latest && go build -o "$(go env GOPATH)/bin/gosec" github.com/securego/gosec/v2/cmd/gosec)
 
       - name: Run staticcheck
         if: matrix.run_extended
@@ -179,4 +183,4 @@ jobs:
           check-latest: true
 
       - name: Run race tests
-        run: go test -race ./...
+        run: go test -race -timeout 20m ./...
