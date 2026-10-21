@@ -60,6 +60,7 @@ type Engine struct {
 	totp                  *totpManager
 	jwtManager            *jwt.Manager
 	userProvider          UserProvider
+	verifyHashFn          func(password, encodedHash string) (bool, error)
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
 	roleSwitchProvider    RoleSwitchProvider
@@ -840,8 +841,11 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		})
 		return mapToAuthError(statusErr)
 	}
+	if err := e.rejectPasswordless(ctx, auditEventPasswordChangeFailure, user); err != nil {
+		return mapToAuthError(err)
+	}
 
-	oldOK, err := e.passwordHash.Verify(oldPassword, user.PasswordHash)
+	oldOK, err := e.verifyHash(oldPassword, user.PasswordHash)
 	if err != nil || !oldOK {
 		e.metricInc(MetricPasswordChangeInvalidOld)
 		e.emitAudit(ctx, auditEventPasswordChangeInvalidOld, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
@@ -849,7 +853,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 	}
 	e.resetPasswordVerifyLimiter(ctx, limiterTenant, userID)
 
-	samePassword, err := e.passwordHash.Verify(newPassword, user.PasswordHash)
+	samePassword, err := e.verifyHash(newPassword, user.PasswordHash)
 	if err == nil && samePassword {
 		e.metricInc(MetricPasswordChangeReuseRejected)
 		e.emitAudit(ctx, auditEventPasswordChangeReuse, false, userID, user.TenantID, "", ErrPasswordReuse, nil)
@@ -968,8 +972,11 @@ func (e *Engine) VerifyPassword(ctx context.Context, userID, password string) er
 		})
 		return mapToAuthError(statusErr)
 	}
+	if err := e.rejectPasswordless(ctx, auditEventPasswordVerifyFailure, user); err != nil {
+		return mapToAuthError(err)
+	}
 
-	ok, err := e.passwordHash.Verify(password, user.PasswordHash)
+	ok, err := e.verifyHash(password, user.PasswordHash)
 	password = ""
 	if err != nil || !ok {
 		e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
@@ -2828,7 +2835,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.UpdateTOTPLastUsedCounter = e.userProvider.UpdateTOTPLastUsedCounter
 	}
 	if e != nil && e.passwordHash != nil {
-		deps.VerifyPassword = e.passwordHash.Verify
+		deps.VerifyPassword = e.verifyHash
 		deps.PasswordNeedsUpgrade = e.passwordHash.NeedsUpgrade
 		deps.HashPassword = e.passwordHash.Hash
 	}

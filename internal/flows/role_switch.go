@@ -53,8 +53,11 @@ type RoleStepUpPolicy struct {
 
 // RoleSwitchUser is the freshly resolved account the new session is built from.
 type RoleSwitchUser struct {
-	UserID            string
-	TenantID          string
+	UserID   string
+	TenantID string
+	// PasswordSet is false for an account with no password, which therefore
+	// cannot offer a password as a step-up factor.
+	PasswordSet       bool
 	Status            uint8
 	PermissionVersion uint32
 	RoleVersion       uint32

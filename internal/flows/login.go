@@ -230,7 +230,14 @@ func (d LoginDeps) profileRejection(status SessionProfileStatus) error {
 // response time on rejection paths that have no real hash to verify against
 // (empty password, unknown identifier). Skipping the dummy verification on
 // any credential-rejection path would create a measurable timing oracle.
-const dummyTimingHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+const dummyTimingHash = DummyTimingHash
+
+// DummyTimingHash is the hash verified in place of a real one when there is
+// none to verify, so every rejection costs one Argon2 verification.
+const DummyTimingHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+// DummyTimingPassword is the password verified against DummyTimingHash.
+const DummyTimingPassword = "dummy-timing-equalization"
 
 // errTenantMismatch marks a lookup discarded because the record belonged to
 // a different tenant than the request. It never reaches the caller: it only
@@ -398,7 +405,18 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, deps.Errors.InvalidCredentials
 	}
 
-	ok, err := deps.VerifyPassword(password, user.PasswordHash)
+	var ok bool
+	mismatchReason := "password_mismatch"
+	if user.PasswordHash == "" {
+		// An account created through external sign-in has no password. Verify
+		// a dummy hash so it costs what a wrong password costs, and let it
+		// fall through the wrong-password path -- the same lockout, limiter
+		// and error -- so nothing tells it apart from one that has a password.
+		_, _ = deps.VerifyPassword(DummyTimingPassword, DummyTimingHash)
+		mismatchReason = "password_not_set"
+	} else {
+		ok, err = deps.VerifyPassword(password, user.PasswordHash)
+	}
 	if err != nil || !ok {
 		// Auto-lockout: record failure and lock if threshold reached.
 		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil {
@@ -435,7 +453,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
 				"identifier": username,
-				"reason":     "password_mismatch",
+				"reason":     mismatchReason,
 			}
 		})
 		return nil, deps.Errors.InvalidCredentials

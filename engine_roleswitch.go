@@ -288,6 +288,7 @@ func (e *Engine) lookupRoleSwitchUser(ctx context.Context, tenantID, userID stri
 	return internalflows.RoleSwitchUser{
 		UserID:            user.UserID,
 		TenantID:          tenantID,
+		PasswordSet:       user.PasswordHash != "",
 		Status:            uint8(user.Status),
 		PermissionVersion: user.PermissionVersion,
 		RoleVersion:       user.RoleVersion,
@@ -329,6 +330,9 @@ func (e *Engine) verifyRoleSwitchMFA(ctx context.Context, user internalflows.Rol
 func (e *Engine) roleSwitchStepUpFactors(ctx context.Context, user internalflows.RoleSwitchUser, policy internalflows.RoleStepUpPolicy) []string {
 	factors := []string{}
 	if !policy.RequireMFA {
+		if !user.PasswordSet {
+			return factors
+		}
 		return append(factors, internalflows.StepUpMethodPassword)
 	}
 	if !e.config.TOTP.Enabled {
