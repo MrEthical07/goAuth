@@ -536,8 +536,13 @@ func (e *Engine) resolveExternalAccountOnce(ctx context.Context, tenantID string
 		localErr = ErrUserNotFound
 	}
 
-	if localErr == nil {
+	switch {
+	case localErr == nil:
 		return e.linkMatchedAccount(ctx, tenantID, local, identity, retried)
+	case !errors.Is(localErr, ErrUserNotFound):
+		// Only "no such user" lets the sign-in go on to create one. An outage
+		// or any other failure must not look like an absent account.
+		return externalResolution{}, externalReasonLookupFailed, externalUnavailable(localErr), false
 	}
 
 	// 3. No such account: create one, or refuse.

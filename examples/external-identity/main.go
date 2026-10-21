@@ -330,7 +330,9 @@ func (p *users) idOf(identifier string) string {
 
 func linkKey(provider, subject string) string { return provider + "\x00" + subject }
 
-var errNotFound = errors.New("user not found")
+// The by-identifier lookups must return goAuth.ErrUserNotFound for a missing
+// user: external sign-up only creates an account on that signal.
+var errNotFound = goAuth.ErrUserNotFound
 
 func (p *users) GetUserByIdentifier(identifier string) (goAuth.UserRecord, error) {
 	p.mu.Lock()

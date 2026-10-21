@@ -227,6 +227,17 @@ func TestExternalLoginResolutionMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("a failed local lookup never becomes an account creation", func(t *testing.T) {
+		env := newExtEnv(t, extSignup())
+		env.up.identifierErr = errors.New("database down")
+		_, err := env.login(extTokenSpec{sub: "sub-x", email: "x@example.com", verified: true})
+		requireCode(t, err, CodeSystemUnavailable)
+		if env.up.creates != 0 || env.up.linkCount() != 0 {
+			t.Fatalf("an outage reached account creation (creates %d, links %d)", env.up.creates, env.up.linkCount())
+		}
+		env.waitForAudit(auditEventExternalLoginFailure, "lookup_failed")
+	})
+
 	t.Run("a provider failure is a service error, not a not-found", func(t *testing.T) {
 		env := newExtEnv(t, extSignup())
 		env.up.getErr = errors.New("database down")
