@@ -2396,19 +2396,53 @@ func (e *Engine) configureEmailVerificationStoreDeps(deps *internalflows.EmailVe
 			Strategy:   record.Strategy,
 		}, ttl)
 	}
-	deps.ConsumeVerificationRecord = func(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
-		record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
-		if err != nil {
-			return internalflows.EmailVerificationStoreRecord{}, err
-		}
-		return internalflows.EmailVerificationStoreRecord{
-			UserID:     record.UserID,
-			SecretHash: record.SecretHash,
-			ExpiresAt:  record.ExpiresAt,
-			Attempts:   record.Attempts,
-			Strategy:   record.Strategy,
-		}, nil
+	deps.ConsumeVerificationRecord = e.consumeVerificationRecord
+}
+
+// consumeResetRecord consumes a password-reset challenge and refuses one issued
+// before the user's last email change: it was mailed to the old address. The
+// marker is read only while EmailChange is enabled.
+func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.PasswordResetStoreRecord, error) {
+	record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
+	if err != nil {
+		return internalflows.PasswordResetStoreRecord{}, err
 	}
+	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
+	if markerErr != nil {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
+	}
+	if stale {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
+	}
+	return internalflows.PasswordResetStoreRecord{
+		UserID:     record.UserID,
+		SecretHash: record.SecretHash,
+		ExpiresAt:  record.ExpiresAt,
+		Attempts:   record.Attempts,
+		Strategy:   record.Strategy,
+	}, nil
+}
+
+// consumeVerificationRecord is consumeResetRecord for email verification.
+func (e *Engine) consumeVerificationRecord(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
+	record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
+	if err != nil {
+		return internalflows.EmailVerificationStoreRecord{}, err
+	}
+	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.EmailVerification.VerificationTTL)
+	if markerErr != nil {
+		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationRedisUnavailable
+	}
+	if stale {
+		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationNotFound
+	}
+	return internalflows.EmailVerificationStoreRecord{
+		UserID:     record.UserID,
+		SecretHash: record.SecretHash,
+		ExpiresAt:  record.ExpiresAt,
+		Attempts:   record.Attempts,
+		Strategy:   record.Strategy,
+	}, nil
 }
 
 func generateEmailVerificationChallenge(
@@ -3269,19 +3303,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 				Strategy:   record.Strategy,
 			}, nil
 		}
-		deps.ConsumeResetRecord = func(ctx context.Context, tenantID, resetID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.PasswordResetStoreRecord, error) {
-			record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
-			if err != nil {
-				return internalflows.PasswordResetStoreRecord{}, err
-			}
-			return internalflows.PasswordResetStoreRecord{
-				UserID:     record.UserID,
-				SecretHash: record.SecretHash,
-				ExpiresAt:  record.ExpiresAt,
-				Attempts:   record.Attempts,
-				Strategy:   record.Strategy,
-			}, nil
-		}
+		deps.ConsumeResetRecord = e.consumeResetRecord
 	}
 	if e != nil {
 		deps.LogoutAllInTenant = e.LogoutAllInTenant
