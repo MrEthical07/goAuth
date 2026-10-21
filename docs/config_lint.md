@@ -80,8 +80,10 @@ func (c *Config) Lint() LintResult
 | `session_profile_unbounded` | WARN | A session profile sets `AllowUnbounded` (no absolute ceiling) |
 | `session_profile_renew_on_use_stateless` | INFO | A session profile sets `RenewOnUse` while `ValidationMode` is Hybrid or JWT-only (stateless validation never reads the session, so the idle window renews only on refresh) |
 | `session_profile_removal_ends_sessions` | INFO | Session profiles are configured: removing or renaming a profile ends every session issued under it at its next refresh or strict read |
+| `external_signup_passwordless` | INFO | `ExternalAuth.Enabled` with `AllowSignup`: accounts are created without a password (they can set one through password reset) |
+| `external_key_max_stale_long` | WARN | `ExternalAuth.Enabled` with `KeyMaxStale` above 72h: a revoked or leaked provider key stays trusted that long during an outage |
 
-Summary: 12 INFO, 16 WARN, 4 HIGH.
+Summary: 13 INFO, 17 WARN, 4 HIGH.
 
 ### No-op knob warnings
 

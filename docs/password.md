@@ -90,6 +90,8 @@ if needs, _ := hasher.NeedsUpgrade(oldHash); needs {
 - Enable `Config.Password.UpgradeOnLogin` to automatically re-hash on successful login.
 - Hash writes (`ChangePassword`, password-reset confirm and rehash-on-login) call `UserProvider.UpdatePasswordHash`, or, when `MultiTenant.Enabled` and the provider implements the optional `TenantAwarePasswordUpdater`, `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)` with the tenant goAuth resolved. See [multi_tenancy.md](multi_tenancy.md#tenant-aware-password-writes).
 
+- **Accounts without a password.** An account created by external sign-in has `PasswordHash == ""`. Password login against it runs a dummy Argon2 verification and fails with `ErrInvalidCredentials` exactly like a wrong password (same limiter and lockout; audit reason `password_not_set`). `ChangePassword` and `VerifyPassword` return `ErrPasswordNotSet` after a dummy verification and still count toward the password-verify limiter. Password reset is allowed and **sets a first password**, after which the account behaves like any other. See [external_identity.md](external_identity.md#password-less-accounts).
+
 ## Architecture
 
 The password package is a self-contained hashing module with no Redis dependency. It is instantiated at `Build()` time and injected into the engine for use by login, password change, and password reset flows.
@@ -115,6 +117,7 @@ Login flow:
 | `ErrPasswordReuse` | New password matches current hash |
 | `Config.Validate` / `password.NewArgon2` error (non-sentinel) | Invalid Argon2 configuration (memory, time, parallelism) |
 | `ErrInvalidCredentials` | Password verification failed (returned by engine, not password package) |
+| `ErrPasswordNotSet` | `ChangePassword` / `VerifyPassword` on an account that has no password (created by external sign-in); set one through password reset |
 | `ErrPasswordVerifyRateLimited` | Repeated `ChangePassword`/`VerifyPassword` failures for the user exceeded `Security.MaxLoginAttempts` within `Security.LoginCooldownDuration`; never triggers account auto-lockout |
 
 ## Flow Ownership

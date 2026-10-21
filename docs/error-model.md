@@ -116,6 +116,19 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `CodeAuthRoleSwitchRateLimited` | `AUTH_ROLE_SWITCH_RATE_LIMITED` |
 | `CodeAuthUnknownSessionProfile` | `AUTH_UNKNOWN_SESSION_PROFILE` |
 | `CodeAuthSessionProfileConflict` | `AUTH_SESSION_PROFILE_CONFLICT` |
+| `CodeAuthExternalDisabled` | `AUTH_EXTERNAL_DISABLED` |
+| `CodeAuthExternalProviderUnknown` | `AUTH_EXTERNAL_PROVIDER_UNKNOWN` |
+| `CodeAuthExternalTokenInvalid` | `AUTH_EXTERNAL_TOKEN_INVALID` |
+| `CodeAuthExternalTokenReplayed` | `AUTH_EXTERNAL_TOKEN_REPLAYED` |
+| `CodeSystemUnavailableExternalProvider` | `SYSTEM_UNAVAILABLE_EXTERNAL_PROVIDER` |
+| `CodeAuthExternalEmailUnverified` | `AUTH_EXTERNAL_EMAIL_UNVERIFIED` |
+| `CodeAuthExternalAccountNotFound` | `AUTH_EXTERNAL_ACCOUNT_NOT_FOUND` |
+| `CodeAuthExternalLinkRequired` | `AUTH_EXTERNAL_LINK_REQUIRED` |
+| `CodeAuthExternalLinkRequiresVerify` | `AUTH_EXTERNAL_LINK_REQUIRES_VERIFICATION` |
+| `CodeAuthExternalIdentityInUse` | `AUTH_EXTERNAL_IDENTITY_IN_USE` |
+| `CodeAuthLastLoginMethod` | `AUTH_LAST_LOGIN_METHOD` |
+| `CodeAuthPasswordNotSet` | `AUTH_PASSWORD_NOT_SET` |
+| `CodeAuthExternalLoginRateLimited` | `AUTH_EXTERNAL_LOGIN_RATE_LIMITED` |
 | `CodeAuthPermissionDenied` | `AUTH_PERMISSION_DENIED` |
 | `CodeSystemEngineNotReady` | `SYSTEM_ENGINE_NOT_READY` |
 | `CodeSystemProviderDuplicateIdentifier` | `SYSTEM_PROVIDER_DUPLICATE_IDENTIFIER` |
@@ -191,6 +204,19 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `ErrRoleSwitchRateLimited` | `CategoryAuthAbuse` | `CodeAuthRoleSwitchRateLimited` | `role switch attempts rate limited` |
 | `ErrUnknownSessionProfile` | `CategoryAuthValidation` | `CodeAuthUnknownSessionProfile` | `unknown session profile` |
 | `ErrSessionProfileConflict` | `CategoryAuthValidation` | `CodeAuthSessionProfileConflict` | `session profile conflict` |
+| `ErrExternalAuthDisabled` | `CategoryAuthState` | `CodeAuthExternalDisabled` | `external sign-in disabled` |
+| `ErrExternalProviderUnknown` | `CategoryAuthValidation` | `CodeAuthExternalProviderUnknown` | `unknown external provider` |
+| `ErrExternalTokenInvalid` | `CategoryAuthValidation` | `CodeAuthExternalTokenInvalid` | `external identity token invalid` |
+| `ErrExternalTokenReplayed` | `CategoryAuthAbuse` | `CodeAuthExternalTokenReplayed` | `external identity token already used` |
+| `ErrExternalProviderUnavailable` | `CategorySystem` | `CodeSystemUnavailableExternalProvider` | `external identity provider unavailable` |
+| `ErrExternalEmailUnverified` | `CategoryAuthState` | `CodeAuthExternalEmailUnverified` | `external identity email not verified` |
+| `ErrExternalAccountNotFound` | `CategoryAuthState` | `CodeAuthExternalAccountNotFound` | `no account for this external identity` |
+| `ErrExternalAccountLinkRequired` | `CategoryAuthState` | `CodeAuthExternalLinkRequired` | `account exists; sign in and link the external identity` |
+| `ErrExternalLinkRequiresVerification` | `CategoryAuthState` | `CodeAuthExternalLinkRequiresVerify` | `account email must be verified before linking` |
+| `ErrExternalIdentityInUse` | `CategoryAuthState` | `CodeAuthExternalIdentityInUse` | `external identity already linked to another account` |
+| `ErrLastLoginMethod` | `CategoryAuthState` | `CodeAuthLastLoginMethod` | `cannot remove the last sign-in method` |
+| `ErrPasswordNotSet` | `CategoryAuthState` | `CodeAuthPasswordNotSet` | `account has no password` |
+| `ErrExternalLoginRateLimited` | `CategoryAuthAbuse` | `CodeAuthExternalLoginRateLimited` | `external sign-in attempts rate limited` |
 | `ErrPermissionDenied` | `CategoryAuthState` | `CodeAuthPermissionDenied` | `permission denied` |
 | `ErrEngineNotReady` | `CategorySystem` | `CodeSystemEngineNotReady` | `engine not initialized` |
 | `ErrProviderDuplicateIdentifier` | `CategorySystem` | `CodeSystemProviderDuplicateIdentifier` | `provider duplicate identifier` |
@@ -209,6 +235,7 @@ The boundary mapper in `error_mapping.go` applies these rules in order:
    - limiter domain errors -> domain abuse/unavailable sentinels
    - password reset/email verification/MFA challenge store errors -> corresponding invalid/attempt/unavailable sentinels
    - refresh/session domain errors -> `ErrRefreshReuse`, `ErrRefreshInvalid`, or `ErrSessionNotFound`
+   - external-identity verification errors -> `ErrExternalTokenInvalid`, `ErrExternalTokenReplayed` or `ErrExternalProviderUnavailable`; the external sign-in limiter -> `ErrExternalLoginRateLimited` (its backend failure, and the replay store's, -> `ErrSystemUnavailable`)
 5. Dependency and context failures map to availability:
    - `rate.ErrRedisUnavailable`, `session.ErrRedisUnavailable`, lockout backend errors, `context.Canceled`, `context.DeadlineExceeded` -> `ErrSystemUnavailable`
 6. Any remaining unknown error maps to `ErrSystemInternal`.
@@ -230,6 +257,12 @@ These status mappings are recommended for API adapters wrapping goAuth.
 | Validation failures (`AUTH_*_INVALID`, password policy, route mode) | `400 Bad Request` |
 | `AUTH_UNKNOWN_SESSION_PROFILE` | `400 Bad Request` (a caller bug: the profile name is chosen server-side, see [session.md](session.md#session-profiles)) |
 | `AUTH_SESSION_PROFILE_CONFLICT` | `409 Conflict` |
+| `AUTH_EXTERNAL_DISABLED`, `AUTH_EXTERNAL_EMAIL_UNVERIFIED` | `403 Forbidden` (see [external_identity.md](external_identity.md#http-mapping)) |
+| `AUTH_EXTERNAL_PROVIDER_UNKNOWN` | `400 Bad Request` |
+| `AUTH_EXTERNAL_TOKEN_INVALID`, `AUTH_EXTERNAL_TOKEN_REPLAYED` | `401 Unauthorized` |
+| `AUTH_EXTERNAL_ACCOUNT_NOT_FOUND` | `404 Not Found` (the caller proved the identity, so nothing about anyone else is revealed, and a 401 would send clients into a re-login loop) |
+| `AUTH_EXTERNAL_LINK_REQUIRED`, `AUTH_EXTERNAL_LINK_REQUIRES_VERIFICATION`, `AUTH_EXTERNAL_IDENTITY_IN_USE`, `AUTH_LAST_LOGIN_METHOD`, `AUTH_PASSWORD_NOT_SET` | `409 Conflict` |
+| `AUTH_EXTERNAL_LOGIN_RATE_LIMITED` | `429 Too Many Requests` |
 | Abuse and attempt limits (`AUTH_*_LIMITED`, `AUTH_*_ATTEMPTS_*`, `AUTH_REFRESH_REUSE_DETECTED`) | `429 Too Many Requests` (`AUTH_ROLE_SWITCH_RATE_LIMITED` included; for the role-switch endpoint `AUTH_REFRESH_REUSE_DETECTED` is better served as `401`, since the session no longer exists) |
 | Unavailable dependency codes (`SYSTEM_UNAVAILABLE*`) | `503 Service Unavailable` |
 | `SYSTEM_INTERNAL_ERROR` | `500 Internal Server Error` |

@@ -35,6 +35,7 @@ The root package contains the authentication engine, builder, configuration, typ
 | `WithAuditSink` | method | Attaches an `AuditSink` for event dispatching. |
 | `WithMetricsEnabled` | method | Enables in-process counter metrics. |
 | `WithLatencyHistograms` | method | Enables latency histogram recording. |
+| `WithHTTPClient` | method | Sets the `*http.Client` used to fetch external identity providers' signing keys (default: 5-second timeout). See [external_identity.md](external_identity.md). |
 | `Build` | method | Validates config and returns a ready `*Engine`. |
 
 ### Authentication
@@ -61,6 +62,24 @@ The root package contains the authentication engine, builder, configuration, typ
 | `RoleSwitchConfig` | type | `Config.RoleSwitch`: `Enabled`, `StepUp`, `MaxAttempts`, `Cooldown`. |
 | `RoleStepUpPolicy` | type | Per-target-role proof: `RequireMFA`, `MaxAge`. |
 | `ErrRoleSwitchDisabled`, `ErrRoleNotAllowed`, `ErrRoleSwitchSameRole`, `ErrStepUpRequired`, `ErrRoleSwitchRateLimited` | var | Role-switch sentinels (see [error-model.md](error-model.md)). `Refresh` also returns `ErrRoleNotAllowed` when the re-check finds the session's role revoked. |
+
+### External Identity
+
+Sign in with a Google, Sign in with Apple or OIDC ID token the application already obtained. Off by default; see [external_identity.md](external_identity.md).
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `LoginWithExternalIdentity` | method | `(ctx, provider, idToken string, opts ExternalLoginOptions) (*LoginResult, error)`. Verifies the token, resolves/links/creates the account, then continues like a password login (status, session hardening, MFA, session issue). `LoginResult` gains `NewAccount` and `LinkedIdentity`. |
+| `ExternalLoginOptions` | struct | `Nonce` (required, the raw nonce the server issued), `DisplayName` (passed to the provider on sign-up), `RememberMe`. |
+| `LinkExternalIdentity` | method | `(ctx, userID, provider, idToken, nonce string) (*ExternalIdentity, error)`. Links an identity to the authenticated user; idempotent; `ErrExternalIdentityInUse` if another user has it. |
+| `UnlinkExternalIdentity` | method | `(ctx, userID, provider, subject string) error`. `ErrLastLoginMethod` when the user has no password and this is their only identity. |
+| `ListExternalIdentities` | method | `(ctx, userID string) ([]ExternalIdentity, error)`. |
+| `WarmExternalKeys` | method | `(ctx) error`. Optional startup fetch of every provider's signing keys. |
+| `ExternalIdentity` | struct | `Provider`, `Subject`, `Email`, `EmailVerified`, `IsPrivateEmail`, `DisplayName`, `LinkedAt`. |
+| `ExternalIdentityProvider` | interface | Optional `UserProvider` capability (required when `ExternalAuth.Enabled`): `GetUserByExternalIdentity`, `CreateUserWithExternalIdentity`, `LinkExternalIdentity`, `UnlinkExternalIdentity`, `ListExternalIdentities`, all tenant-scoped; unique `(tenant, provider, subject)`. |
+| `ExternalAuthConfig`, `ExternalProviderConfig` | type | `Config.ExternalAuth`. `ExternalKindGoogle`, `ExternalKindApple`, `ExternalKindOIDC` are the `Kind` values. |
+| `ErrExternalAuthDisabled`, `ErrExternalProviderUnknown`, `ErrExternalTokenInvalid`, `ErrExternalTokenReplayed`, `ErrExternalProviderUnavailable`, `ErrExternalEmailUnverified`, `ErrExternalAccountNotFound`, `ErrExternalAccountLinkRequired`, `ErrExternalLinkRequiresVerification`, `ErrExternalIdentityInUse`, `ErrLastLoginMethod`, `ErrExternalLoginRateLimited` | var | External sign-in sentinels (see [error-model.md](error-model.md)). |
+| `ErrPasswordNotSet` | var | `ChangePassword` / `VerifyPassword` on an account that has no password. |
 
 ### WebAuthn / FIDO2
 
@@ -102,7 +121,7 @@ The root package contains the authentication engine, builder, configuration, typ
 |--------|------|-------------|
 | `CreateAccount` | method | Creates a user account with optional auto-login and role assignment. |
 | `ChangePassword` | method | Changes a user's password after verifying the old password. |
-| `VerifyPassword` | method | Step-up check: verifies a password against the stored hash without changing any state. Shares `ChangePassword`'s rate limiter. |
+| `VerifyPassword` | method | Step-up check: verifies a password against the stored hash without changing any state. Shares `ChangePassword`'s rate limiter. `ErrPasswordNotSet` for an account with no password. |
 | `DisableAccount` | method | Disables an account, preventing new logins. |
 | `EnableAccount` | method | Re-enables a previously disabled account. |
 | `LockAccount` | method | Locks an account (e.g. after brute-force detection). |
@@ -244,6 +263,7 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `TenantAwareUserProvider` | interface | Optional `UserProvider` capability: tenant-scoped user lookup (required when `MultiTenant.Enabled`). |
 | `TenantAwarePasswordUpdater` | interface | Optional `UserProvider` capability: `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)`; used instead of `UpdatePasswordHash` by `ChangePassword`, password-reset confirm and rehash-on-login when `MultiTenant.Enabled`. |
 | `RoleSwitchProvider` | interface | Optional `UserProvider` capability for `SwitchRole` (see above). |
+| `ExternalIdentityProvider` | interface | Optional `UserProvider` capability for external sign-in (see External Identity above). |
 | `UserRecord` | type | Full user record including password hash and status. |
 | `TOTPProvision` | type | Provisioning result: secret + URI. |
 | `TOTPSetup` | type | Alias for `TOTPProvision`. |

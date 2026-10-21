@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.8.0] - Unreleased
 
 Minor release (SemVer), delivered as three pull requests; this section is
-filled in as they land. **This part (per-client session profiles) is additive.**
+filled in as they land. **Part 1 (per-client session profiles) is additive; part 2 (external identity) follows it below.**
 Nothing is removed and no exported signature changed: `Config` gained one
 field, `SessionProfiles`, and `SessionConfig` is byte-for-byte what it was (it
 stays comparable with `==`; the profile table lives in its own top-level field
@@ -158,10 +158,222 @@ Suggested version: v0.8.0
   and stay readable by v0.7.0 in both directions.
 - Removing or renaming a profile, or switching profiles off, ends the sessions
   issued under it at their next use; this is also the way to roll profiles back.
-- Part 1 of 3: third-party sign-in (Google, Apple) and the change-email,
-  atomic `DeleteAllForUser`, opt-in fail-closed limiter and role-switch
-  MFA-proof cleanup work are separate pull requests. The release tag follows the
+- Part 1 of 3 (this section). Third-party sign-in is part 2 (below); the
+  change-email, atomic `DeleteAllForUser`, opt-in fail-closed limiter and
+  role-switch MFA-proof cleanup work is part 3. The release tag follows the
   third.
+
+### Part 2 of 3: third-party sign-in (Google, Sign in with Apple, OIDC)
+
+Additive. Nothing is removed and no exported signature changed: `Config` gained
+one field, `ExternalAuth`, a new top-level struct (no map or slice was added to
+an existing comparable struct), the `Engine` and `Builder` gained methods, and the
+user provider gained an **optional** capability interface detected by type
+assertion. **With `ExternalAuth` off (the default), behavior is byte-for-byte
+what it was before this part:** the same Redis commands for login, refresh,
+validate, logout, `VerifyPassword` and `ChangePassword`, the same audit events
+and metrics, no new keys and no network call, pinned by
+`TestExternalAuthUnusedMatchesMain` (expected values captured by running the same
+scenario on the commit this part branched from) next to the unchanged
+`TestSessionProfilesUnusedMatchesV070` and golden tests. No new module
+dependency: verification uses the standard library and
+`github.com/golang-jwt/jwt/v5`, already required.
+
+The one change that can be seen without enabling it is deliberate hardening of
+**accounts with an empty `PasswordHash`**, which only the new feature creates
+(see Changed).
+
+`gorelease -base=v0.7.0` (the whole v0.8.0 diff so far, parts 1 and 2):
+
+```
+# github.com/MrEthical07/goAuth
+## compatible changes
+(*Builder).WithHTTPClient: added
+(*Engine).LinkExternalIdentity: added
+(*Engine).ListExternalIdentities: added
+(*Engine).LoginWithExternalIdentity: added
+(*Engine).UnlinkExternalIdentity: added
+(*Engine).WarmExternalKeys: added
+CodeAuthExternalAccountNotFound: added
+CodeAuthExternalDisabled: added
+CodeAuthExternalEmailUnverified: added
+CodeAuthExternalIdentityInUse: added
+CodeAuthExternalLinkRequired: added
+CodeAuthExternalLinkRequiresVerify: added
+CodeAuthExternalLoginRateLimited: added
+CodeAuthExternalProviderUnknown: added
+CodeAuthExternalTokenInvalid: added
+CodeAuthExternalTokenReplayed: added
+CodeAuthLastLoginMethod: added
+CodeAuthPasswordNotSet: added
+CodeAuthSessionProfileConflict: added
+CodeAuthUnknownSessionProfile: added
+CodeSystemUnavailableExternalProvider: added
+Config.ExternalAuth: added
+Config.SessionProfiles: added
+ErrExternalAccountLinkRequired: added
+ErrExternalAccountNotFound: added
+ErrExternalAuthDisabled: added
+ErrExternalEmailUnverified: added
+ErrExternalIdentityInUse: added
+ErrExternalLinkRequiresVerification: added
+ErrExternalLoginRateLimited: added
+ErrExternalProviderUnavailable: added
+ErrExternalProviderUnknown: added
+ErrExternalTokenInvalid: added
+ErrExternalTokenReplayed: added
+ErrLastLoginMethod: added
+ErrPasswordNotSet: added
+ErrSessionProfileConflict: added
+ErrUnknownSessionProfile: added
+ExternalAuthConfig: added
+ExternalIdentity: added
+ExternalIdentityProvider: added
+ExternalKindApple: added
+ExternalKindGoogle: added
+ExternalKindOIDC: added
+ExternalLoginOptions: added
+ExternalProviderConfig: added
+LoginResult.LinkedIdentity: added
+LoginResult.NewAccount: added
+SessionInfo.IdleExpiresAt: added
+SessionInfo.Profile: added
+SessionProfile: added
+SessionProfileFromContext: added
+SessionProfilesConfig: added
+WithSessionProfile: added
+
+# github.com/MrEthical07/goAuth/examples/external-identity
+## compatible changes
+package added
+
+# github.com/MrEthical07/goAuth/examples/session-profiles
+## compatible changes
+package added
+
+# github.com/MrEthical07/goAuth/jwt
+## compatible changes
+(*Manager).CreateAccessWithTTL: added
+
+# github.com/MrEthical07/goAuth/session
+## compatible changes
+(*Store).HasProfiles: added
+(*Store).NewSessionLifetime: added
+(*Store).Profile: added
+(*Store).WithProfiles: added
+EndedProfileName: added
+ErrProfileUnknown: added
+ErrSessionExpired: added
+MaxProfileNameLen: added
+ProfilePolicy: added
+ProfileSchemaVersion: added
+Session.IdleExpiresAt: added
+Session.Profile: added
+UnboundedExpiresAt: added
+
+# summary
+v0.8.0 is a valid semantic version for this release.
+```
+
+#### Added
+
+- **`Engine.LoginWithExternalIdentity(ctx, provider, idToken, ExternalLoginOptions)`.**
+  Verifies an OIDC ID token the application already obtained, resolves, links or
+  creates the account, and continues exactly like a password login (account
+  status, session hardening, MFA decision and challenge, session issuance, audit
+  and metrics) through a shared login tail extracted from the password flow.
+  `LoginResult` gains `NewAccount` and `LinkedIdentity`. The OAuth2 code
+  exchange, PKCE, redirects and discovery are out of scope (roadmap phase 2).
+- **Token verification** (new `internal/oidc`): size cap (16 KB), algorithm
+  allow-list (RS256/384/512, ES256/384; never `none` or `HS*`), key selected by
+  `kid` with `kty`/`use`/`alg`/`key_ops` consistent with the token, issuer,
+  audience (a list needs a configured `azp`), `exp`/`iat`/`nbf` against the
+  server clock with a leeway, a required nonce (raw or lowercase hex SHA-256,
+  constant-time), subject, Google hosted domain, `email_verified` /
+  `is_private_email` as bool or string, and single use recorded with `SET NX` as
+  `axt:<provider>:<hash of the signed part>`.
+- **Key cache** with `Cache-Control` max-age clamped to `[KeyRefreshMin, 24h]`,
+  single-flight fetch, at most one refetch per `KeyRefreshMin` for an unknown
+  `kid`, a failure back-off, last-good keys served for `KeyMaxStale` during an
+  outage and then `ErrExternalProviderUnavailable` (never an unverified token),
+  a 1 MB cap, https-only URLs and redirects. Nothing is fetched at `Build`;
+  `Engine.WarmExternalKeys` is an optional warm-up; `Builder.WithHTTPClient`
+  injects the client (default 5s timeout).
+- **Account resolution:** linked identity; else a *verified* email matched through
+  the tenant-scoped lookup, auto-linked only for an Active account when
+  `AutoLinkVerifiedEmail` is on (which `Build` requires
+  `EmailVerification.Enabled` for, closing account pre-hijacking), refused for a
+  pending account (`ErrExternalLinkRequiresVerification`), for auto-link off
+  (`ErrExternalAccountLinkRequired`) or with the account's own status error;
+  else `AllowSignup` creates a password-less Active account atomically with its
+  link, under the account-creation limiter; a concurrent first sign-up re-runs
+  the resolution once. An unverified or missing email is never used.
+- **`LinkExternalIdentity`, `UnlinkExternalIdentity`, `ListExternalIdentities`.**
+  Link verifies the token like a sign-in, is idempotent for the same user,
+  refuses an account pending verification and another user's identity.
+  Unlink refuses the last way in of a password-less account
+  (`ErrLastLoginMethod`).
+- **`ExternalIdentityProvider`**, the optional `UserProvider` capability
+  (tenant-scoped; unique `(tenant, provider, subject)`; atomic create-and-link),
+  with the record-tenant backstop applied to its lookups.
+- **Rate limiting:** a new `rl:extlogin:*` domain on `internal/window`, honouring
+  `LimiterWindowMode`, atomic reserve, failing open: per client IP before
+  verification (skipped without an IP, because a shared bucket would let anyone
+  lock out the provider) and per identity after; reset on success.
+- **Config and lint:** `Config.ExternalAuth` (`ExternalAuthConfig`,
+  `ExternalProviderConfig`, `ExternalKindGoogle|Apple|OIDC`) with validation and
+  deep copy in `cloneConfig`; lint codes `external_signup_passwordless` (info) and
+  `external_key_max_stale_long` (warn, above 72h); the lint reference is now 34
+  codes (13 INFO, 17 WARN, 4 HIGH).
+- **Errors:** `ErrExternalAuthDisabled` (403), `ErrExternalProviderUnknown` (400),
+  `ErrExternalTokenInvalid` (401), `ErrExternalTokenReplayed` (401),
+  `ErrExternalProviderUnavailable` (503), `ErrExternalEmailUnverified` (403),
+  `ErrExternalAccountNotFound` (404), `ErrExternalAccountLinkRequired` (409),
+  `ErrExternalLinkRequiresVerification` (409), `ErrExternalIdentityInUse` (409),
+  `ErrLastLoginMethod` (409), `ErrPasswordNotSet` (409) and
+  `ErrExternalLoginRateLimited` (429), each with an `AuthCode`, category and
+  error-boundary mapping.
+- **Audit:** `external_login_success`, `external_login_failure` (fixed
+  `reason`), `external_identity_linked`, `external_identity_unlinked`,
+  `external_identity_link_failure`, and `account_creation_success` with
+  `method=external`. The ID token and nonce are never written to audit or logs. No
+  metric IDs were added.
+- `examples/external-identity`, a runnable walkthrough with a local test identity
+  provider (built in CI), and `docs/external_identity.md`.
+
+#### Changed
+
+- **Accounts with no password** (`PasswordHash == ""`) are now handled
+  deliberately. Password login against one runs a dummy Argon2 verification and
+  takes the wrong-password path (same limiter, auto-lockout and
+  `ErrInvalidCredentials`; audit reason `password_not_set`) instead of failing
+  instantly on the unparsable hash, which would have been a timing oracle once
+  such accounts exist. `ChangePassword` and `VerifyPassword` return
+  `ErrPasswordNotSet` after a dummy verification and still count toward the
+  password-verify limiter. A recent-authentication role-switch step-up no longer
+  offers `"password"` to them. Password reset still sets a first password.
+  Behavior for accounts that have a password is unchanged.
+- `RunLoginWithResult` ends in a shared `runCompleteLogin` (moved verbatim); the
+  raw-error budget in `engine_error_boundary_static_test.go` moved with it
+  (`RunLoginWithResult` 3 to 0, new `RunCompleteLogin` 3).
+- Documentation: new `external_identity.md`; `config.md`, `config_lint.md`,
+  `api-reference.md`, `goAuth-methods.md`, `error-model.md`, `multi_tenancy.md`,
+  `security.md`, `password.md`, `audit.md`, `migrations.md`, `roadmap.md`
+  (SSO phase 1 done, phase 2 planned), `index.md` and the README.
+- New root source file `engine_external.go`; the root source whitelist in
+  `.github/workflows/go-race.yml` was updated, and CI now builds
+  `examples/external-identity`.
+
+#### Notes
+
+- Redis keys appear only when enabled: `axt:*` (single-use records) and
+  `rl:extlogin:*`. Rolling back is `ExternalAuth.Enabled = false`.
+- Applications must handle what goAuth cannot: Apple token revocation on account
+  deletion and Apple server-to-server notifications (see the checklist in
+  `docs/external_identity.md`), and a step-up before link and unlink.
+- Parts 1 and 2 of 3: the change-email, atomic `DeleteAllForUser`, opt-in
+  fail-closed limiter and role-switch MFA-proof cleanup work are the third pull
+  request. The release tag follows it.
 
 ---
 

@@ -72,6 +72,25 @@ goAuth assumes attackers may:
 | **Backup code hijack** | Regeneration requires TOTP proof | Must verify TOTP to regenerate |
 | **MFA bypass** | Challenge TTL + attempt limits | `ErrMFALoginExpired`/`AttemptsExceeded` |
 
+### External Identity (Google, Sign in with Apple, OIDC)
+
+Only when `ExternalAuth` is enabled. Full treatment: [external_identity.md](external_identity.md).
+
+| Attack | Mitigation | Invariant |
+|--------|-----------|-----------|
+| **Forged or tampered ID token** | Signature verified against the provider's published key set; algorithm allow-list (RS256/384/512, ES256/384; never `none` or `HS*`); the key's `kty`, `use`, `alg` and `key_ops` must agree with the token | A token that cannot be verified is never accepted; the algorithm-confusion token (HMAC keyed with the public key) is rejected |
+| **Token for another app** | `iss` and `aud` must match the provider's configuration; an `aud` list needs an `azp` that is a configured client | Only configured client IDs |
+| **Token replay / capture** | Required nonce (raw or SHA-256, constant-time compare), `exp`/`iat`/`nbf` against the server clock, single use recorded with `SET NX` | A token works once; a rejected token never consumes the record; the record is keyed on the signed part so a malleated signature is not a second use |
+| **Account pre-hijacking** | Linking by email needs the provider's **verified** email, a local account that proved its own address (`EmailVerification` required for auto-link), and Active status; a pending account is never linked, by email or by `LinkExternalIdentity` | An unverified email is never used to link or create |
+| **Cross-tenant identity** | Identity lookups and links carry the request tenant; record-tenant backstop on provider results | An identity of tenant A is unknown in tenant B |
+| **Key-fetch abuse (SSRF-ish, storms)** | Keys come only from the configured https URL; redirects to non-https are refused; 1 MB cap; unknown `kid` triggers at most one refetch per `KeyRefreshMin`; failure back-off; single flight | Random key IDs cannot make the server fetch repeatedly |
+| **Stale-key trust during an outage** | `KeyMaxStale` bounds how long cached keys keep verifying; lint warns above 72h | After it, `ErrExternalProviderUnavailable`; nothing is accepted unverified |
+| **Junk-token flood** | Per-IP limit before verification (needs `WithClientIP`; no shared bucket without one, which anyone could exhaust), per-identity limit after | `ErrExternalLoginRateLimited`; both reset on success |
+| **Timing oracle for password-less accounts** | Password login against an account with no password runs a dummy Argon2 verification and takes the wrong-password path | Same cost, error, limiter and lockout as a wrong password |
+| **Token or nonce leakage** | Never written to audit events, logs or Redis keys (only a hash of the signed part) | Asserted by test over audit output, logs and keys |
+
+What goAuth does **not** do: run the OAuth2 code exchange, store provider tokens, revoke Apple tokens on account deletion, or require a step-up before link/unlink (the application should, using `VerifyPassword` or a recent MFA).
+
 ### Cryptographic Guarantees
 
 | Operation | Primitive | Property |
@@ -122,7 +141,7 @@ See [error-model.md](error-model.md) for the full registry and mapping behavior.
 - **TLS enforcement** — goAuth does not terminate TLS; this must be handled externally.
 - **Business-logic authorization** — permission *checks* are provided, but *defining* correct permissions is the caller's responsibility.
 - **Multi-region consistency** — intentionally out of scope for v1.
-- **OAuth/OIDC provider integration** — goAuth is a standalone auth engine, not an OAuth server.
+- **OAuth server / full OAuth2 client flows** — goAuth is a standalone auth engine, not an OAuth server. It verifies OIDC ID tokens you already obtained ([external_identity.md](external_identity.md)); the authorization-code exchange, PKCE, redirects and provider token storage or revocation are out of scope.
 
 ---
 

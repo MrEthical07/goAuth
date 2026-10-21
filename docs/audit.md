@@ -65,6 +65,21 @@ With [session profiles](session.md#session-profiles) configured, events about a 
 | `session_invalid` | `expired` / `profile_unknown` | A `ModeStrict` read ended a profile session (its effective ceiling passed, or its profile was removed). New event, emitted only with profiles configured |
 | `login_failure` / `mfa_failure` | `session_profile` | An unknown or conflicting profile was requested (audit error `unknown_session_profile` or `session_profile_conflict`) |
 
+## External identity events
+
+With `ExternalAuth` enabled (see [external_identity.md](external_identity.md#audit)). The ID token and the nonce never appear in an event.
+
+| Event | `metadata` |
+|-------|-----------|
+| `external_login_success` | `provider`, `new_account`, `linked`, `mfa_required`, `profile` (with profiles) |
+| `external_login_failure` | `provider`, `reason` (`disabled`, `provider_unknown`, `session_profile`, `token_invalid`, `token_replayed`, `provider_unavailable`, `store_unavailable`, `rate_limited`, `email_unverified`, `link_required`, `link_requires_verification`, `account_not_found`, `account_status`, `signup_rate_limited`, `signup_failed`, `account_exists`, `identity_in_use`, `lookup_failed`) |
+| `account_creation_success` | adds `method=external` and `provider` when the account was created by an external sign-up |
+| `external_identity_linked` | `provider`, `via` (`verified_email` or `link`) |
+| `external_identity_unlinked` | `provider` |
+| `external_identity_link_failure` | `provider`, `reason` |
+
+A successful external sign-in also emits the shared login tail's own `login_success` (or `mfa_required`), and a failure there emits `login_failure` / `mfa_failure`, exactly as a password login does. A password login against an account with no password is `login_failure` with reason `password_not_set`; `ChangePassword` / `VerifyPassword` against one emit `password_change_failure` / `password_verify_failure` with the same reason.
+
 ## Strategies
 
 - **Drop-if-full** (`DropIfFull = true`): Non-blocking. Increments atomic `dropped` counter on overflow. Preferred for latency-sensitive deployments.

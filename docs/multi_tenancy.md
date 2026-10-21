@@ -103,6 +103,9 @@ and reject a tenant mismatch:
 | `VerifyBackupCode`, `VerifyBackupCodeInTenant` (checked against the request tenant or the explicit `tenantID`; a miss also counts toward the backup-code limiter) | User-not-found |
 | `ListWebAuthnCredentials`, `RemoveWebAuthnCredential` | User-not-found |
 | `SwitchRole` (the session is read from the request tenant; a token minted in another tenant is session-not-found, never reaches the provider, and still consumes a switch-attempt slot under the request tenant. The account is resolved with the *session's* tenant and a foreign-tenant record is session-not-found) | Session-not-found |
+| `LoginWithExternalIdentity`: identity lookup (`GetUserByExternalIdentity` is called with the request tenant; a record of another tenant is treated as not found and logged, even from a provider that ignores the tenant) | Not found: with no verified email `ErrExternalEmailUnverified`, otherwise the sign-up / link-required / not-found branch of the request tenant |
+| `LoginWithExternalIdentity`: email match (the tenant-scoped identifier lookup with the same record-tenant backstop as login) | No match in the request tenant: sign-up (`AllowSignup`, which needs an explicit tenant on the context) or `ErrExternalAccountNotFound` |
+| `LinkExternalIdentity`, `UnlinkExternalIdentity`, `ListExternalIdentities` (the user is resolved through the tenant-scoped lookup; provider calls carry the request tenant) | User-not-found |
 | Refresh role re-check (only with `RoleSwitch.Enabled`: `CanAssumeRole` is called with the session's own tenant, never a caller-supplied one) | No provider call for a foreign-tenant token |
 
 Refresh needs no explicit guard: the session is loaded from a key built with
