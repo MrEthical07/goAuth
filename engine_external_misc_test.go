@@ -22,6 +22,11 @@ func TestExternalAuthDisabled(t *testing.T) {
 
 	_, err := env.engine.LoginWithExternalIdentity(ctx, "google", "tok", ExternalLoginOptions{Nonce: "n"})
 	requireCode(t, err, CodeAuthExternalDisabled)
+	_, err = env.engine.LinkExternalIdentity(ctx, rsUserID, "google", "tok", "n")
+	requireCode(t, err, CodeAuthExternalDisabled)
+	requireCode(t, env.engine.UnlinkExternalIdentity(ctx, rsUserID, "google", "s"), CodeAuthExternalDisabled)
+	_, err = env.engine.ListExternalIdentities(ctx, rsUserID)
+	requireCode(t, err, CodeAuthExternalDisabled)
 	requireCode(t, env.engine.WarmExternalKeys(ctx), CodeAuthExternalDisabled)
 
 	if names := env.cmds.names(); len(names) != 0 {

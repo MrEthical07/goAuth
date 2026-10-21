@@ -679,3 +679,203 @@ func (e *Engine) enforceExternalSignupLimit(ctx context.Context, tenantID, ident
 	})
 	return ErrAccountCreationRateLimited
 }
+
+// ---------------------------------------------------------------------------
+// Link, unlink, list
+// ---------------------------------------------------------------------------
+
+func (e *Engine) externalLinkFail(ctx context.Context, tenantID, provider, userID, reason string, err error) error {
+	e.emitAudit(ctx, auditEventExternalLinkFailure, false, userID, tenantID, "", err, func() map[string]string {
+		return map[string]string{
+			"provider": externalAuditProvider(provider),
+			"reason":   reason,
+		}
+	})
+	return err
+}
+
+// lookupExternalManagedUser resolves the authenticated user of a link, unlink
+// or list call through the tenant-scoped lookup, so an ID from another tenant
+// is not found.
+func (e *Engine) lookupExternalManagedUser(ctx context.Context, userID string) (UserRecord, error) {
+	if userID == "" {
+		return UserRecord{}, ErrUserNotFound
+	}
+	user, err := e.lookupUserByID(ctx, userID)
+	if err != nil {
+		return UserRecord{}, ErrUserNotFound
+	}
+	return user, nil
+}
+
+// LinkExternalIdentity links the external identity proved by idToken to the
+// authenticated user userID, who must have signed in some other way first. The
+// token is verified exactly as for sign-in (including the nonce, the rate
+// limit and single use). Unlike sign-in it does not need a verified email,
+// because the user is already authenticated; EmailVerified is stored as the
+// provider reported it.
+//
+// Linking an identity already linked to this user succeeds without change.
+// One linked to a different user fails with [ErrExternalIdentityInUse]. An
+// account that is still pending email verification cannot be linked
+// ([ErrExternalLinkRequiresVerification]): until its address is verified it
+// may belong to whoever registered it.
+//
+// goAuth does not ask the user to prove themselves again: have the application
+// require a step-up (for example [Engine.VerifyPassword], or a recent MFA)
+// before calling this. userID must come from the session, never from the
+// request.
+//
+//	Flow:        Link External Identity
+//	Docs:        docs/external_identity.md
+func (e *Engine) LinkExternalIdentity(ctx context.Context, userID, provider, idToken string, nonce string) (*ExternalIdentity, error) {
+	identity, err := e.linkExternalIdentity(ctx, userID, provider, idToken, nonce)
+	if err != nil {
+		return nil, mapToAuthError(err)
+	}
+	return identity, nil
+}
+
+func (e *Engine) linkExternalIdentity(ctx context.Context, userID, provider, idToken, nonce string) (*ExternalIdentity, error) {
+	tenantID := tenantIDFromContext(ctx)
+	if !e.externalEnabled() {
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonDisabled, ErrExternalAuthDisabled)
+	}
+	if !e.externalVerifier.Has(provider) {
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonProviderUnknown, ErrExternalProviderUnknown)
+	}
+
+	claims, att, reason, err := e.verifyExternalToken(ctx, tenantID, provider, idToken, nonce)
+	if err != nil {
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, reason, err)
+	}
+
+	user, err := e.lookupExternalManagedUser(ctx, userID)
+	if err != nil {
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonUserNotFound, err)
+	}
+	if statusErr := accountStatusToError(user.Status); statusErr != nil {
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonAccountStatus, statusErr)
+	}
+	if user.Status == AccountPendingVerification {
+		// Same gate as linking by email: an account whose own address was never
+		// proved may belong to whoever registered it, who could otherwise keep
+		// a way in after the real owner verifies the address.
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonLinkRequiresVerification, ErrExternalLinkRequiresVerification)
+	}
+
+	identity := e.externalIdentityFor(claims, "")
+	existing, err := e.externalProvider.GetUserByExternalIdentity(ctx, tenantID, provider, claims.Subject)
+	switch {
+	case err == nil && e.externalUserInTenant(existing, tenantID):
+		if existing.UserID != user.UserID {
+			return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonIdentityInUse, ErrExternalIdentityInUse)
+		}
+		// Already linked to this user: nothing to do.
+		e.resetExternal(ctx, tenantID, att.sources, att.subject)
+		return &identity, nil
+	case err == nil, errors.Is(err, ErrUserNotFound):
+	default:
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonLookupFailed, externalUnavailable(err))
+	}
+
+	if err := e.externalProvider.LinkExternalIdentity(ctx, tenantID, user.UserID, identity); err != nil {
+		if errors.Is(err, ErrExternalIdentityInUse) {
+			return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonIdentityInUse, ErrExternalIdentityInUse)
+		}
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonLookupFailed, externalUnavailable(err))
+	}
+	e.resetExternal(ctx, tenantID, att.sources, att.subject)
+	e.emitAudit(ctx, auditEventExternalLinked, true, user.UserID, tenantID, "", nil, func() map[string]string {
+		return map[string]string{
+			"provider": provider,
+			"via":      "link",
+		}
+	})
+	return &identity, nil
+}
+
+// UnlinkExternalIdentity removes the link between userID and the identity
+// (provider, subject). It refuses with [ErrLastLoginMethod] when the account
+// has no password and this is its only linked identity, which would leave it
+// with no way to sign in. Unlinking an identity that is not linked succeeds.
+//
+// Have the application require a step-up before calling this, and take userID
+// from the session. Two concurrent unlinks of an account's last two identities
+// can each see the other still linked; a user provider that must prevent that
+// should enforce it in its own transaction.
+//
+//	Flow:        Unlink External Identity
+//	Docs:        docs/external_identity.md
+func (e *Engine) UnlinkExternalIdentity(ctx context.Context, userID, provider, subject string) error {
+	return mapToAuthErrorOrNil(e.unlinkExternalIdentity(ctx, userID, provider, subject))
+}
+
+func (e *Engine) unlinkExternalIdentity(ctx context.Context, userID, provider, subject string) error {
+	tenantID := tenantIDFromContext(ctx)
+	if !e.externalEnabled() {
+		return ErrExternalAuthDisabled
+	}
+	user, err := e.lookupExternalManagedUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if statusErr := accountStatusToError(user.Status); statusErr != nil {
+		return statusErr
+	}
+
+	identities, err := e.externalProvider.ListExternalIdentities(ctx, tenantID, user.UserID)
+	if err != nil {
+		return externalUnavailable(err)
+	}
+	linked := false
+	for _, id := range identities {
+		if id.Provider == provider && id.Subject == subject {
+			linked = true
+		}
+	}
+	if !linked {
+		return nil
+	}
+	if user.PasswordHash == "" && len(identities) <= 1 {
+		return ErrLastLoginMethod
+	}
+
+	if err := e.externalProvider.UnlinkExternalIdentity(ctx, tenantID, user.UserID, provider, subject); err != nil {
+		return externalUnavailable(err)
+	}
+	e.emitAudit(ctx, auditEventExternalUnlinked, true, user.UserID, tenantID, "", nil, func() map[string]string {
+		return map[string]string{"provider": externalAuditProvider(provider)}
+	})
+	return nil
+}
+
+// ListExternalIdentities returns the external identities linked to userID,
+// for a settings screen. userID must come from the session.
+//
+//	Flow:        List External Identities
+//	Docs:        docs/external_identity.md
+func (e *Engine) ListExternalIdentities(ctx context.Context, userID string) ([]ExternalIdentity, error) {
+	identities, err := e.listExternalIdentities(ctx, userID)
+	if err != nil {
+		return nil, mapToAuthError(err)
+	}
+	return identities, nil
+}
+
+func (e *Engine) listExternalIdentities(ctx context.Context, userID string) ([]ExternalIdentity, error) {
+	if !e.externalEnabled() {
+		return nil, ErrExternalAuthDisabled
+	}
+	user, err := e.lookupExternalManagedUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	identities, err := e.externalProvider.ListExternalIdentities(ctx, tenantIDFromContext(ctx), user.UserID)
+	if err != nil {
+		return nil, externalUnavailable(err)
+	}
+	out := make([]ExternalIdentity, len(identities))
+	copy(out, identities)
+	return out, nil
+}
