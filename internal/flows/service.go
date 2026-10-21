@@ -120,6 +120,11 @@ func (s Service) LoginWithResult(ctx context.Context, username, password string,
 	return RunLoginWithResult(ctx, username, password, opts, s.deps.Login)
 }
 
+// CompleteLogin finishes a login whose primary factor the caller verified.
+func (s Service) CompleteLogin(ctx context.Context, username string, user LoginUserRecord, opts LoginOptions) (*LoginResult, error) {
+	return RunCompleteLogin(ctx, username, user, opts, s.deps.Login)
+}
+
 func (s Service) ConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType string) (*LoginResult, error) {
 	return RunConfirmLoginMFAWithType(ctx, challengeID, code, mfaType, s.deps.Login)
 }

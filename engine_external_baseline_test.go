@@ -2,6 +2,7 @@ package goAuth
 
 import (
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +22,12 @@ import (
 // on both sides. It reuses the transcript helpers of the session-profile
 // baseline test.
 const extbCaptureEnv = "GOAUTH_CAPTURE_BASE"
+
+// extbSpuriousChallenge matches what spbArg prints when a random 32-byte hash
+// happens to start with the byte 2, which its heuristic takes for an MFA
+// challenge record (about one run in 256). This scenario has no MFA
+// challenge, so any such rendering is really a 32-byte hash.
+var extbSpuriousChallenge = regexp.MustCompile(`challenge:[0-9a-f]{64}`)
 
 const (
 	extbNewPassword = "second-password-456"
@@ -45,7 +52,7 @@ func extbRun(t *testing.T) []string {
 		tr.add("== %s", name)
 		run()
 		for _, c := range spbCommands(env.cmds) {
-			tr.add("  cmd %s", c)
+			tr.add("  cmd %s", extbSpuriousChallenge.ReplaceAllString(c, "<bin32>"))
 		}
 	}
 

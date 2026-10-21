@@ -15,6 +15,7 @@ import (
 	"github.com/MrEthical07/goAuth/internal/clock"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
+	"github.com/MrEthical07/goAuth/internal/oidc"
 	"github.com/MrEthical07/goAuth/internal/rate"
 	internalsecurity "github.com/MrEthical07/goAuth/internal/security"
 	"github.com/MrEthical07/goAuth/internal/stores"
@@ -65,6 +66,9 @@ type Engine struct {
 	passwordUpdater       TenantAwarePasswordUpdater
 	roleSwitchProvider    RoleSwitchProvider
 	roleSwitchLimiter     *limiters.RoleSwitchLimiter
+	externalProvider      ExternalIdentityProvider
+	externalVerifier      *oidc.Verifier
+	externalLimiter       *limiters.ExternalLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
 }

@@ -50,6 +50,13 @@ func withResolvedSessionProfile(ctx context.Context, name string) context.Contex
 	return context.WithValue(ctx, resolvedSessionProfileKey{}, name)
 }
 
+// WithResolvedSessionProfile is withResolvedSessionProfile for flows driven
+// from outside this package: the caller resolved the profile before any work
+// and records it so the later steps of its login use the same one.
+func WithResolvedSessionProfile(ctx context.Context, name string) context.Context {
+	return withResolvedSessionProfile(ctx, name)
+}
+
 // ResolvedSessionProfile returns the profile a flow resolved for the session
 // it is creating, or "" when none was (profiles unconfigured).
 func ResolvedSessionProfile(ctx context.Context) string {
