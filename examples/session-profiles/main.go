@@ -59,7 +59,10 @@ func profileFor(c client) string {
 
 func main() {
 	if err := run(os.Stdout); err != nil {
-		log.Fatal(err)
+		// The error is not printed: it can wrap a failed login, and nothing
+		// derived from credentials should reach a log. TestWalkthroughRuns
+		// reports the full error when this fails.
+		log.Fatal("session-profiles example failed; run its test for details")
 	}
 }
 
