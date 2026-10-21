@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/clock"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -176,6 +177,27 @@ local function parse_session(data)
   }
 end
 
+-- find_profile looks a session profile up in the table passed in ARGV: entries
+-- separated by ';', each name:idle_ms:abs_ms:renew. idle_ms > 0 makes the
+-- profile renewing; abs_ms == 0 means no ceiling. Returns nil when the name is
+-- absent (the profile was removed from the configuration).
+local function find_profile(table_arg, name)
+  if not table_arg or table_arg == "" or not name then
+    return nil
+  end
+  for entry in string.gmatch(table_arg, "[^;]+") do
+    local n, idle, abs, renew = string.match(entry, "^([a-z0-9_%-]+):(%d+):(%d+):([01])$")
+    if n == name then
+      return {
+        idle_ms = tonumber(idle),
+        abs_ms = tonumber(abs),
+        renew = renew == "1"
+      }
+    end
+  end
+  return nil
+end
+
 local function decrement_count(count_key)
   local count = tonumber(redis.call("GET", count_key) or "0")
   if count > 1 then
@@ -192,6 +214,12 @@ local user_prefix = ARGV[2]
 local provided_hash = ARGV[3]
 local next_hash = ARGV[4]
 local now_unix = tonumber(ARGV[5])
+-- Present only when session profiles are configured: the profile table, a
+-- jitter in milliseconds (already drawn in Go, so the script stays
+-- deterministic) and the millisecond clock.
+local profile_table = ARGV[6]
+local jitter_ms = tonumber(ARGV[7] or "0") or 0
+local now_ms = tonumber(ARGV[8] or "0") or (now_unix * 1000)
 
 local data = redis.call("GET", session_key)
 if not data then
@@ -237,11 +265,68 @@ if not parsed.refresh_offset then
   return {4}
 end
 
+-- A v6 session carries a profile. Everything above ran first and unchanged
+-- (missing, invalid blob, expired, hash mismatch, PTTL); only a session that
+-- survived all of it reaches the profile rules. A legacy session skips this
+-- block entirely and is written back with its existing PTTL, as before.
+if parsed.profile then
+  local policy = find_profile(profile_table, parsed.profile)
+  if not policy then
+    -- The profile was removed from the configuration: end the session
+    -- exactly as expiry does and say why.
+    local deleted = redis.call("DEL", session_key)
+    redis.call("SREM", user_key, session_id)
+    if deleted == 1 then
+      decrement_count(count_key)
+    end
+    return {1, "profile_unknown", parsed.profile}
+  end
+
+  -- Effective ceiling: the stored one, or CreatedAt plus the profile's
+  -- current AbsoluteLifetime when that is sooner.
+  local ceiling_ms = parsed.expires_at * 1000
+  if policy.abs_ms > 0 then
+    local cap_ms = parsed.created_at * 1000 + policy.abs_ms
+    if cap_ms < ceiling_ms then
+      ceiling_ms = cap_ms
+    end
+  end
+  local remaining_ms = ceiling_ms - now_ms
+  if remaining_ms <= 0 then
+    local deleted = redis.call("DEL", session_key)
+    redis.call("SREM", user_key, session_id)
+    if deleted == 1 then
+      decrement_count(count_key)
+    end
+    return {1}
+  end
+
+  if policy.idle_ms > 0 then
+    -- Renewing: a fresh idle window, never past the ceiling and never
+    -- shorter than a second (or than what is left).
+    ttl = policy.idle_ms + jitter_ms
+    if ttl > remaining_ms then
+      ttl = remaining_ms
+    end
+    local floor_ms = 1000
+    if remaining_ms < floor_ms then
+      floor_ms = remaining_ms
+    end
+    if ttl < floor_ms then
+      ttl = floor_ms
+    end
+  elseif ttl > remaining_ms then
+    -- Fixed: the key keeps its PTTL; only a ceiling shortened in the
+    -- configuration can pull it in.
+    ttl = remaining_ms
+  end
+end
+
 local prefix = string.sub(data, 1, parsed.refresh_offset - 1)
 local suffix = string.sub(data, parsed.refresh_offset + 32)
 local updated = prefix .. next_hash .. suffix
 
-redis.call("SET", session_key, updated, "PX", ttl)
+redis.call("SET", session_key, updated, "PX", string.format("%d", ttl))
 redis.call("SADD", user_key, session_id)
 
 return {3, updated}
@@ -259,6 +344,11 @@ type Store struct {
 	sliding       bool
 	jitterEnabled bool
 	jitterRange   time.Duration
+
+	// profiles is the session profile table and its Lua ARGV encoding; nil
+	// unless WithProfiles was called. It is a pointer so that Store, which
+	// callers could always compare with ==, stays comparable.
+	profiles *profileTable
 }
 
 // NewStore creates a session [Store] backed by the given Redis client.
@@ -358,7 +448,10 @@ func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Du
 	}
 	sess.SessionID = sessionID
 
-	now := time.Now()
+	now := clock.Now()
+	if sess.Profile != "" {
+		return s.getProfiled(ctx, key, sess, now)
+	}
 	remainingAbsolute := s.remainingAbsoluteTTL(sess, ttl, now)
 	if remainingAbsolute <= 0 {
 		if err := s.deleteSessionAndIndex(ctx, sess.TenantID, sess.UserID, sessionID); err != nil {
@@ -554,8 +647,19 @@ func (s *Store) GetReadOnly(ctx context.Context, tenantID, sessionID string) (*S
 		return nil, err
 	}
 	sess.SessionID = sessionID
-	if time.Now().Unix() > sess.ExpiresAt {
+	now := clock.Now()
+	if now.Unix() > sess.ExpiresAt {
 		return nil, redis.Nil
+	}
+	if sess.Profile != "" {
+		policy, live := s.profileLive(sess, now)
+		if !live {
+			return nil, redis.Nil
+		}
+		if err := s.fillIdleExpiry(ctx, s.key(tenantID, sessionID), sess, policy, now); err != nil {
+			return nil, err
+		}
+		return sess, nil
 	}
 	if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionID), sess); err != nil {
 		return nil, err
@@ -582,7 +686,10 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 	}
 
 	sessions := make([]*Session, 0, len(sessionIDs))
-	nowUnix := time.Now().Unix()
+	now := clock.Now()
+	nowUnix := now.Unix()
+	var idleKeys []string
+	var idleSessions []*Session
 	for i, cmd := range cmds {
 		data, cmdErr := cmd.Bytes()
 		if cmdErr != nil {
@@ -600,11 +707,43 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 		if nowUnix > sess.ExpiresAt {
 			continue
 		}
+		if sess.Profile != "" {
+			policy, live := s.profileLive(sess, now)
+			if !live {
+				continue
+			}
+			if policy.Renewing() {
+				idleKeys = append(idleKeys, s.key(tenantID, sessionIDs[i]))
+				idleSessions = append(idleSessions, sess)
+			}
+			sessions = append(sessions, sess)
+			continue
+		}
 		if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionIDs[i]), sess); err != nil {
 			return nil, err
 		}
 
 		sessions = append(sessions, sess)
+	}
+
+	// One more round trip, only when renewing-profile sessions were found:
+	// their idle expiry is the remaining lifetime of the key.
+	if len(idleKeys) > 0 {
+		pipe := s.redis.Pipeline()
+		ttlCmds := make([]*redis.DurationCmd, len(idleKeys))
+		for i, key := range idleKeys {
+			ttlCmds[i] = pipe.PTTL(ctx, key)
+		}
+		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+			return nil, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+		}
+		for i, cmd := range ttlCmds {
+			pttl, err := cmd.Result()
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+			}
+			idleSessions[i].IdleExpiresAt = idleExpiry(now, pttl)
+		}
 	}
 
 	return sessions, nil
@@ -790,15 +929,26 @@ func (s *Store) RotateRefreshHash(
 	nextHash [32]byte,
 ) (*Session, error) {
 	key := s.key(tenantID, sessionID)
-	result, err := rotateRefreshLua.Run(
-		ctx,
-		s.redis,
-		[]string{key, s.tenantCountKey(tenantID)},
+	now := clock.Now()
+	args := []interface{}{
 		sessionID,
 		s.userKey(tenantID, ""),
 		providedHash[:],
 		nextHash[:],
-		time.Now().Unix(),
+		now.Unix(),
+	}
+	// With no profile table the arguments are exactly the legacy five.
+	extra, err := s.profileScriptArgs(now)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, extra...)
+
+	result, err := rotateRefreshLua.Run(
+		ctx,
+		s.redis,
+		[]string{key, s.tenantCountKey(tenantID)},
+		args...,
 	).Result()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
@@ -818,7 +968,7 @@ func (s *Store) RotateRefreshHash(
 	case rotateStatusNotFound:
 		return nil, errors.Join(redis.Nil, ErrRefreshSessionNotFound)
 	case rotateStatusExpired:
-		return nil, errors.Join(redis.Nil, ErrRefreshSessionExpired)
+		return nil, expiredScriptError(parts)
 	case rotateStatusMismatch:
 		return nil, ErrRefreshHashMismatch
 	case rotateStatusRotated:
@@ -850,6 +1000,24 @@ func (s *Store) RotateRefreshHash(
 	default:
 		return nil, fmt.Errorf("%w: unknown refresh script status", ErrRedisUnavailable)
 	}
+}
+
+// expiredScriptError builds the error for the scripts' "expired" status. A
+// second element "profile_unknown" says the session ended because its
+// profile is no longer configured rather than because time ran out; both read
+// as an expired session to every caller, which can tell them apart with
+// [ErrProfileUnknown].
+func expiredScriptError(parts []interface{}) error {
+	if len(parts) > 1 {
+		if reason, _ := parts[1].(string); reason == "profile_unknown" {
+			name := ""
+			if len(parts) > 2 {
+				name, _ = parts[2].(string)
+			}
+			return errors.Join(redis.Nil, ErrRefreshSessionExpired, &profileEndError{name: name, reason: ErrProfileUnknown})
+		}
+	}
+	return errors.Join(redis.Nil, ErrRefreshSessionExpired)
 }
 
 func (s *Store) deleteSessionAndIndex(ctx context.Context, tenantID, userID, sessionID string) error {

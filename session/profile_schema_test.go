@@ -178,6 +178,7 @@ func TestSchemaMigrationLeavesV5AndV6Alone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, rdb, done := newSessionStoreTest(t)
 			defer done()
+			store.WithProfiles(map[string]ProfilePolicy{"mobile": {IdleTimeout: 24 * time.Hour, AbsoluteLifetime: 48 * time.Hour}})
 			ctx := context.Background()
 
 			sess := testSession()
@@ -261,6 +262,7 @@ func TestRotateRefreshHashKeepsSchemaVersion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store, rdb, done := newSessionStoreTest(t)
 			defer done()
+			store.WithProfiles(map[string]ProfilePolicy{"mobile": {IdleTimeout: 24 * time.Hour, AbsoluteLifetime: 48 * time.Hour}})
 			ctx := context.Background()
 
 			sess := testSession()
