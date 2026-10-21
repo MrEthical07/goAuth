@@ -223,6 +223,11 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPRateLimited, nil)
 			return deps.Errors.TOTPRateLimited
 		}
+		if recErr != nil {
+			// Only a fail-closed limiter reports a non-denial error here.
+			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
+			return deps.Errors.TOTPUnavailable
+		}
 		if err != nil {
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
 			return deps.Errors.TOTPUnavailable
@@ -317,6 +322,9 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 		recErr := deps.RecordTOTPLimiterFailure(ctx, userID)
 		if recErr != nil && deps.IsTOTPRateLimited(recErr) {
 			return deps.Errors.TOTPRateLimited
+		}
+		if recErr != nil {
+			return deps.Errors.TOTPUnavailable
 		}
 		if err != nil {
 			return deps.Errors.TOTPUnavailable
@@ -423,6 +431,10 @@ func RunVerifyTOTPForUser(ctx context.Context, user TOTPUser, code string, deps 
 		if recErr != nil && deps.IsTOTPRateLimited(recErr) {
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPRateLimited, nil)
 			return deps.Errors.TOTPRateLimited
+		}
+		if recErr != nil {
+			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPUnavailable, nil)
+			return deps.Errors.TOTPUnavailable
 		}
 		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPInvalid, nil)
 		return deps.Errors.TOTPInvalid

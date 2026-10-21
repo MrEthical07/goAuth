@@ -407,6 +407,20 @@ v0.8.0 is a valid semantic version for this release.
   are unchanged; the key is derived from the tenant counter key inside the
   script, so the baselines are unaffected.
 
+#### Added
+
+- **`Security.LimiterFailClosed`** (default `false`). A limiter backend error
+  is still recorded as a `limiter_fail_open` audit event and the request still
+  proceeds unthrottled by default. With the flag on, every limiter check or
+  count that gates a request (login, password verification, TOTP, backup codes,
+  role switch, account creation, email verification, password reset, external
+  sign-in and sign-up) refuses it with a system error (503) instead. One helper,
+  `Engine.limiterOutage`, makes the decision for every call site; a static test
+  lists them all. The event keeps its name and gains `fail_closed=true`
+  metadata when the flag is on. Lint: `limiter_fail_closed_outage_blocks_signin`
+  (INFO). With the flag off, behavior is unchanged. Limiter resets after a
+  success never block, and the auto-lockout counter is not covered.
+
 #### Fixed
 
 - `TestSessionProfilesUnusedMatchesV070` flaked about once in 55 runs: its

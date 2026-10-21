@@ -148,6 +148,7 @@ created under it.
 | `AutoLockoutThreshold`         | `int`         | 10           | Failures before auto-lock |
 | `AutoLockoutDuration`          | `time.Duration`| 30 min      | Duration of auto-lock |
 | `LimiterWindowMode`            | `string`      | `""` (fixed) | Rate-limiter algorithm for all domains: `"fixed"` or `"sliding"` (removes the 2× boundary burst) |
+| `LimiterFailClosed`            | `bool`        | `false`      | A limiter backend (Redis) error refuses the request with a system error (503) instead of letting it through; see [rate_limiting.md](rate_limiting.md#failing-closed) |
 
 > **See also:** [security.md](security.md), [rate_limiting.md](rate_limiting.md)
 
@@ -391,6 +392,7 @@ engine**:
 - `max_session_duration_caps_default` (warn) — explicit MaxSessionDuration below the default session lifetime (caps all sessions)
 - `max_session_duration_long` (warn) — effective session ceiling > 30 days
 - `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on `ModeStrict`-resolved routes
+- `limiter_fail_closed_outage_blocks_signin` (info) — `Security.LimiterFailClosed` is on: a limiter backend outage blocks sign-in, MFA, password and account flows with a 503
 - `role_switch_stateless_validation` (info) — `RoleSwitch.Enabled` with `ModeJWTOnly`/`ModeHybrid`; a pre-switch access token stays valid on routes resolved in those modes until it expires (see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode))
 - `session_profile_*` codes — advisory notes on session profiles: a ceiling over 365 days or an unbounded profile (warn), `RenewOnUse` on a stateless validation mode and the "removing a profile ends its sessions" reminder (info); see [Session profiles](#session-profiles-configsessionprofiles)
 - `external_autolink_trusts_active_status` (info) — `ExternalAuth.AutoLinkVerifiedEmail` treats an Active account as email-verified, which legacy or imported accounts may not be; `external_signup_passwordless` (info) — `ExternalAuth.AllowSignup` creates accounts without a password; `external_key_max_stale_long` (warn) — `ExternalAuth.KeyMaxStale` above 72h keeps trusting cached provider keys that long during an outage

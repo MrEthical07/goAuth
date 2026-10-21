@@ -134,7 +134,7 @@ type RoleSwitchDeps struct {
 	// ReserveAttempt claims one switch attempt for (tenant, session) and
 	// reports whether the caller may proceed. It fails open on backend
 	// errors, so false always means an explicit rate-limit denial.
-	ReserveAttempt func(ctx context.Context, tenantID, sessionID string) bool
+	ReserveAttempt func(ctx context.Context, tenantID, sessionID string) (bool, error)
 	ResetAttempts  func(ctx context.Context, tenantID, sessionID string)
 
 	// LookupUser resolves the account in the session's tenant. A missing
@@ -179,7 +179,11 @@ func RunSwitchRole(
 	// Reserved before any session, provider or Argon2 work, keyed by the
 	// request tenant and the decoded session ID, so wrong-tenant and unknown
 	// sessions consume attempts too.
-	if !deps.ReserveAttempt(ctx, tenantID, sessionID) {
+	slotOK, reserveErr := deps.ReserveAttempt(ctx, tenantID, sessionID)
+	if reserveErr != nil {
+		return failRoleSwitch(base, RoleSwitchFailureUnavailable, reserveErr)
+	}
+	if !slotOK {
 		return failRoleSwitch(base, RoleSwitchFailureRateLimited, nil)
 	}
 

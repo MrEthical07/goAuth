@@ -377,7 +377,8 @@ Two stages, both with the atomic reserve pattern and the same budget
 
 Both reset on a successful sign-in. Over the limit, the call fails with
 `ErrExternalLoginRateLimited`. The limiters fail open on a Redis error (a
-`limiter_fail_open` audit event), like the others. Sign-up additionally goes
+`limiter_fail_open` audit event), like the others, unless
+`Security.LimiterFailClosed` is on (a 503, audit reason `limiter_unavailable`). Sign-up additionally goes
 through the account-creation limiter when `Account.EnableCreationLimiter` is on.
 
 ## Audit

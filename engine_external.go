@@ -36,6 +36,7 @@ const (
 	externalReasonProviderUnavailable      = "provider_unavailable"
 	externalReasonStoreUnavailable         = "store_unavailable"
 	externalReasonRateLimited              = "rate_limited"
+	externalReasonLimiterUnavailable       = "limiter_unavailable"
 	externalReasonEmailUnverified          = "email_unverified"
 	externalReasonLinkRequired             = "link_required"
 	externalReasonLinkRequiresVerification = "link_requires_verification"
@@ -238,23 +239,25 @@ type externalAttempt struct {
 	subject  string
 }
 
-// reserve claims one attempt in key. It fails open on limiter backend errors,
-// like every other limiter: an explicit denial always blocks, an outage never
-// does. It reports whether the attempt may proceed.
-func (e *Engine) reserveExternal(ctx context.Context, tenantID, key string) bool {
+// reserveExternal claims one attempt in key. An explicit denial reports false.
+// A limiter backend error is decided by limiterOutage: it fails open unless
+// Security.LimiterFailClosed, in which case the error is returned.
+func (e *Engine) reserveExternal(ctx context.Context, tenantID, key string) (bool, error) {
 	if key == "" || e.externalLimiter == nil {
-		return true
+		return true, nil
 	}
 	e.metricInc(MetricLimiterCheck)
 	err := e.externalLimiter.Reserve(ctx, key)
 	if err == nil {
-		return true
+		return true, nil
 	}
 	if errors.Is(err, limiters.ErrExternalRateLimited) {
-		return false
+		return false, nil
 	}
-	e.emitLimiterFailOpen(ctx, "external_login", tenantID, err)
-	return true
+	if outage := e.limiterOutage(ctx, "external_login", tenantID, err); outage != nil {
+		return false, outage
+	}
+	return true, nil
 }
 
 func (e *Engine) resetExternal(ctx context.Context, tenantID string, keys ...string) {
@@ -266,7 +269,7 @@ func (e *Engine) resetExternal(ctx context.Context, tenantID string, keys ...str
 			continue
 		}
 		if err := e.externalLimiter.Reset(ctx, key); err != nil {
-			e.emitLimiterFailOpen(ctx, "external_login", tenantID, err)
+			e.limiterCleanupFailed(ctx, "external_login", tenantID, err)
 		}
 	}
 }
@@ -303,7 +306,9 @@ func (e *Engine) verifyExternalToken(ctx context.Context, tenantID, provider, id
 	if e.externalLimiter != nil {
 		att.sources = e.externalLimiter.SourceKey(tenantID, clientIPFromContext(ctx))
 	}
-	if !e.reserveExternal(ctx, tenantID, att.sources) {
+	if allowed, err := e.reserveExternal(ctx, tenantID, att.sources); err != nil {
+		return nil, att, externalReasonLimiterUnavailable, err
+	} else if !allowed {
 		e.limitedExternal(ctx, tenantID, provider)
 		return nil, att, externalReasonRateLimited, ErrExternalLoginRateLimited
 	}
@@ -320,7 +325,9 @@ func (e *Engine) verifyExternalToken(ctx context.Context, tenantID, provider, id
 	if e.externalLimiter != nil {
 		att.subject = e.externalLimiter.SubjectKey(tenantID, provider, claims.Subject)
 	}
-	if !e.reserveExternal(ctx, tenantID, att.subject) {
+	if allowed, err := e.reserveExternal(ctx, tenantID, att.subject); err != nil {
+		return nil, att, externalReasonLimiterUnavailable, err
+	} else if !allowed {
 		e.limitedExternal(ctx, tenantID, provider)
 		return nil, att, externalReasonRateLimited, ErrExternalLoginRateLimited
 	}
@@ -598,7 +605,11 @@ func (e *Engine) createExternalAccount(ctx context.Context, tenantID string, cla
 		}
 	}
 	if err := e.enforceExternalSignupLimit(ctx, tenantID, claims.Email); err != nil {
-		return externalResolution{}, externalReasonSignupRateLimited, err, false
+		reason := externalReasonSignupRateLimited
+		if errors.Is(err, ErrSystemUnavailable) {
+			reason = externalReasonLimiterUnavailable
+		}
+		return externalResolution{}, reason, err, false
 	}
 
 	created, err := e.externalProvider.CreateUserWithExternalIdentity(ctx, CreateUserInput{
@@ -672,8 +683,7 @@ func (e *Engine) enforceExternalSignupLimit(ctx context.Context, tenantID, ident
 		return nil
 	}
 	if !errors.Is(err, limiters.ErrAccountRateLimited) {
-		e.emitLimiterFailOpen(ctx, "account_creation", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "account_creation", tenantID, err)
 	}
 	e.metricInc(MetricAccountCreationRateLimited)
 	e.emitAudit(ctx, auditEventAccountCreationRateLimited, false, "", tenantID, "", ErrAccountCreationRateLimited, func() map[string]string {

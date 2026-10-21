@@ -485,7 +485,7 @@ Limiter backend outages now follow fail-open wrappers in runtime flow wiring:
 - Explicit limiter denials still block requests.
 - Limiter backend failures are audited and metered, then execution continues.
 
-If your deployment expected fail-closed limiter behavior for backend outages, enforce that policy externally (gateway/WAF/rate-limit proxy) before rollout.
+If your deployment expects fail-closed limiter behavior for backend outages, set `Security.LimiterFailClosed = true` (v0.8.0; see [rate_limiting.md](rate_limiting.md#failing-closed)) or enforce that policy externally (gateway/WAF/rate-limit proxy).
 
 ---
 

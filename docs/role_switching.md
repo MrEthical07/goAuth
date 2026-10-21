@@ -166,7 +166,8 @@ All failures leave the old session untouched unless stated.
    and unknown sessions consume slots too. Limited → `ErrRoleSwitchRateLimited`
    and the provider is never called. The limiter honors
    `Security.LimiterWindowMode` and fails open on Redis errors, like the
-   other limiters.
+   other limiters (`Security.LimiterFailClosed` makes it refuse with
+   `ErrSystemUnavailable`).
 4. Load the session read-only from the **request** tenant.
    - Missing → `ErrSessionNotFound`. Expired → the same handling as `Refresh`
      (the session is deleted, `ErrSessionNotFound`).
@@ -375,7 +376,7 @@ Switch attempts are limited per (tenant, session) with `MaxAttempts` per
 any provider, Argon2 or session work, so a burst cannot exceed the limit.
 Every attempt that reaches the limiter counts, including wrong-tenant and
 unknown sessions. A successful switch resets the counter. Redis errors fail
-open (`limiter_fail_open` audit event).
+open (`limiter_fail_open` audit event) unless `Security.LimiterFailClosed` is on.
 
 ## Audit events
 

@@ -254,25 +254,28 @@ func (e *Engine) roleSwitchFlowDeps() internalflows.RoleSwitchDeps {
 	return deps
 }
 
-// reserveRoleSwitchAttempt claims one switch attempt. It fails open on
-// limiter backend errors, like every other limiter: an explicit denial
-// always blocks, an outage never does.
-func (e *Engine) reserveRoleSwitchAttempt(ctx context.Context, tenantID, sessionID string) bool {
+// reserveRoleSwitchAttempt claims one switch attempt. An explicit denial
+// reports false. A limiter backend error is decided by limiterOutage: it fails
+// open (true, nil) unless Security.LimiterFailClosed, in which case the error
+// is returned and the switch is refused.
+func (e *Engine) reserveRoleSwitchAttempt(ctx context.Context, tenantID, sessionID string) (bool, error) {
 	e.metricInc(MetricLimiterCheck)
 	err := e.roleSwitchLimiter.Reserve(ctx, tenantID, sessionID)
 	if err == nil {
-		return true
+		return true, nil
 	}
 	if errors.Is(err, limiters.ErrRoleSwitchRateLimited) {
-		return false
+		return false, nil
 	}
-	e.emitLimiterFailOpen(ctx, "role_switch", tenantID, err)
-	return true
+	if outage := e.limiterOutage(ctx, "role_switch", tenantID, err); outage != nil {
+		return false, outage
+	}
+	return true, nil
 }
 
 func (e *Engine) resetRoleSwitchAttempts(ctx context.Context, tenantID, sessionID string) {
 	if err := e.roleSwitchLimiter.Reset(ctx, tenantID, sessionID); err != nil {
-		e.emitLimiterFailOpen(ctx, "role_switch", tenantID, err)
+		e.limiterCleanupFailed(ctx, "role_switch", tenantID, err)
 	}
 }
 

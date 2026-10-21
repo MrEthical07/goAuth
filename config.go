@@ -339,6 +339,16 @@ type SecurityConfig struct {
 	//
 	//	Docs: docs/rate_limiting.md
 	LimiterWindowMode string
+
+	// LimiterFailClosed makes every limiter backend error refuse the request
+	// with a system error (503) instead of letting it through. The default
+	// (false) fails open: a Redis outage is recorded as a limiter_fail_open
+	// audit event and the request proceeds unthrottled, so an outage never
+	// blocks sign-in. Turn it on when throttling matters more than
+	// availability. An explicit rate-limit denial blocks either way.
+	//
+	//	Docs: docs/rate_limiting.md
+	LimiterFailClosed bool
 }
 
 // SessionHardeningConfig controls session limits: max per user/tenant,
@@ -2179,6 +2189,11 @@ func (c *Config) Lint() LintResult {
 	if c.RoleSwitch.Enabled && (c.ValidationMode == ModeJWTOnly || c.ValidationMode == ModeHybrid) {
 		warn(LintInfo, "role_switch_stateless_validation",
 			"RoleSwitch is enabled with ValidationMode JWTOnly/Hybrid; a pre-switch access token stays valid on routes resolved in those modes until it expires — route role- or permission-gated endpoints through ModeStrict (see the per-mode revocation table in docs/role_switching.md)")
+	}
+
+	if c.Security.LimiterFailClosed {
+		warn(LintInfo, "limiter_fail_closed_outage_blocks_signin",
+			"Security.LimiterFailClosed is on; a limiter backend (Redis) outage blocks sign-in, password verification, MFA, account creation, email verification, password reset, role switching and external sign-in with a 503 instead of letting requests through unthrottled")
 	}
 
 	// --- Production readiness ---
