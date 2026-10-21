@@ -18,8 +18,17 @@ const (
 	// the v1 layout. Decoding accepts both versions; v1 records read as
 	// remember-me = false.
 	mfaLoginRecordVersion2 = 2
+	// mfaLoginRecordVersion3 appends a length-prefixed (one byte) session
+	// profile name after the v2 flags byte. It is written only when the
+	// record carries a profile, i.e. only while session profiles are
+	// configured; every other record is still written as v2, byte for byte.
+	// Decoding accepts v1 through v3.
+	mfaLoginRecordVersion3 = 3
 
 	mfaLoginFlagRememberMe = 1 << 0
+
+	// maxMFALoginProfileLen mirrors the session profile name limit.
+	maxMFALoginProfileLen = 32
 )
 
 var (
@@ -35,6 +44,9 @@ type MFALoginChallenge struct {
 	ExpiresAt  int64
 	Attempts   uint16
 	RememberMe bool
+	// Profile is the session profile resolved at login; empty when profiles
+	// are not configured.
+	Profile string
 }
 
 type MFALoginChallengeStore struct {
@@ -187,7 +199,14 @@ func (s *MFALoginChallengeStore) RecordFailure(
 
 func encodeMFALoginChallenge(record *MFALoginChallenge) ([]byte, error) {
 	var buf bytes.Buffer
-	buf.WriteByte(mfaLoginRecordVersion2)
+	if record.Profile != "" {
+		if len(record.Profile) > maxMFALoginProfileLen {
+			return nil, errors.New("mfa challenge profile name too long")
+		}
+		buf.WriteByte(mfaLoginRecordVersion3)
+	} else {
+		buf.WriteByte(mfaLoginRecordVersion2)
+	}
 
 	if err := binary.Write(&buf, binary.BigEndian, record.Attempts); err != nil {
 		return nil, err
@@ -214,6 +233,11 @@ func encodeMFALoginChallenge(record *MFALoginChallenge) ([]byte, error) {
 	}
 	buf.WriteByte(flags)
 
+	if record.Profile != "" {
+		buf.WriteByte(byte(len(record.Profile)))
+		buf.WriteString(record.Profile)
+	}
+
 	return buf.Bytes(), nil
 }
 
@@ -224,7 +248,7 @@ func decodeMFALoginChallenge(data []byte) (*MFALoginChallenge, error) {
 	if err != nil {
 		return nil, err
 	}
-	if version != mfaLoginRecordVersion1 && version != mfaLoginRecordVersion2 {
+	if version != mfaLoginRecordVersion1 && version != mfaLoginRecordVersion2 && version != mfaLoginRecordVersion3 {
 		return nil, errors.New("invalid mfa challenge version")
 	}
 
@@ -262,6 +286,21 @@ func decodeMFALoginChallenge(data []byte) (*MFALoginChallenge, error) {
 			return nil, err
 		}
 		record.RememberMe = flags&mfaLoginFlagRememberMe != 0
+	}
+
+	if version >= mfaLoginRecordVersion3 {
+		n, err := reader.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		if n < 1 || n > maxMFALoginProfileLen {
+			return nil, errors.New("invalid mfa challenge profile length")
+		}
+		profile := make([]byte, n)
+		if _, err := io.ReadFull(reader, profile); err != nil {
+			return nil, err
+		}
+		record.Profile = string(profile)
 	}
 
 	return record, nil
