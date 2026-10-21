@@ -153,3 +153,30 @@ func TestEmailChangeOnCostsOneReadOnTheConfirmPaths(t *testing.T) {
 		t.Fatal("no GET recorded")
 	}
 }
+
+// A reset code requested for the old address while the provider call is running
+// is issued after the marker's first write; the marker is written again once
+// the provider commits, so that code is refused too.
+func TestEmailChangeRefusesACodeRequestedWhileTheChangeCommits(t *testing.T) {
+	env := newECEnv(t, nil)
+	req := env.mustRequest(ecNewEmail)
+
+	var during string
+	env.up.beforeUpdateIdentifier = func() {
+		time.Sleep(1100 * time.Millisecond) // a later second than the first marker write
+		code, err := env.engine.RequestPasswordReset(env.ctx(), rsIdentifier)
+		if err != nil {
+			t.Errorf("RequestPasswordReset during the change: %v", err)
+		}
+		during = code
+	}
+	env.mustConfirm(req, ConfirmEmailChangeOptions{})
+	if during == "" {
+		t.Fatal("the hook did not run")
+	}
+
+	err := env.engine.ConfirmPasswordReset(env.ctx(), during, "brand-new-password-9")
+	if !errors.Is(err, ErrPasswordResetInvalid) {
+		t.Fatalf("a reset code requested during the commit = %v, want ErrPasswordResetInvalid", err)
+	}
+}

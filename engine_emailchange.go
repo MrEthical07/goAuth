@@ -345,6 +345,13 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 		reason, public := emailChangeProviderFailure(err)
 		return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, reason, public)
 	}
+	// Refresh the marker with the time of the commit: a code requested for the
+	// old address while the provider call was running was issued after the
+	// first write and would otherwise slip past it. The change is done, so a
+	// failure here is logged, not returned.
+	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, tenantID, record.UserID, time.Now(), markerTTL); err != nil {
+		e.warn("goAuth: email change committed but the identifier-change marker could not be refreshed; codes requested for the old address during the change are not refused")
+	}
 
 	result := &EmailChangeResult{UserID: record.UserID, OldEmail: record.OldIdentifier, NewEmail: record.NewIdentifier}
 	var revokeErr error

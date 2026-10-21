@@ -435,8 +435,9 @@ v0.8.0 is a valid semantic version for this release.
   email-verification challenge issued before it.** Those records hold no
   identifier and no account version, so the `AccountVersion` bump alone did not
   stop an old reset code from working after the address moved. With `EmailChange`
-  enabled a per-user marker is written at change time and read (one `GET`) on the
-  two confirm paths; with it off nothing is read or written.
+  enabled a per-user marker is written before the provider call and again once it
+  commits, and read (one `GET`) on the two confirm paths; with it off nothing is
+  read or written.
 - **`Security.LimiterFailClosed`** (default `false`). A limiter backend error
   is still recorded as a `limiter_fail_open` audit event and the request still
   proceeds unthrottled by default. With the flag on, every limiter check or
