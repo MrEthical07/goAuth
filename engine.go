@@ -12,6 +12,7 @@ import (
 
 	"github.com/MrEthical07/goAuth/internal"
 	internalaudit "github.com/MrEthical07/goAuth/internal/audit"
+	"github.com/MrEthical07/goAuth/internal/clock"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/rate"
@@ -408,11 +409,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 		return "", "", mapToAuthError(e.refreshRoleCheckFailure(ctx, result))
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, func() map[string]string {
-			return map[string]string{
-				"reason": "session_not_found",
-			}
-		})
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, e.refreshNotFoundMeta(result.Err))
 		return "", "", mapToAuthError(ErrSessionNotFound)
 	case internalflows.RefreshFailureRotate:
 		e.metricInc(MetricRefreshFailure)
@@ -425,41 +422,29 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 	case internalflows.RefreshFailureAccountStatus:
 		e.metricInc(MetricSessionInvalidated)
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
-			return map[string]string{
-				"reason": "account_status",
-			}
-		})
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, refreshInvalidMeta("account_status", result.Session))
 		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureUnverified:
 		e.metricInc(MetricSessionInvalidated)
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrAccountUnverified, func() map[string]string {
-			return map[string]string{
-				"reason": "pending_verification",
-			}
-		})
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrAccountUnverified, refreshInvalidMeta("pending_verification", result.Session))
 		return "", "", mapToAuthError(ErrAccountUnverified)
 	case internalflows.RefreshFailureIssueAccess:
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
-			return map[string]string{
-				"reason": "issue_access_failed",
-			}
-		})
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, refreshInvalidMeta("issue_access_failed", result.Session))
 		return "", "", mapToAuthError(result.Err)
 	case internalflows.RefreshFailureEncode:
 		e.metricInc(MetricRefreshFailure)
-		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
-			return map[string]string{
-				"reason": "encode_refresh_failed",
-			}
-		})
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, refreshInvalidMeta("encode_refresh_failed", result.Session))
 		return "", "", mapToAuthError(result.Err)
 	}
 
 	e.metricInc(MetricRefreshSuccess)
-	e.emitAudit(ctx, auditEventRefreshSuccess, true, result.UserID, result.TenantID, result.SessionID, nil, nil)
+	var successMeta func() map[string]string
+	if result.Session != nil {
+		successMeta = profileAudit(result.Session.Profile)
+	}
+	e.emitAudit(ctx, auditEventRefreshSuccess, true, result.UserID, result.TenantID, result.SessionID, nil, successMeta)
 
 	return result.AccessToken, result.RefreshToken, nil
 }
@@ -518,6 +503,7 @@ func (e *Engine) Validate(ctx context.Context, tokenStr string, routeMode RouteM
 	case internalflows.ValidateFailureInvalidRouteMode:
 		return nil, mapToAuthError(ErrInvalidRouteMode)
 	case internalflows.ValidateFailureSessionNotFound:
+		e.auditProfileSessionEnd(ctx, tenantIDFromContext(ctx), result.Err)
 		return nil, mapToAuthError(ErrSessionNotFound)
 	case internalflows.ValidateFailureStatus:
 		return nil, mapToAuthError(result.Err)
@@ -636,7 +622,11 @@ func (e *Engine) issueAccessToken(sess *session.Session) (string, error) {
 		}
 	}
 
-	return e.jwtManager.CreateAccess(
+	// A profile may issue access tokens with its own lifetime (zero keeps the
+	// configured AccessTTL, so a legacy session's token is unchanged);
+	// everything else about the token is identical.
+	return e.jwtManager.CreateAccessWithTTL(
+		e.sessionProfileAccessTTL(sess.Profile),
 		sess.UserID,
 		sess.TenantID,
 		sess.SessionID,
@@ -672,12 +662,13 @@ func (e *Engine) Logout(ctx context.Context, sessionID string) error {
 //	Security:    audit-logged.
 func (e *Engine) LogoutInTenant(ctx context.Context, tenantID, sessionID string) error {
 	e.ensureFlowDeps()
+	profile := e.peekSessionProfile(ctx, tenantID, sessionID)
 	err := e.flows.LogoutInTenant(ctx, tenantID, sessionID)
 	if err == nil {
 		e.metricInc(MetricLogout)
 		e.metricInc(MetricSessionInvalidated)
 	}
-	e.emitAudit(ctx, auditEventLogoutSession, err == nil, "", tenantID, sessionID, err, nil)
+	e.emitAudit(ctx, auditEventLogoutSession, err == nil, "", tenantID, sessionID, err, profileAudit(profile))
 	return mapToAuthErrorOrNil(err)
 }
 
@@ -709,9 +700,13 @@ func (e *Engine) LogoutByAccessToken(ctx context.Context, tokenStr string) error
 	e.metricInc(MetricLogout)
 	e.metricInc(MetricSessionInvalidated)
 	var meta func() map[string]string
-	if result.TokenExpired {
+	if result.TokenExpired || result.Profile != "" {
 		meta = func() map[string]string {
-			return map[string]string{"expired_token": "true"}
+			m := map[string]string{}
+			if result.TokenExpired {
+				m["expired_token"] = "true"
+			}
+			return withProfile(m, result.Profile)
 		}
 	}
 	e.emitAudit(ctx, auditEventLogoutSession, true, "", result.TenantID, result.SessionID, nil, meta)
@@ -1086,6 +1081,7 @@ func (e *Engine) initFlowDeps() {
 			TenantIDFromToken:       tenantIDFromToken,
 			Now:                     time.Now,
 			SessionStore:            e.sessionStore,
+			PeekProfile:             e.logoutProfilePeeker(),
 		},
 		Introspection: internalflows.IntrospectionDeps{
 			SessionStore:                e.sessionStore,
@@ -1110,6 +1106,7 @@ func (e *Engine) initFlowDeps() {
 		TOTP:              e.totpFlowDeps(),
 		WebAuthn:          e.webauthnFlowDeps(),
 	}
+	e.configureAccountProfileDeps(&deps.Account, &deps.AccountSession)
 	e.flows = internalflows.New(deps)
 }
 
@@ -1325,7 +1322,7 @@ func (e *Engine) configureAccountLimiterDeps(deps *internalflows.AccountDeps, cf
 func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
 	deps := internalflows.AccountSessionDeps{
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 time.Now,
+		Now:                 clock.Now,
 		NewSessionID: func() (string, error) {
 			sid, err := internal.NewSessionID()
 			if err != nil {
@@ -1630,42 +1627,44 @@ const (
 type AuditErrorCode string
 
 const (
-	auditErrUnauthorized          AuditErrorCode = "unauthorized"
-	auditErrInvalidCredentials    AuditErrorCode = "invalid_credentials"
-	auditErrRateLimited           AuditErrorCode = "rate_limited"
-	auditErrRefreshReuse          AuditErrorCode = "refresh_reuse"
-	auditErrRoleSwitchDisabled    AuditErrorCode = "role_switch_disabled"
-	auditErrRoleNotAllowed        AuditErrorCode = "role_not_allowed"
-	auditErrRoleSwitchSameRole    AuditErrorCode = "role_switch_same_role"
-	auditErrStepUpRequired        AuditErrorCode = "step_up_required"
-	auditErrRoleSwitchRateLimited AuditErrorCode = "role_switch_rate_limited"
-	auditErrInvalidToken          AuditErrorCode = "invalid_token"
-	auditErrSessionNotFound       AuditErrorCode = "session_not_found"
-	auditErrUserNotFound          AuditErrorCode = "user_not_found"
-	auditErrAccountDisabled       AuditErrorCode = "account_disabled"
-	auditErrAccountLocked         AuditErrorCode = "account_locked"
-	auditErrAccountDeleted        AuditErrorCode = "account_deleted"
-	auditErrAccountUnverified     AuditErrorCode = "account_unverified"
-	auditErrPasswordPolicy        AuditErrorCode = "password_policy"
-	auditErrPasswordReuse         AuditErrorCode = "password_reuse"
-	auditErrAttemptsExceeded      AuditErrorCode = "attempts_exceeded"
-	auditErrSessionCreationFailed AuditErrorCode = "session_creation_failed"
-	auditErrSessionInvalidation   AuditErrorCode = "session_invalidation_failed"
-	auditErrSessionLimitExceeded  AuditErrorCode = "session_limit_exceeded"
-	auditErrDeviceBindingRejected AuditErrorCode = "device_binding_rejected"
-	auditErrTOTPRequired          AuditErrorCode = "totp_required"
-	auditErrTOTPInvalid           AuditErrorCode = "totp_invalid"
-	auditErrTOTPRateLimited       AuditErrorCode = "totp_rate_limited"
-	auditErrTOTPAlreadyEnabled    AuditErrorCode = "totp_already_enabled"
-	auditErrMFARequired           AuditErrorCode = "mfa_required"
-	auditErrMFAInvalid            AuditErrorCode = "mfa_invalid"
-	auditErrMFAAttemptsExceeded   AuditErrorCode = "mfa_attempts_exceeded"
-	auditErrMFAReplay             AuditErrorCode = "mfa_replay"
-	auditErrBackupCodeInvalid     AuditErrorCode = "backup_code_invalid"
-	auditErrBackupCodeRateLimited AuditErrorCode = "backup_code_rate_limited"
-	auditErrDuplicate             AuditErrorCode = "duplicate"
-	auditErrUnavailable           AuditErrorCode = "backend_unavailable"
-	auditErrInternal              AuditErrorCode = "internal_error"
+	auditErrUnauthorized           AuditErrorCode = "unauthorized"
+	auditErrInvalidCredentials     AuditErrorCode = "invalid_credentials"
+	auditErrRateLimited            AuditErrorCode = "rate_limited"
+	auditErrRefreshReuse           AuditErrorCode = "refresh_reuse"
+	auditErrRoleSwitchDisabled     AuditErrorCode = "role_switch_disabled"
+	auditErrRoleNotAllowed         AuditErrorCode = "role_not_allowed"
+	auditErrRoleSwitchSameRole     AuditErrorCode = "role_switch_same_role"
+	auditErrStepUpRequired         AuditErrorCode = "step_up_required"
+	auditErrRoleSwitchRateLimited  AuditErrorCode = "role_switch_rate_limited"
+	auditErrUnknownSessionProfile  AuditErrorCode = "unknown_session_profile"
+	auditErrSessionProfileConflict AuditErrorCode = "session_profile_conflict"
+	auditErrInvalidToken           AuditErrorCode = "invalid_token"
+	auditErrSessionNotFound        AuditErrorCode = "session_not_found"
+	auditErrUserNotFound           AuditErrorCode = "user_not_found"
+	auditErrAccountDisabled        AuditErrorCode = "account_disabled"
+	auditErrAccountLocked          AuditErrorCode = "account_locked"
+	auditErrAccountDeleted         AuditErrorCode = "account_deleted"
+	auditErrAccountUnverified      AuditErrorCode = "account_unverified"
+	auditErrPasswordPolicy         AuditErrorCode = "password_policy"
+	auditErrPasswordReuse          AuditErrorCode = "password_reuse"
+	auditErrAttemptsExceeded       AuditErrorCode = "attempts_exceeded"
+	auditErrSessionCreationFailed  AuditErrorCode = "session_creation_failed"
+	auditErrSessionInvalidation    AuditErrorCode = "session_invalidation_failed"
+	auditErrSessionLimitExceeded   AuditErrorCode = "session_limit_exceeded"
+	auditErrDeviceBindingRejected  AuditErrorCode = "device_binding_rejected"
+	auditErrTOTPRequired           AuditErrorCode = "totp_required"
+	auditErrTOTPInvalid            AuditErrorCode = "totp_invalid"
+	auditErrTOTPRateLimited        AuditErrorCode = "totp_rate_limited"
+	auditErrTOTPAlreadyEnabled     AuditErrorCode = "totp_already_enabled"
+	auditErrMFARequired            AuditErrorCode = "mfa_required"
+	auditErrMFAInvalid             AuditErrorCode = "mfa_invalid"
+	auditErrMFAAttemptsExceeded    AuditErrorCode = "mfa_attempts_exceeded"
+	auditErrMFAReplay              AuditErrorCode = "mfa_replay"
+	auditErrBackupCodeInvalid      AuditErrorCode = "backup_code_invalid"
+	auditErrBackupCodeRateLimited  AuditErrorCode = "backup_code_rate_limited"
+	auditErrDuplicate              AuditErrorCode = "duplicate"
+	auditErrUnavailable            AuditErrorCode = "backend_unavailable"
+	auditErrInternal               AuditErrorCode = "internal_error"
 )
 
 func (e *Engine) emitAudit(
@@ -1771,6 +1770,10 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrStepUpRequired
 	case errors.Is(err, ErrRoleSwitchRateLimited):
 		return auditErrRoleSwitchRateLimited
+	case errors.Is(err, ErrUnknownSessionProfile):
+		return auditErrUnknownSessionProfile
+	case errors.Is(err, ErrSessionProfileConflict):
+		return auditErrSessionProfileConflict
 	case errors.Is(err, ErrRefreshInvalid),
 		errors.Is(err, ErrPasswordResetInvalid),
 		errors.Is(err, ErrEmailVerificationInvalid),
@@ -2469,6 +2472,16 @@ type SessionInfo struct {
 	Status            AccountStatus
 	AccountVersion    uint32
 	PermissionVersion uint32
+
+	// Profile is the session profile the session was created under; empty for
+	// a legacy session created without one.
+	Profile string
+	// IdleExpiresAt is the unix time a renewing-profile session lapses unless
+	// it is refreshed (or, with RenewOnUse, used) first, measured from the
+	// remaining lifetime of its Redis key. It is zero for legacy and
+	// fixed-profile sessions. ExpiresAt remains the hard ceiling; an unbounded
+	// profile reports session.UnboundedExpiresAt there.
+	IdleExpiresAt int64
 }
 
 // HealthStatus is an on-demand backend health result.
@@ -2582,6 +2595,8 @@ func toSessionInfo(sess *session.Session) SessionInfo {
 		Status:            AccountStatus(sess.Status),
 		AccountVersion:    sess.AccountVersion,
 		PermissionVersion: sess.PermissionVersion,
+		Profile:           sess.Profile,
+		IdleExpiresAt:     sess.IdleExpiresAt,
 	}
 }
 
@@ -2690,7 +2705,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		TenantIDFromContext:       tenantIDFromContext,
 		ClientIPFromContext:       clientIPFromContext,
 		UserAgentFromContext:      userAgentFromContext,
-		Now:                       time.Now,
+		Now:                       clock.Now,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
 		},
@@ -2742,6 +2757,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	}
 	e.configureLoginRateLimiterDeps(&deps)
 	e.configureLoginAssuranceDeps(&deps)
+	e.configureLoginProfileDeps(&deps)
 	if e != nil && e.lockoutLimiter != nil && e.config.Security.AutoLockoutEnabled {
 		deps.AutoLockoutEnabled = true
 		deps.RecordLockoutFailure = func(ctx context.Context, userID string) (bool, error) {
@@ -2814,6 +2830,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 				ExpiresAt:  record.ExpiresAt,
 				Attempts:   record.Attempts,
 				RememberMe: record.RememberMe,
+				Profile:    record.Profile,
 			}, nil
 		}
 		deps.SaveMFAChallenge = func(ctx context.Context, challengeID string, record *internalflows.MFALoginChallengeRecord, ttl time.Duration) error {
@@ -2823,6 +2840,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 				ExpiresAt:  record.ExpiresAt,
 				Attempts:   record.Attempts,
 				RememberMe: record.RememberMe,
+				Profile:    record.Profile,
 			}, ttl)
 		}
 		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete

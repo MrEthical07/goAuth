@@ -81,6 +81,8 @@ var publicAuthSentinels = []*AuthError{
 	ErrRoleSwitchSameRole,
 	ErrStepUpRequired,
 	ErrRoleSwitchRateLimited,
+	ErrUnknownSessionProfile,
+	ErrSessionProfileConflict,
 	ErrPermissionDenied,
 	ErrEngineNotReady,
 	ErrProviderDuplicateIdentifier,

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
+	"github.com/MrEthical07/goAuth/internal/clock"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/session"
@@ -83,7 +84,7 @@ func (e *Engine) SwitchRole(ctx context.Context, refreshToken, targetRole string
 		if result.StepUpMethod != "" {
 			meta["step_up"] = result.StepUpMethod
 		}
-		return meta
+		return withProfile(meta, result.Profile)
 	})
 	return &RoleSwitchResult{
 		AccessToken:  result.AccessToken,
@@ -201,7 +202,7 @@ func (e *Engine) refreshRoleRecheck() *internalflows.RefreshRoleRecheck {
 	return &internalflows.RefreshRoleRecheck{
 		Peek:          e.sessionStore.Peek,
 		CanAssumeRole: e.roleSwitchProvider.CanAssumeRole,
-		Now:           time.Now,
+		Now:           clock.Now,
 	}
 }
 
@@ -212,7 +213,7 @@ func (e *Engine) roleSwitchFlowDeps() internalflows.RoleSwitchDeps {
 
 	deps := internalflows.RoleSwitchDeps{
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 time.Now,
+		Now:                 clock.Now,
 		DecodeRefreshToken:  internal.DecodeRefreshToken,
 		NewRefreshSecret:    internal.NewRefreshSecret,
 		HashRefreshSecret:   internal.HashRefreshSecret,
@@ -369,7 +370,11 @@ func (e *Engine) recordLoginAssurance(ctx context.Context, tenantID, refreshToke
 	}
 	now := time.Now().Unix()
 	assurance := session.Assurance{MFAAt: now, MFAMethod: method, AuthAt: now}
-	if err := e.sessionStore.SaveAssurance(ctx, tenantID, sessionID, assurance, e.sessionLifetimeFor(rememberMe)); err != nil {
+	ttl := e.sessionLifetimeFor(rememberMe)
+	if profile := internalflows.ResolvedSessionProfile(ctx); profile != "" {
+		ttl = e.sessionProfileAssuranceTTL(profile)
+	}
+	if err := e.sessionStore.SaveAssurance(ctx, tenantID, sessionID, assurance, ttl); err != nil {
 		e.warn("goAuth: session assurance write failed")
 	}
 }
