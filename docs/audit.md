@@ -65,6 +65,16 @@ With [session profiles](session.md#session-profiles) configured, events about a 
 | `session_invalid` | `expired` / `profile_unknown` | A `ModeStrict` read ended a profile session (its effective ceiling passed, or its profile was removed). New event, emitted only with profiles configured |
 | `login_failure` / `mfa_failure` | `session_profile` | An unknown or conflicting profile was requested (audit error `unknown_session_profile` or `session_profile_conflict`) |
 
+## Email change events
+
+With `EmailChange` enabled (see [email_change.md](email_change.md#audit)). The code never appears in an event, and addresses only in masked form (`j***@example.com`).
+
+| Event | `metadata` |
+|-------|-----------|
+| `email_change_requested` | `old_email`, `new_email` (masked) |
+| `email_change_confirmed` | `old_email`, `new_email` (masked), `sessions_revoked` |
+| `email_change_failure` | `stage` (`request`, `confirm`, `cancel`), `reason` (`disabled`, `user_not_found`, `status`, `invalid_email`, `same_email`, `rate_limited`, `invalid`, `expired`, `attempts`, `stale`, `in_use`, `unavailable`) |
+
 ## External identity events
 
 With `ExternalAuth` enabled (see [external_identity.md](external_identity.md#audit)). The ID token and the nonce never appear in an event.
@@ -77,6 +87,7 @@ With `ExternalAuth` enabled (see [external_identity.md](external_identity.md#aud
 | `external_identity_linked` | `provider`, `via` (`verified_email` or `link`) |
 | `external_identity_unlinked` | `provider` |
 | `external_identity_link_failure` | `provider`, `reason` |
+| `external_identity_unlink_failure` | `provider`, `reason` (`disabled`, `user_not_found`, `account_status`, `last_login_method`, `unavailable`) |
 
 A successful external sign-in also emits the shared login tail's own `login_success` (or `mfa_required`), and a failure there emits `login_failure` / `mfa_failure`, exactly as a password login does. A password login against an account with no password is `login_failure` with reason `password_not_set`; `ChangePassword` / `VerifyPassword` against one emit `password_change_failure` / `password_verify_failure` with the same reason.
 

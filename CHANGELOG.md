@@ -409,6 +409,34 @@ v0.8.0 is a valid semantic version for this release.
 
 #### Added
 
+- **Change email.** `Engine.RequestEmailChange`, `ConfirmEmailChange` and
+  `CancelEmailChange`, behind `Config.EmailChange` (zero value = disabled; with
+  it off nothing changes and no key is created). The user provider gains an
+  **optional** capability, `EmailChangeProvider.UpdateIdentifier`, a
+  tenant-scoped compare-and-set on the old identifier that bumps
+  `AccountVersion`; it is detected at `Build` and required when the feature is
+  on. A request stores a challenge bound to the user, the old and new
+  identifiers and the account version, rate limited per user, with a code (token,
+  UUID or OTP) the application mails to the NEW address. It does not check
+  whether the new address is taken, so it cannot be used to find out which
+  addresses have accounts; confirm enforces uniqueness (`ErrEmailInUse`), a
+  changed account (`ErrEmailChangeStale`), the status and the code (constant
+  time, attempts counted, one use). Unless `KeepOtherSessions`, every session of
+  the user is revoked except the one named in `ConfirmEmailChangeOptions`. The
+  result carries the old address: notify it. External identity links are not
+  touched. Five sentinels: `ErrEmailChangeDisabled` (403),
+  `ErrEmailChangeInvalid` (400), `ErrEmailChangeStale` (409), `ErrEmailInUse`
+  (409), `ErrEmailChangeRateLimited` (429); audit events `email_change_requested`,
+  `email_change_confirmed`, `email_change_failure` (addresses masked, never the
+  code). Lint: `email_change_keeps_other_sessions` (INFO). See
+  `docs/email_change.md`. `.github/workflows/go-race.yml`'s root-source
+  whitelist gained `engine_emailchange.go`.
+- **A confirmed email change refuses every password-reset and
+  email-verification challenge issued before it.** Those records hold no
+  identifier and no account version, so the `AccountVersion` bump alone did not
+  stop an old reset code from working after the address moved. With `EmailChange`
+  enabled a per-user marker is written at change time and read (one `GET`) on the
+  two confirm paths; with it off nothing is read or written.
 - **`Security.LimiterFailClosed`** (default `false`). A limiter backend error
   is still recorded as a `limiter_fail_open` audit event and the request still
   proceeds unthrottled by default. With the flag on, every limiter check or
