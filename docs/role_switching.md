@@ -265,8 +265,10 @@ absolute lifetime. It is written **only** when `StepUp` is non-empty:
   `LoginWithTOTP` and `LoginWithBackupCode`;
 - on a successful inline step-up.
 
-The swap script moves it to the new session ID. An assurance left behind by a
-logout simply expires by its TTL. With no `StepUp` configured no `asa:` key is
+The swap script moves it to the new session ID. Since v0.8.0 every path
+that deletes a session (logout, logout-all, refresh-token reuse, expiry, a removed
+session profile) deletes its assurance key in the same script; before that, a
+key left behind by a logout simply expired by its TTL. With no `StepUp` configured no `asa:` key is
 ever written.
 
 **Sessions created before step-up was configured have no assurance.** A

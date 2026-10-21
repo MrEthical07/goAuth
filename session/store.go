@@ -38,9 +38,14 @@ const (
 	rotateStatusInvalidBlob int64 = 4
 )
 
+// deleteSessionScript ends one session: key, user-index entry, counter and
+// the session's role-switch MFA-proof key ("asa:<tenant>:<id>"). The proof key
+// is not passed in: its tenant is the middle of the counter key
+// ("ast:<tenant>:count"), so the script's keys and arguments stay as they were.
 const deleteSessionScript = `
 local existed = redis.call("EXISTS", KEYS[1])
 redis.call("SREM", KEYS[2], ARGV[1])
+redis.call("DEL", "asa:" .. string.sub(KEYS[3], 5, -7) .. ":" .. ARGV[1])
 if existed == 1 then
   redis.call("DEL", KEYS[1])
   local count = tonumber(redis.call("GET", KEYS[3]) or "0")
@@ -254,6 +259,13 @@ local function decrement_count(count_key)
   end
 end
 
+-- A session that ends takes its role-switch MFA-proof key with it. The key
+-- ("asa:<tenant>:<id>") is derived from the counter key ("ast:<tenant>:count")
+-- so the script's keys and arguments are unchanged.
+local function drop_assurance(count_key, session_id)
+  redis.call("DEL", "asa:" .. string.sub(count_key, 5, -7) .. ":" .. session_id)
+end
+
 local session_key = KEYS[1]
 local count_key = KEYS[2]
 local session_id = ARGV[1]
@@ -286,6 +298,7 @@ if parsed.expires_at <= now_unix then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  drop_assurance(count_key, session_id)
   return {1}
 end
 
@@ -295,6 +308,7 @@ if not parsed.refresh_hash or parsed.refresh_hash ~= provided_hash then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  drop_assurance(count_key, session_id)
   return {2}
 end
 
@@ -305,6 +319,7 @@ if ttl <= 0 then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  drop_assurance(count_key, session_id)
   return {1}
 end
 
@@ -326,6 +341,7 @@ if parsed.profile then
     if deleted == 1 then
       decrement_count(count_key)
     end
+    drop_assurance(count_key, session_id)
     return {1, "profile_unknown", parsed.profile}
   end
 
@@ -345,6 +361,7 @@ if parsed.profile then
     if deleted == 1 then
       decrement_count(count_key)
     end
+    drop_assurance(count_key, session_id)
     return {1}
   end
 

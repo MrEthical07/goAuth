@@ -331,6 +331,7 @@ rotated, err := store.RotateRefreshHash(ctx, "tenant-0", "sid-abc", oldHash, new
 ## Edge Cases & Gotchas
 
 - **`DeleteAllForUser` is atomic** (since v0.8.0). One Lua script reads the user's session set, deletes every session key that exists together with its `asa:` MFA-proof key, lowers the tenant counter by the number it actually deleted (never below zero; the counter key is removed at zero) and clears the set. A session saved before the script runs is deleted, one saved after it is untouched, and the counter always equals the sessions left. Earlier versions did this in several round trips, so a session created in between could survive and the counter could drift. Like the rotation and swap scripts it builds session keys from the IDs in the set, so it needs a single-node or non-sharded deployment.
+- **MFA-proof keys go with their session.** Every path that deletes a session (`Delete`, expiry and profile-ceiling deletion in `Get`, the rotation script's expiry, reuse and profile branches, the swap script's failure branches, `DeleteAllForUser`) also deletes `asa:<tenant>:<sessionID>` in the same script. Before v0.8.0 a left-behind key aged out by its TTL. The scripts derive the key from the tenant counter key, so their keys and arguments are unchanged.
 - First Lua call may use 2 commands (EVALSHA miss + EVAL fallback); subsequent calls are 1.
 - `Delete` is idempotent — deleting a non-existent session succeeds silently.
 - Counter can never go negative (Lua script clamps at 0).

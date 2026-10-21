@@ -398,6 +398,15 @@ v0.8.0 is a valid semantic version for this release.
   unchanged-when-unused baselines is their "logout all" block: the old
   SMEMBERS/GET/EXISTS/MULTI/DEL sequence is now one script call.
 
+- **Role-switch MFA-proof keys (`asa:<tenant>:<sessionID>`) are removed with
+  their session.** Logout, logout-all, refresh-token reuse, session expiry and a
+  removed or expired session profile used to leave the key to age out by its TTL.
+  Every path that deletes a session now deletes the key in the same script
+  (`deleteSessionScript`, the rotation script's five delete branches, the swap
+  script's failure branches, `DeleteAllForUser`). The scripts' keys and arguments
+  are unchanged; the key is derived from the tenant counter key inside the
+  script, so the baselines are unaffected.
+
 #### Fixed
 
 - `TestSessionProfilesUnusedMatchesV070` flaked about once in 55 runs: its

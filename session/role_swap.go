@@ -282,7 +282,10 @@ end
 // a profile, four more: the profile table, a jitter in milliseconds, now in
 // milliseconds, and the profile name the new blob carries.
 //
-// The tenant count is left alone on success: one session out, one in.
+// The tenant count is left alone on success: one session out, one in. When the
+// old session ends instead of being swapped (expired, refresh-hash mismatch,
+// profile gone or past its ceiling), its assurance key goes with it; on a
+// swap the old key is moved or deleted, never left behind.
 const swapSessionScript = luaSessionParser + `
 local old_key = KEYS[1]
 local new_key = KEYS[2]
@@ -332,6 +335,7 @@ if parsed.expires_at <= now_unix then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  redis.call("DEL", old_asa_key)
   return {1}
 end
 
@@ -341,6 +345,7 @@ if not parsed.refresh_hash or parsed.refresh_hash ~= provided_hash then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  redis.call("DEL", old_asa_key)
   return {2}
 end
 
@@ -351,6 +356,7 @@ if ttl <= 0 then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  redis.call("DEL", old_asa_key)
   return {1}
 end
 
@@ -368,6 +374,7 @@ if parsed.profile then
     if deleted == 1 then
       decrement_count(count_key)
     end
+    redis.call("DEL", old_asa_key)
     return {1, "profile_unknown", parsed.profile}
   end
 
@@ -385,6 +392,7 @@ if parsed.profile then
     if deleted == 1 then
       decrement_count(count_key)
     end
+    redis.call("DEL", old_asa_key)
     return {1}
   end
 
