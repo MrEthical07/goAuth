@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -87,6 +88,7 @@ func limiterFailClosedConfig(closed bool) rsOption {
 		c.PasswordReset = testResetConfig(ResetOTP)
 		c.RoleSwitch.MaxAttempts = 50
 		c.TOTP.EnforceReplayProtection = false
+		c.EmailChange = EmailChangeConfig{Enabled: true, Strategy: VerificationOTP, OTPDigits: 6, VerificationTTL: 10 * time.Minute, MaxAttempts: 3, RequestMaxAttempts: 50}
 	})
 }
 
@@ -192,6 +194,13 @@ func limiterPaths() []limiterPath {
 					t.Fatalf("unexpected challenge %q", challenge)
 				}
 				return func() error { return env.engine.ConfirmEmailVerificationCode(env.ctx(), parts[1], parts[2]) }
+			}},
+		{name: "email change: request", scope: "email_change", mode: breakAll, wantOpen: isNil,
+			prep: func(t *testing.T, env *rsEnv) func() error {
+				return func() error {
+					_, err := env.engine.RequestEmailChange(env.ctx(), rsUserID, "fresh.address@example.com")
+					return err
+				}
 			}},
 		{name: "password reset: request", scope: "password_reset_request", mode: breakAll, wantOpen: isNil,
 			prep: func(t *testing.T, env *rsEnv) func() error {

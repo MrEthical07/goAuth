@@ -341,6 +341,20 @@ func (b *Builder) Build() (*Engine, error) {
 			WindowMode:  windowMode,
 		})
 	}
+	if cfg.EmailChange.Enabled {
+		provider, ok := b.userProvider.(EmailChangeProvider)
+		if !ok {
+			return nil, errors.New("EmailChange is enabled but the user provider does not implement EmailChangeProvider")
+		}
+		resolved := cfg.EmailChange.resolved()
+		engine.emailChangeProvider = provider
+		engine.emailChangeStore = stores.NewEmailChangeStore(b.redis, "aec")
+		engine.emailChangeLimiter = limiters.NewEmailChangeLimiter(b.redis, limiters.EmailChangeConfig{
+			MaxAttempts: resolved.RequestMaxAttempts,
+			Cooldown:    resolved.RequestCooldown,
+			WindowMode:  windowMode,
+		})
+	}
 	if cfg.ExternalAuth.Enabled {
 		provider, ok := b.userProvider.(ExternalIdentityProvider)
 		if !ok {

@@ -69,6 +69,9 @@ type Engine struct {
 	externalProvider      ExternalIdentityProvider
 	externalVerifier      *oidc.Verifier
 	externalLimiter       *limiters.ExternalLimiter
+	emailChangeProvider   EmailChangeProvider
+	emailChangeStore      *stores.EmailChangeStore
+	emailChangeLimiter    *limiters.EmailChangeLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
 }
@@ -1830,6 +1833,16 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrRateLimited
 	case errors.Is(err, ErrRefreshReuse):
 		return auditErrRefreshReuse
+	case errors.Is(err, ErrEmailChangeDisabled):
+		return auditErrEmailChangeDisabled
+	case errors.Is(err, ErrEmailChangeInvalid):
+		return auditErrEmailChangeInvalid
+	case errors.Is(err, ErrEmailChangeStale):
+		return auditErrEmailChangeStale
+	case errors.Is(err, ErrEmailInUse):
+		return auditErrEmailInUse
+	case errors.Is(err, ErrEmailChangeRateLimited):
+		return auditErrEmailChangeRateLimited
 	case errors.Is(err, ErrRoleSwitchDisabled):
 		return auditErrRoleSwitchDisabled
 	case errors.Is(err, ErrRoleNotAllowed):

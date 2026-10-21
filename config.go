@@ -39,6 +39,7 @@ type Config struct {
 	Security          SecurityConfig
 	MultiTenant       MultiTenantConfig
 	RoleSwitch        RoleSwitchConfig
+	EmailChange       EmailChangeConfig
 	ExternalAuth      ExternalAuthConfig
 	Database          DatabaseConfig
 	Permission        PermissionConfig
@@ -552,6 +553,122 @@ type RoleStepUpPolicy struct {
 	// "recent authentication": the newer of the session's creation time and
 	// its last proof must be within MaxAge. Zero means no age limit.
 	MaxAge time.Duration
+}
+
+/*
+====================================
+EMAIL CHANGE CONFIG
+====================================
+*/
+
+// EmailChangeConfig controls changing an account's email address
+// ([Engine.RequestEmailChange], [Engine.ConfirmEmailChange],
+// [Engine.CancelEmailChange]). The zero value disables the feature, and a
+// disabled engine behaves exactly as it did before: no new Redis keys and no
+// extra calls on any other path.
+//
+// Enabling it requires the user provider to implement [EmailChangeProvider]
+// (checked at [Builder.Build]). The application must step the current user up
+// before requesting a change; see docs/email_change.md.
+//
+//	Docs: docs/config.md, docs/email_change.md
+type EmailChangeConfig struct {
+	// Enabled turns the feature on. Default: false.
+	Enabled bool
+
+	// Strategy is the code format sent to the new address, one of the email
+	// verification strategies. The zero value is VerificationToken, the same
+	// default as EmailVerification.
+	Strategy VerificationStrategyType
+
+	// OTPDigits is the code length in OTP mode (6 to 10). Zero selects 6.
+	OTPDigits int
+
+	// VerificationTTL is how long a challenge lives. Zero selects 15 minutes;
+	// the allowed range is 1 minute to 24 hours (15 minutes at most in OTP
+	// mode).
+	VerificationTTL time.Duration
+
+	// MaxAttempts is how many confirm attempts one challenge allows; the
+	// challenge is deleted when they run out. Zero selects 5 (and 5 is the
+	// most OTP mode allows).
+	MaxAttempts int
+
+	// RequestMaxAttempts is how many requests one user may make within
+	// RequestCooldown. Zero selects 5.
+	RequestMaxAttempts int
+
+	// RequestCooldown is the window for RequestMaxAttempts. Zero selects 1
+	// hour.
+	RequestCooldown time.Duration
+
+	// KeepOtherSessions, when false (the default), makes a confirmed change
+	// revoke every session of the user except the one named in
+	// [ConfirmEmailChangeOptions].KeepSessionID. When true no session is
+	// revoked.
+	KeepOtherSessions bool
+}
+
+const (
+	emailChangeDefaultTTL      = 15 * time.Minute
+	emailChangeMinTTL          = time.Minute
+	emailChangeMaxTTL          = 24 * time.Hour
+	emailChangeDefaultAttempts = 5
+	emailChangeDefaultDigits   = 6
+)
+
+// resolved returns the config with every zero default filled in.
+func (c EmailChangeConfig) resolved() EmailChangeConfig {
+	if c.VerificationTTL == 0 {
+		c.VerificationTTL = emailChangeDefaultTTL
+	}
+	if c.MaxAttempts == 0 {
+		c.MaxAttempts = emailChangeDefaultAttempts
+	}
+	if c.OTPDigits == 0 {
+		c.OTPDigits = emailChangeDefaultDigits
+	}
+	return c
+}
+
+func (c *Config) validateEmailChange() error {
+	e := c.EmailChange
+	if !e.Enabled {
+		return nil
+	}
+	switch e.Strategy {
+	case VerificationToken, VerificationOTP, VerificationUUID:
+	default:
+		return errors.New("EmailChange Strategy is invalid")
+	}
+	if e.VerificationTTL < 0 || (e.VerificationTTL != 0 && (e.VerificationTTL < emailChangeMinTTL || e.VerificationTTL > emailChangeMaxTTL)) {
+		return errors.New("EmailChange VerificationTTL must be between 1m and 24h (0 = default 15m)")
+	}
+	if e.MaxAttempts < 0 {
+		return errors.New("EmailChange MaxAttempts must be >= 0 (0 = default)")
+	}
+	if e.RequestMaxAttempts < 0 {
+		return errors.New("EmailChange RequestMaxAttempts must be >= 0 (0 = default)")
+	}
+	if e.RequestCooldown < 0 {
+		return errors.New("EmailChange RequestCooldown must be >= 0 (0 = default)")
+	}
+	if e.OTPDigits < 0 {
+		return errors.New("EmailChange OTPDigits must be >= 0 (0 = default)")
+	}
+	if e.Strategy == VerificationOTP {
+		r := e.resolved()
+		if r.OTPDigits < 6 || r.OTPDigits > 10 {
+			return errors.New("EmailChange OTPDigits must be between 6 and 10 in OTP mode")
+		}
+		if r.MaxAttempts > 5 {
+			return errors.New("EmailChange MaxAttempts must be <= 5 in OTP mode")
+		}
+		if r.VerificationTTL > 15*time.Minute {
+			return errors.New("EmailChange VerificationTTL must be <= 15m in OTP mode")
+		}
+	}
+	return nil
 }
 
 /*
@@ -1572,6 +1689,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.validateEmailChange(); err != nil {
+		return err
+	}
+
 	// RoleSwitch
 	if c.RoleSwitch.MaxAttempts < 0 {
 		return errors.New("RoleSwitch MaxAttempts must be >= 0 (0 = default)")
@@ -2189,6 +2310,11 @@ func (c *Config) Lint() LintResult {
 	if c.RoleSwitch.Enabled && (c.ValidationMode == ModeJWTOnly || c.ValidationMode == ModeHybrid) {
 		warn(LintInfo, "role_switch_stateless_validation",
 			"RoleSwitch is enabled with ValidationMode JWTOnly/Hybrid; a pre-switch access token stays valid on routes resolved in those modes until it expires — route role- or permission-gated endpoints through ModeStrict (see the per-mode revocation table in docs/role_switching.md)")
+	}
+
+	if c.EmailChange.Enabled && c.EmailChange.KeepOtherSessions {
+		warn(LintInfo, "email_change_keeps_other_sessions",
+			"EmailChange.KeepOtherSessions is on; a confirmed email change leaves every other session of the user signed in, including one held by whoever prompted the change from a stolen session")
 	}
 
 	if c.Security.LimiterFailClosed {

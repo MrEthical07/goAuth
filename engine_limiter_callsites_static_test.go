@@ -51,6 +51,7 @@ var limiterCallSites = map[string]string{
 	"verifyExternalToken|externalLimiter.SourceKey":                          "key",
 	"verifyExternalToken|externalLimiter.SubjectKey":                         "key",
 	"enforceExternalSignupLimit|accountLimiter.Enforce":                      "gate",
+	"reserveEmailChangeRequest|emailChangeLimiter.Reserve":                   "gate",
 	"reserveRoleSwitchAttempt|roleSwitchLimiter.Reserve":                     "gate",
 	"resetRoleSwitchAttempts|roleSwitchLimiter.Reset":                        "cleanup",
 	"EnableAccount|lockoutLimiter.Reset":                                     "lockout",
