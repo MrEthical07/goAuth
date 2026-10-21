@@ -39,11 +39,11 @@ func newProfileBenchmarkEngine(tb testing.TB, mode ValidationMode) (*Engine, fun
 	cfg.SessionHardening.MaxSessionsPerTenant = 0
 	cfg.JWT.AccessTTL = 10 * time.Minute
 	cfg.JWT.RefreshTTL = 10 * time.Minute
-	cfg.Session.Profiles = map[string]SessionProfile{
+	cfg.SessionProfiles.Profiles = map[string]SessionProfile{
 		"web":    {AbsoluteLifetime: 15 * 24 * time.Hour},
 		"mobile": {IdleTimeout: 90 * 24 * time.Hour, AbsoluteLifetime: 365 * 24 * time.Hour, RenewOnUse: true},
 	}
-	cfg.Session.DefaultProfile = "mobile"
+	cfg.SessionProfiles.DefaultProfile = "mobile"
 
 	hasher, err := password.NewArgon2(password.Config{
 		Memory:      cfg.Password.Memory,

@@ -45,9 +45,6 @@ Three presets are provided:
 | `JitterRange`             | `time.Duration`| 30 s   | ±jitter window |
 | `MaxSessionSize`          | `int`         | `512`   | Max encoded session bytes |
 | `SessionEncoding`         | `string`      | `"binary"` | `"binary"` (v5) or `"msgpack"` |
-| `Profiles`                | `map[string]SessionProfile` | none | Named per-client session policies; see [Session profiles](#session-profiles-configsessionprofiles). Unset = the single global policy, unchanged |
-| `DefaultProfile`          | `string`      | `""`    | Profile used when a login names none; required when `Profiles` is set |
-| `RememberMeProfile`       | `string`      | `""`    | Profile that `LoginOptions.RememberMe = true` selects; optional |
 
 ### MaxSessionDuration
 
@@ -66,7 +63,10 @@ values between `0` and 1 minute; `0` means unset.
   raised to `min(RefreshTTL, AbsoluteSessionLifetime)` when that is longer, so
   configurations that predate this field keep their exact session lifetimes.
 
-### Session profiles (`Config.Session.Profiles`)
+## Session profiles (`Config.SessionProfiles`)
+
+Session profiles live in their own top-level field, `Config.SessionProfiles`, not
+in `Config.Session`, so `SessionConfig` is exactly what it was in v0.7.0.
 
 A session profile is a named lifetime and access-token policy, so one engine
 can serve clients with different needs (a web app, a mobile app, an agent).
@@ -75,12 +75,12 @@ Profiles are opt-in: with `Profiles` empty nothing changes, byte for byte.
 math; this section is the field reference.
 
 ```go
-cfg.Session.Profiles = map[string]goAuth.SessionProfile{
+cfg.SessionProfiles.Profiles = map[string]goAuth.SessionProfile{
     "web":    {AbsoluteLifetime: 15 * 24 * time.Hour},
     "mobile": {IdleTimeout: 90 * 24 * time.Hour, AbsoluteLifetime: 365 * 24 * time.Hour, RenewOnUse: true},
 }
-cfg.Session.DefaultProfile = "web"
-cfg.Session.RememberMeProfile = "mobile" // optional
+cfg.SessionProfiles.DefaultProfile = "web"
+cfg.SessionProfiles.RememberMeProfile = "mobile" // optional
 ```
 
 | `SessionProfile` field | Type | Default | Description |

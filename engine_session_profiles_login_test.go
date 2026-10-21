@@ -360,7 +360,7 @@ func TestSessionProfilesNamedWithoutConfiguration(t *testing.T) {
 
 // The remember-me mapping and its conflicts, on login and account creation.
 func TestSessionProfilesRememberMeMapping(t *testing.T) {
-	withMapping := func(c *Config) { c.Session.RememberMeProfile = "mobile" }
+	withMapping := func(c *Config) { c.SessionProfiles.RememberMeProfile = "mobile" }
 
 	t.Run("RememberMe selects RememberMeProfile", func(t *testing.T) {
 		env := newSPEnv(t, withMapping)

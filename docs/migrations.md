@@ -4,10 +4,8 @@
 
 **No action needed unless you adopt session profiles.** v0.8.0 is additive: no
 exported signature changed and everything `gorelease -base=v0.7.0` lists is an
-addition, with one note: comparing two `SessionConfig` values with `==` no longer
-compiles (`goAuth.SessionConfig` gained a map field, so `a.Session == b.Session`
-is rejected by the compiler; compare fields, or use `reflect.DeepEqual`). With
-profiles unused (the default) behavior is byte-for-byte what
+addition (`Config` gained a `SessionProfiles` field; `SessionConfig` itself is
+unchanged). With profiles unused (the default) behavior is byte-for-byte what
 it was in v0.7.0: the same session bytes in Redis (`session/golden_bytes_test.go`
 passes unmodified), the same MFA challenge bytes, the same Redis commands for
 login, refresh, validate and logout, the same token claims and lifetimes, errors,
@@ -28,15 +26,15 @@ refresh, up to a 365-day ceiling), plus an optional per-profile access-token TTL
    *before* configuring profiles, or an older instance that meets such a record
    fails on it. Sessions created without a profile are still v5 and stay readable
    by v0.7.0.
-2. **Define the profiles** in `Config.Session.Profiles` and set
+2. **Define the profiles** in `Config.SessionProfiles.Profiles` and set
    `DefaultProfile` (required once any profile exists):
 
    ```go
-   cfg.Session.Profiles = map[string]goAuth.SessionProfile{
+   cfg.SessionProfiles.Profiles = map[string]goAuth.SessionProfile{
        "web":    {AbsoluteLifetime: 15 * 24 * time.Hour},
        "mobile": {IdleTimeout: 90 * 24 * time.Hour, AbsoluteLifetime: 365 * 24 * time.Hour, RenewOnUse: true},
    }
-   cfg.Session.DefaultProfile = "web"
+   cfg.SessionProfiles.DefaultProfile = "web"
    ```
 
    `Build` validates the table (see [config.md](config.md#session-profiles-configsessionprofiles));
@@ -49,7 +47,7 @@ refresh, up to a 365-day ceiling), plus an optional per-profile access-token TTL
    the end user controls. Existing call sites that name no profile get the default.
 4. **Map remember-me, if you use it.** With profiles configured,
    `LoginOptions{RememberMe: true}` is no longer the silent "durable session up to
-   `MaxSessionDuration`" it was. Either set `Session.RememberMeProfile` (for
+   `MaxSessionDuration`" it was. Either set `SessionProfiles.RememberMeProfile` (for
    example `"mobile"`) so remember-me selects that profile, or stop sending
    `RememberMe` and name the profile instead. `RememberMe` with no
    `RememberMeProfile`, or together with `WithSessionProfile`, fails with
@@ -74,8 +72,8 @@ refresh, up to a 365-day ceiling), plus an optional per-profile access-token TTL
    read the session, mobile sessions stay alive by refreshing.
 
 New surface, all additive: `WithSessionProfile` / `SessionProfileFromContext`,
-`SessionProfile` and the `Session.Profiles` / `DefaultProfile` /
-`RememberMeProfile` fields, `ErrUnknownSessionProfile` /
+`SessionProfile`, `SessionProfilesConfig` and the `Config.SessionProfiles` field
+(`Profiles`, `DefaultProfile`, `RememberMeProfile`), `ErrUnknownSessionProfile` /
 `ErrSessionProfileConflict`, `SessionInfo.Profile` / `IdleExpiresAt`,
 `jwt.Manager.CreateAccessWithTTL`, and in `session`: `Session.Profile`,
 `ProfilePolicy`, `Store.WithProfiles` / `NewSessionLifetime`. A new

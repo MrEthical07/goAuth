@@ -32,8 +32,8 @@ type spEnv struct {
 
 func spConfig(mutate func(*Config)) rsOption {
 	return rsConfig(func(c *Config) {
-		c.Session.Profiles = spProfiles()
-		c.Session.DefaultProfile = "web"
+		c.SessionProfiles.Profiles = spProfiles()
+		c.SessionProfiles.DefaultProfile = "web"
 		c.Session.JitterEnabled = false
 		c.ValidationMode = ModeHybrid
 		c.TOTP.RequireForLogin = true

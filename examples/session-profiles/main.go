@@ -82,7 +82,7 @@ func run(w io.Writer) error {
 	cfg.Password.Parallelism = 1
 	cfg.Security.ProductionMode = false
 
-	cfg.Session.Profiles = map[string]goAuth.SessionProfile{
+	cfg.SessionProfiles.Profiles = map[string]goAuth.SessionProfile{
 		// web: fixed. Ends 15 days after login however often it is refreshed.
 		"web": {AbsoluteLifetime: 15 * 24 * time.Hour},
 		// mobile: renewing. Ends after 90 days without a successful refresh,
@@ -94,7 +94,7 @@ func run(w io.Writer) error {
 			RenewOnUse:       true,
 		},
 	}
-	cfg.Session.DefaultProfile = "web"
+	cfg.SessionProfiles.DefaultProfile = "web"
 	cfg.Session.JitterEnabled = false
 
 	hasher, err := password.NewArgon2(password.Config{

@@ -16,7 +16,7 @@ import (
 func (e *spEnv) rebuild(mutate func(*Config)) *Engine {
 	e.t.Helper()
 	cfg := e.cfg
-	cfg.Session.Profiles = cloneSessionProfiles(e.cfg.Session.Profiles)
+	cfg.SessionProfiles.Profiles = cloneSessionProfiles(e.cfg.SessionProfiles.Profiles)
 	mutate(&cfg)
 	engine, err := New().
 		WithConfig(cfg).
@@ -265,7 +265,7 @@ func TestSessionProfilesRoleSwitch(t *testing.T) {
 	t.Run("a removed profile ends the session at the switch", func(t *testing.T) {
 		env := newSPEnv(t, nil)
 		_, refresh := env.loginAs("mobile")
-		engine2 := env.rebuild(func(c *Config) { delete(c.Session.Profiles, "mobile") })
+		engine2 := env.rebuild(func(c *Config) { delete(c.SessionProfiles.Profiles, "mobile") })
 		_, err := engine2.SwitchRole(env.ctx(), refresh, "admin", RoleSwitchOptions{})
 		if !errors.Is(err, ErrSessionNotFound) {
 			t.Fatalf("SwitchRole = %v, want ErrSessionNotFound", err)
@@ -283,7 +283,7 @@ func TestSessionProfilesLiveConfig(t *testing.T) {
 		_, refresh := env.loginAs("mobile")
 		env.advance(40 * spDay)
 		engine2 := env.rebuild(func(c *Config) {
-			c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 30 * spDay, AbsoluteLifetime: 60 * spDay}
+			c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 30 * spDay, AbsoluteLifetime: 60 * spDay}
 		})
 
 		_, next, err := engine2.Refresh(env.ctx(), refresh)
@@ -303,7 +303,7 @@ func TestSessionProfilesLiveConfig(t *testing.T) {
 		access, refresh := env.loginAs("mobile")
 		env.advance(70 * spDay)
 		engine2 := env.rebuild(func(c *Config) {
-			c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 30 * spDay, AbsoluteLifetime: 60 * spDay}
+			c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 30 * spDay, AbsoluteLifetime: 60 * spDay}
 		})
 
 		if _, err := engine2.Validate(env.ctx(), access, ModeStrict); !errors.Is(err, ErrSessionNotFound) {
@@ -334,7 +334,7 @@ func TestSessionProfilesLiveConfig(t *testing.T) {
 		stored := env.peek(env.sidOf(refresh))
 		env.advance(10 * spDay)
 		engine2 := env.rebuild(func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: 100 * spDay}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: 100 * spDay}
 		})
 
 		_, next, err := engine2.Refresh(env.ctx(), refresh)
@@ -356,7 +356,7 @@ func TestSessionProfilesLiveConfig(t *testing.T) {
 		access, refresh := env.loginAs("mobile")
 		_, webRefresh := env.loginAs("web")
 		strictAccess, strictRefresh := env.loginAs("mobile")
-		engine2 := env.rebuild(func(c *Config) { delete(c.Session.Profiles, "mobile") })
+		engine2 := env.rebuild(func(c *Config) { delete(c.SessionProfiles.Profiles, "mobile") })
 
 		_, _, err := engine2.Refresh(env.ctx(), refresh)
 		if !errors.Is(err, ErrSessionNotFound) {
@@ -392,9 +392,9 @@ func TestSessionProfilesLiveConfig(t *testing.T) {
 		env := newSPEnv(t, nil)
 		_, refresh := env.loginAs("web")
 		engine2 := env.rebuild(func(c *Config) {
-			c.Session.Profiles = nil
-			c.Session.DefaultProfile = ""
-			c.Session.RememberMeProfile = ""
+			c.SessionProfiles.Profiles = nil
+			c.SessionProfiles.DefaultProfile = ""
+			c.SessionProfiles.RememberMeProfile = ""
 		})
 		if _, _, err := engine2.Refresh(env.ctx(), refresh); !errors.Is(err, ErrSessionNotFound) {
 			t.Fatalf("refresh = %v, want ErrSessionNotFound", err)
@@ -408,9 +408,9 @@ func TestSessionProfilesLiveConfig(t *testing.T) {
 func TestSessionProfilesLegacySessionsKeepLegacyBehavior(t *testing.T) {
 	env := newSPEnv(t, nil)
 	legacy := env.rebuild(func(c *Config) {
-		c.Session.Profiles = nil
-		c.Session.DefaultProfile = ""
-		c.Session.RememberMeProfile = ""
+		c.SessionProfiles.Profiles = nil
+		c.SessionProfiles.DefaultProfile = ""
+		c.SessionProfiles.RememberMeProfile = ""
 	})
 	access, refresh, err := legacy.Login(env.ctx(), rsIdentifier, rsPassword)
 	if err != nil {
@@ -512,7 +512,7 @@ func TestSessionProfilesIntrospection(t *testing.T) {
 	_ = agentRefresh
 
 	// A removed profile no longer lists, and listing deletes nothing.
-	engine2 := env.rebuild(func(c *Config) { delete(c.Session.Profiles, "mobile") })
+	engine2 := env.rebuild(func(c *Config) { delete(c.SessionProfiles.Profiles, "mobile") })
 	list, err = engine2.ListActiveSessions(env.ctx(), rsUserID)
 	if err != nil || len(list) != 2 {
 		t.Fatalf("ListActiveSessions after removing a profile = %v, %v", list, err)

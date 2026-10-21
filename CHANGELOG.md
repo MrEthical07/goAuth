@@ -11,13 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Minor release (SemVer), delivered as three pull requests; this section is
 filled in as they land. **This part (per-client session profiles) is additive.**
-Nothing is removed and no exported signature changed; `Config` only gained
-fields. `gorelease -base=v0.7.0` lists additions and one incompatibility note,
-below: `SessionConfig` is no longer comparable with `==`, because it gained the
-`Profiles` map (`Config` itself was already not comparable, and nothing in this
-repository compares a `SessionConfig`). **With profiles unused (the default),
-behavior is byte-for-byte what it was in v0.7.0:** the same session bytes in Redis (`session/golden_bytes_test.go`
-passes unmodified), the same MFA challenge bytes, the same Redis command
+Nothing is removed and no exported signature changed: `Config` gained one
+field, `SessionProfiles`, and `SessionConfig` is byte-for-byte what it was (it
+stays comparable with `==`; the profile table lives in its own top-level field
+because `Config` is already not comparable). `gorelease -base=v0.7.0` reports
+only compatible changes. **With profiles unused (the default), behavior is
+byte-for-byte what it was in v0.7.0:** the same session bytes in Redis
+(`session/golden_bytes_test.go` passes unmodified), the same MFA challenge bytes, the same Redis command
 sequence for login, refresh, validate and logout, the same token claims and
 lifetimes, errors, audit events and metrics. This was checked by running one
 scenario (every session-creating path, refresh, reuse, validation in all three
@@ -29,11 +29,9 @@ against this branch with no profile configured, and is now pinned by
 
 ```
 # github.com/MrEthical07/goAuth
-## incompatible changes
-SessionConfig: old is comparable, new is not
 ## compatible changes
-SessionConfig.Profiles, SessionConfig.DefaultProfile, SessionConfig.RememberMeProfile,
-SessionProfile, WithSessionProfile, SessionProfileFromContext,
+Config.SessionProfiles, SessionProfilesConfig, SessionProfile,
+WithSessionProfile, SessionProfileFromContext,
 ErrUnknownSessionProfile, ErrSessionProfileConflict and their two Code* constants,
 SessionInfo.Profile, SessionInfo.IdleExpiresAt: added
 
@@ -59,9 +57,9 @@ Suggested version: v0.8.0
   access-token policy, so one engine can serve a web app (fixed: ends 15 days
   after login), a mobile app (renewing: a 90-day inactivity window renewed by
   every successful refresh, up to a 365-day ceiling) and other clients with
-  their own policy. Configure `Config.Session.Profiles`
-  (`map[string]SessionProfile`), `DefaultProfile` and optionally
-  `RememberMeProfile`; a `SessionProfile` has `AccessTTL`, `IdleTimeout`
+  their own policy. Configure `Config.SessionProfiles`
+  (`SessionProfilesConfig`: `Profiles map[string]SessionProfile`,
+  `DefaultProfile` and optionally `RememberMeProfile`); a `SessionProfile` has `AccessTTL`, `IdleTimeout`
   (`0` = fixed, `> 0` = renewing), `AbsoluteLifetime` (a hard ceiling from
   login), `AllowUnbounded` and `RenewOnUse`. The zero value (no profiles) is
   v0.7.0.
@@ -130,7 +128,7 @@ Suggested version: v0.8.0
 ### Changed
 
 - With profiles configured, `RememberMe` no longer silently selects
-  `MaxSessionDuration`: it selects `Session.RememberMeProfile`, or fails with
+  `MaxSessionDuration`: it selects `SessionProfiles.RememberMeProfile`, or fails with
   `ErrSessionProfileConflict` when none is set. Without profiles remember-me is
   unchanged.
 - A session created under a profile is governed by that profile alone:

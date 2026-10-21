@@ -192,7 +192,7 @@ lint warning when set; none affects behavior.
 
 ## Session profiles
 
-[Session profiles](session.md#session-profiles) are **tenant-agnostic**: `Config.Session.Profiles` is one table for the whole engine, every tenant sees the same profiles, and a session's profile is stored with the session under its tenant-scoped key. Nothing about choosing a profile (`WithSessionProfile`), the expiry math, live-config resolution or the invalidation guarantees depends on the tenant, so profiles behave identically with `MultiTenant.Enabled` on or off. Per-tenant lifetimes are not supported; if tenants need different policies, define one profile per policy and pick it server-side from the tenant.
+[Session profiles](session.md#session-profiles) are **tenant-agnostic**: `Config.SessionProfiles.Profiles` is one table for the whole engine, every tenant sees the same profiles, and a session's profile is stored with the session under its tenant-scoped key. Nothing about choosing a profile (`WithSessionProfile`), the expiry math, live-config resolution or the invalidation guarantees depends on the tenant, so profiles behave identically with `MultiTenant.Enabled` on or off. Per-tenant lifetimes are not supported; if tenants need different policies, define one profile per policy and pick it server-side from the tenant.
 
 ## Adopting multi-tenancy
 

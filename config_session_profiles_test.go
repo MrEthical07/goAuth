@@ -20,8 +20,8 @@ func dressinProfiles() map[string]SessionProfile {
 
 func profileConfig(mutate func(*Config)) Config {
 	cfg := accountTestConfig()
-	cfg.Session.Profiles = dressinProfiles()
-	cfg.Session.DefaultProfile = "web"
+	cfg.SessionProfiles.Profiles = dressinProfiles()
+	cfg.SessionProfiles.DefaultProfile = "web"
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -34,7 +34,7 @@ func TestSessionProfilesConfigDefaultsAreEmpty(t *testing.T) {
 		"high security":   HighSecurityConfig(),
 		"high throughput": HighThroughputConfig(),
 	} {
-		s := cfg.Session
+		s := cfg.SessionProfiles
 		if len(s.Profiles) != 0 || s.DefaultProfile != "" || s.RememberMeProfile != "" {
 			t.Fatalf("%s preset changed the session profile zero value: %+v", name, s)
 		}
@@ -48,61 +48,61 @@ func TestConfigValidateSessionProfiles(t *testing.T) {
 		wantErr string // empty: must validate
 	}{
 		{"valid dressin profiles", nil, ""},
-		{"valid remember-me mapping", func(c *Config) { c.Session.RememberMeProfile = "mobile" }, ""},
+		{"valid remember-me mapping", func(c *Config) { c.SessionProfiles.RememberMeProfile = "mobile" }, ""},
 		{"valid unbounded renewing", func(c *Config) {
-			c.Session.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AllowUnbounded: true}
+			c.SessionProfiles.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AllowUnbounded: true}
 		}, ""},
 		{"valid per-profile access ttl", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: 15 * spDay, AccessTTL: time.Minute}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: 15 * spDay, AccessTTL: time.Minute}
 		}, ""},
 		{"valid name characters", func(c *Config) {
-			c.Session.Profiles["a_b-9"] = SessionProfile{AbsoluteLifetime: spDay}
+			c.SessionProfiles.Profiles["a_b-9"] = SessionProfile{AbsoluteLifetime: spDay}
 		}, ""},
 		{"valid 32 char name", func(c *Config) {
-			c.Session.Profiles[strings.Repeat("a", 32)] = SessionProfile{AbsoluteLifetime: spDay}
+			c.SessionProfiles.Profiles[strings.Repeat("a", 32)] = SessionProfile{AbsoluteLifetime: spDay}
 		}, ""},
 
-		{"profiles without default", func(c *Config) { c.Session.DefaultProfile = "" }, "require DefaultProfile"},
-		{"default not defined", func(c *Config) { c.Session.DefaultProfile = "ghost" }, "not a defined profile"},
-		{"remember-me not defined", func(c *Config) { c.Session.RememberMeProfile = "ghost" }, "RememberMeProfile"},
-		{"default without profiles", func(c *Config) { c.Session.Profiles = nil }, "no Profiles are defined"},
+		{"profiles without default", func(c *Config) { c.SessionProfiles.DefaultProfile = "" }, "require DefaultProfile"},
+		{"default not defined", func(c *Config) { c.SessionProfiles.DefaultProfile = "ghost" }, "not a defined profile"},
+		{"remember-me not defined", func(c *Config) { c.SessionProfiles.RememberMeProfile = "ghost" }, "RememberMeProfile"},
+		{"default without profiles", func(c *Config) { c.SessionProfiles.Profiles = nil }, "no Profiles are defined"},
 		{"remember-me without profiles", func(c *Config) {
-			c.Session.Profiles = nil
-			c.Session.DefaultProfile = ""
-			c.Session.RememberMeProfile = "mobile"
+			c.SessionProfiles.Profiles = nil
+			c.SessionProfiles.DefaultProfile = ""
+			c.SessionProfiles.RememberMeProfile = "mobile"
 		}, "no Profiles are defined"},
-		{"empty name", func(c *Config) { c.Session.Profiles[""] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
-		{"uppercase name", func(c *Config) { c.Session.Profiles["Web2"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
-		{"space in name", func(c *Config) { c.Session.Profiles["a b"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
-		{"colon in name", func(c *Config) { c.Session.Profiles["a:b"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
-		{"semicolon in name", func(c *Config) { c.Session.Profiles["a;b"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
+		{"empty name", func(c *Config) { c.SessionProfiles.Profiles[""] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
+		{"uppercase name", func(c *Config) { c.SessionProfiles.Profiles["Web2"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
+		{"space in name", func(c *Config) { c.SessionProfiles.Profiles["a b"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
+		{"colon in name", func(c *Config) { c.SessionProfiles.Profiles["a:b"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
+		{"semicolon in name", func(c *Config) { c.SessionProfiles.Profiles["a;b"] = SessionProfile{AbsoluteLifetime: spDay} }, "names must be"},
 		{"33 char name", func(c *Config) {
-			c.Session.Profiles[strings.Repeat("a", 33)] = SessionProfile{AbsoluteLifetime: spDay}
+			c.SessionProfiles.Profiles[strings.Repeat("a", 33)] = SessionProfile{AbsoluteLifetime: spDay}
 		}, "names must be"},
 		{"negative access ttl", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: spDay, AccessTTL: -time.Second}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: spDay, AccessTTL: -time.Second}
 		}, "AccessTTL must be >= 0"},
 		{"negative idle", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: spDay, IdleTimeout: -time.Second}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: spDay, IdleTimeout: -time.Second}
 		}, "IdleTimeout must be >= 0"},
 		{"negative absolute", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: -time.Second}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: -time.Second}
 		}, "AbsoluteLifetime must be >= 0"},
-		{"zero profile", func(c *Config) { c.Session.Profiles["web"] = SessionProfile{} }, "AbsoluteLifetime must be > 0 unless AllowUnbounded"},
+		{"zero profile", func(c *Config) { c.SessionProfiles.Profiles["web"] = SessionProfile{} }, "AbsoluteLifetime must be > 0 unless AllowUnbounded"},
 		{"unbounded without opt-in", func(c *Config) {
-			c.Session.Profiles["agent"] = SessionProfile{IdleTimeout: spDay}
+			c.SessionProfiles.Profiles["agent"] = SessionProfile{IdleTimeout: spDay}
 		}, "AbsoluteLifetime must be > 0 unless AllowUnbounded"},
 		{"unbounded with a ceiling", func(c *Config) {
-			c.Session.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AbsoluteLifetime: 2 * spDay, AllowUnbounded: true}
+			c.SessionProfiles.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AbsoluteLifetime: 2 * spDay, AllowUnbounded: true}
 		}, "mutually exclusive"},
 		{"unbounded fixed", func(c *Config) {
-			c.Session.Profiles["agent"] = SessionProfile{AllowUnbounded: true}
+			c.SessionProfiles.Profiles["agent"] = SessionProfile{AllowUnbounded: true}
 		}, "AllowUnbounded requires IdleTimeout"},
 		{"renew on use without idle", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: spDay, RenewOnUse: true}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: spDay, RenewOnUse: true}
 		}, "RenewOnUse requires IdleTimeout"},
 		{"idle beyond ceiling", func(c *Config) {
-			c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 2 * spDay, AbsoluteLifetime: spDay}
+			c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 2 * spDay, AbsoluteLifetime: spDay}
 		}, "IdleTimeout must be <= AbsoluteLifetime"},
 	}
 	for _, tc := range cases {
@@ -129,11 +129,11 @@ func productionProfileConfig(t *testing.T, mutate func(*Config)) Config {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("production base config does not validate: %v", err)
 	}
-	cfg.Session.Profiles = map[string]SessionProfile{
+	cfg.SessionProfiles.Profiles = map[string]SessionProfile{
 		"web":    {AbsoluteLifetime: 15 * spDay},
 		"mobile": {IdleTimeout: 90 * spDay, AbsoluteLifetime: 365 * spDay},
 	}
-	cfg.Session.DefaultProfile = "web"
+	cfg.SessionProfiles.DefaultProfile = "web"
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -148,40 +148,40 @@ func TestConfigValidateSessionProfilesProduction(t *testing.T) {
 		wantErr string
 	}{
 		{"dressin profiles are production-valid", nil, ""},
-		{"fixed profile at 30d", func(c *Config) { c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: 30 * spDay} }, ""},
+		{"fixed profile at 30d", func(c *Config) { c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: 30 * spDay} }, ""},
 		{"renewing profile at 90d idle", func(c *Config) {
-			c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 90 * spDay, AbsoluteLifetime: 400 * spDay}
+			c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 90 * spDay, AbsoluteLifetime: 400 * spDay}
 		}, ""},
 		{"unbounded renewing with opt-in", func(c *Config) {
-			c.Session.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AllowUnbounded: true}
+			c.SessionProfiles.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AllowUnbounded: true}
 		}, ""},
 		{"access ttl 15m", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: 15 * spDay, AccessTTL: 15 * time.Minute}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: 15 * spDay, AccessTTL: 15 * time.Minute}
 		}, ""},
 
 		{"fixed profile beyond 30d", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: 30*spDay + time.Second}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: 30*spDay + time.Second}
 		}, "fixed Session Profile AbsoluteLifetime <= 30d"},
 		{"renewing profile idle beyond 90d", func(c *Config) {
-			c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 90*spDay + time.Second, AbsoluteLifetime: 365 * spDay}
+			c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 90*spDay + time.Second, AbsoluteLifetime: 365 * spDay}
 		}, "IdleTimeout <= 90d"},
 		{"access ttl beyond 15m", func(c *Config) {
-			c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: 15 * spDay, AccessTTL: 15*time.Minute + time.Second}
+			c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: 15 * spDay, AccessTTL: 15*time.Minute + time.Second}
 		}, "access TTL <= 15m"},
 		// A profile with no IdleTimeout is fixed by definition, so the only
 		// way to ask for a renewing profile without one is RenewOnUse (or a
 		// long ceiling that production then reads as a fixed profile).
 		{"renewing profile without idle timeout", func(c *Config) {
-			c.Session.Profiles["mobile"] = SessionProfile{AbsoluteLifetime: 365 * spDay, RenewOnUse: true}
+			c.SessionProfiles.Profiles["mobile"] = SessionProfile{AbsoluteLifetime: 365 * spDay, RenewOnUse: true}
 		}, "RenewOnUse requires IdleTimeout"},
 		{"mobile profile that forgot its idle timeout", func(c *Config) {
-			c.Session.Profiles["mobile"] = SessionProfile{AbsoluteLifetime: 365 * spDay}
+			c.SessionProfiles.Profiles["mobile"] = SessionProfile{AbsoluteLifetime: 365 * spDay}
 		}, "fixed Session Profile AbsoluteLifetime <= 30d"},
 		{"unbounded renewing without opt-in", func(c *Config) {
-			c.Session.Profiles["agent"] = SessionProfile{IdleTimeout: spDay}
+			c.SessionProfiles.Profiles["agent"] = SessionProfile{IdleTimeout: spDay}
 		}, "AbsoluteLifetime must be > 0 unless AllowUnbounded"},
 		{"unbounded fixed", func(c *Config) {
-			c.Session.Profiles["agent"] = SessionProfile{}
+			c.SessionProfiles.Profiles["agent"] = SessionProfile{}
 		}, "AbsoluteLifetime must be > 0 unless AllowUnbounded"},
 	}
 	for _, tc := range cases {
@@ -201,8 +201,8 @@ func TestConfigValidateSessionProfilesProduction(t *testing.T) {
 	// production-only guard.
 	cfg := productionProfileConfig(t, func(c *Config) {
 		c.Security.ProductionMode = false
-		c.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: 90 * spDay, AccessTTL: time.Hour}
-		c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 200 * spDay, AbsoluteLifetime: 400 * spDay}
+		c.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: 90 * spDay, AccessTTL: time.Hour}
+		c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 200 * spDay, AbsoluteLifetime: 400 * spDay}
 	})
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("non-production config rejected: %v", err)
@@ -212,16 +212,16 @@ func TestConfigValidateSessionProfilesProduction(t *testing.T) {
 func TestSessionProfilesCloneConfigIsDeep(t *testing.T) {
 	cfg := profileConfig(nil)
 	cloned := cloneConfig(cfg)
-	cloned.Session.Profiles["web"] = SessionProfile{AbsoluteLifetime: time.Second}
-	delete(cloned.Session.Profiles, "mobile")
+	cloned.SessionProfiles.Profiles["web"] = SessionProfile{AbsoluteLifetime: time.Second}
+	delete(cloned.SessionProfiles.Profiles, "mobile")
 
-	if got := cfg.Session.Profiles["web"].AbsoluteLifetime; got != 15*spDay {
+	if got := cfg.SessionProfiles.Profiles["web"].AbsoluteLifetime; got != 15*spDay {
 		t.Fatalf("mutating the clone changed the original: web = %v", got)
 	}
-	if _, ok := cfg.Session.Profiles["mobile"]; !ok {
+	if _, ok := cfg.SessionProfiles.Profiles["mobile"]; !ok {
 		t.Fatal("deleting from the clone removed the original's profile")
 	}
-	if got := cloneConfig(DefaultConfig()).Session.Profiles; got != nil {
+	if got := cloneConfig(DefaultConfig()).SessionProfiles.Profiles; got != nil {
 		t.Fatalf("a config without profiles must clone to nil, got %v", got)
 	}
 }
@@ -253,20 +253,20 @@ func TestLint_SessionProfiles(t *testing.T) {
 	}
 
 	ws := lint(func(c *Config) {
-		c.Session.Profiles["long"] = SessionProfile{IdleTimeout: spDay, AbsoluteLifetime: 365*spDay + time.Second}
+		c.SessionProfiles.Profiles["long"] = SessionProfile{IdleTimeout: spDay, AbsoluteLifetime: 365*spDay + time.Second}
 	})
 	if w := byCode(ws, "session_profile_ceiling_long"); w == nil || w.Severity != LintWarn || !strings.Contains(w.Message, "long") {
 		t.Fatalf("session_profile_ceiling_long = %+v", w)
 	}
 	ws = lint(func(c *Config) {
-		c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 90 * spDay, AbsoluteLifetime: 365 * spDay}
+		c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 90 * spDay, AbsoluteLifetime: 365 * spDay}
 	})
 	if byCode(ws, "session_profile_ceiling_long") != nil {
 		t.Fatal("a 365d ceiling is exactly at the limit and must not warn")
 	}
 
 	ws = lint(func(c *Config) {
-		c.Session.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AllowUnbounded: true}
+		c.SessionProfiles.Profiles["agent"] = SessionProfile{IdleTimeout: spDay, AllowUnbounded: true}
 	})
 	if w := byCode(ws, "session_profile_unbounded"); w == nil || w.Severity != LintWarn || !strings.Contains(w.Message, "agent") {
 		t.Fatalf("session_profile_unbounded = %+v", w)
@@ -280,7 +280,7 @@ func TestLint_SessionProfiles(t *testing.T) {
 	}
 	ws = lint(func(c *Config) {
 		c.ValidationMode = ModeHybrid
-		c.Session.Profiles["mobile"] = SessionProfile{IdleTimeout: 90 * spDay, AbsoluteLifetime: 365 * spDay}
+		c.SessionProfiles.Profiles["mobile"] = SessionProfile{IdleTimeout: 90 * spDay, AbsoluteLifetime: 365 * spDay}
 	})
 	if byCode(ws, "session_profile_renew_on_use_stateless") != nil {
 		t.Fatal("no profile sets RenewOnUse, so there is nothing to warn about")

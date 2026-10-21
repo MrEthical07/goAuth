@@ -21,7 +21,7 @@ const (
 // Every profile code path is gated on it, so an engine without profiles runs
 // exactly the code it ran before profiles existed.
 func (e *Engine) sessionProfilesEnabled() bool {
-	return e != nil && len(e.config.Session.Profiles) > 0
+	return e != nil && len(e.config.SessionProfiles.Profiles) > 0
 }
 
 // sessionProfilePolicies converts the configured profiles into the session
@@ -44,12 +44,12 @@ func sessionProfilePolicies(profiles map[string]SessionProfile) map[string]sessi
 // resolveSessionProfile chooses the profile of a session about to be created.
 //
 // An explicit profile on the context wins, but cannot be combined with
-// RememberMe. RememberMe alone selects Session.RememberMeProfile, and is
+// RememberMe. RememberMe alone selects SessionProfiles.RememberMeProfile, and is
 // refused when none is configured. With neither, the DefaultProfile applies.
 // The choice is made from trusted server-side input only: the context value is
 // set by the caller's own code, never read from a request.
 func (e *Engine) resolveSessionProfile(ctx context.Context, rememberMe bool) (string, internalflows.SessionProfileStatus) {
-	cfg := e.config.Session
+	cfg := e.config.SessionProfiles
 	name, explicit := SessionProfileFromContext(ctx)
 
 	// With no profiles configured there is nothing to choose: a session is
@@ -91,7 +91,7 @@ func (e *Engine) confirmSessionProfile(ctx context.Context, stored string, remem
 	if !e.sessionProfilesEnabled() {
 		return "", internalflows.SessionProfileUnknown
 	}
-	if _, ok := e.config.Session.Profiles[stored]; !ok {
+	if _, ok := e.config.SessionProfiles.Profiles[stored]; !ok {
 		return "", internalflows.SessionProfileUnknown
 	}
 	if named, explicit := SessionProfileFromContext(ctx); explicit && named != stored {
@@ -115,7 +115,7 @@ func (e *Engine) sessionProfileAccessTTL(profile string) time.Duration {
 	if profile == "" {
 		return 0
 	}
-	return e.config.Session.Profiles[profile].AccessTTL
+	return e.config.SessionProfiles.Profiles[profile].AccessTTL
 }
 
 // sessionProfileAssuranceTTL is how long a login's MFA assurance record may
@@ -123,7 +123,7 @@ func (e *Engine) sessionProfileAccessTTL(profile string) time.Duration {
 // idle window when the profile has none. A missing assurance only means a
 // later step-up asks for the factor again.
 func (e *Engine) sessionProfileAssuranceTTL(profile string) time.Duration {
-	p := e.config.Session.Profiles[profile]
+	p := e.config.SessionProfiles.Profiles[profile]
 	if p.AbsoluteLifetime > 0 {
 		return p.AbsoluteLifetime
 	}

@@ -47,7 +47,7 @@ func WithUserAgent(ctx context.Context, userAgent string) context.Context {
 	return context.WithValue(ctx, userAgentContextKey{}, userAgent)
 }
 
-// WithSessionProfile selects the session profile (see Config.Session.Profiles)
+// WithSessionProfile selects the session profile (see Config.SessionProfiles.Profiles)
 // for the sessions created under ctx. It applies to every path that creates a
 // session: Login, LoginWithResult, LoginWithOptions, LoginWithTOTP,
 // LoginWithBackupCode, ConfirmLoginMFA and CreateAccount with auto-login. With

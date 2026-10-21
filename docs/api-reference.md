@@ -219,7 +219,8 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `MultiTenantConfig` | type | Tenant isolation and session caps. |
 | `RoleSwitchConfig` | type | Role switching, per-role step-up policies and the switch-attempt limiter. |
 | `RoleStepUpPolicy` | type | Proof required to switch into one target role. |
-| `SessionProfile` | type | One named session policy (`AccessTTL`, `IdleTimeout`, `AbsoluteLifetime`, `AllowUnbounded`, `RenewOnUse`); configured in `Config.Session.Profiles` with `DefaultProfile` and `RememberMeProfile`. See [session.md](session.md#session-profiles). |
+| `SessionProfile` | type | One named session policy (`AccessTTL`, `IdleTimeout`, `AbsoluteLifetime`, `AllowUnbounded`, `RenewOnUse`); configured in `Config.SessionProfiles.Profiles`. See [session.md](session.md#session-profiles). |
+| `SessionProfilesConfig` | type | The `Config.SessionProfiles` field: `Profiles` (name to `SessionProfile`), `DefaultProfile` and `RememberMeProfile`. A top-level `Config` field so `SessionConfig` is unchanged. |
 | `ValidationMode` | type | Enum: `JWTOnly`, `Hybrid`, `Strict`. |
 | `RouteMode` | type | Per-route validation override. |
 | `ResetStrategyType` | type | Enum: `token`, `otp`, `uuid`. |

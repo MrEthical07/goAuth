@@ -23,6 +23,7 @@ import (
 type Config struct {
 	JWT               JWTConfig
 	Session           SessionConfig
+	SessionProfiles   SessionProfilesConfig
 	SessionHardening  SessionHardeningConfig
 	DeviceBinding     DeviceBindingConfig
 	TOTP              TOTPConfig
@@ -101,16 +102,21 @@ type SessionConfig struct {
 	JitterRange        time.Duration
 	MaxSessionSize     int
 	SessionEncoding    string // "binary" (default) or "msgpack"
+}
 
-	// Profiles defines named session profiles: per-client session lifetime
-	// and access-token policies, chosen per login with [WithSessionProfile].
-	// The zero value (no profiles) keeps the single, global lifetime policy
-	// and leaves every behavior and stored byte exactly as before profiles
-	// existed. Profiles are resolved from this map at use time, so editing
-	// or removing one affects sessions already issued under it; see
-	// docs/session.md.
-	//
-	//	Docs: docs/session.md, docs/config.md
+// SessionProfilesConfig defines named session profiles: per-client session
+// lifetime and access-token policies, chosen per login with
+// [WithSessionProfile]. It is a top-level [Config] field rather than part of
+// [SessionConfig] so that SessionConfig stays exactly what it was.
+//
+// The zero value (no profiles) keeps the single, global lifetime policy and
+// leaves every behavior and stored byte exactly as before profiles existed.
+// Profiles are resolved from this map at use time, so editing or removing
+// one affects sessions already issued under it; see docs/session.md.
+//
+//	Docs: docs/session.md, docs/config.md
+type SessionProfilesConfig struct {
+	// Profiles maps a profile name to its policy.
 	Profiles map[string]SessionProfile
 	// DefaultProfile names the profile used when no profile is requested. It
 	// is required, and must be defined in Profiles, whenever Profiles is
@@ -863,7 +869,7 @@ func cloneConfig(cfg Config) Config {
 	out.JWT.VerifyKeys = cloneVerifyKeys(cfg.JWT.VerifyKeys)
 	out.WebAuthn.RPOrigins = cloneStrings(cfg.WebAuthn.RPOrigins)
 	out.RoleSwitch.StepUp = cloneStepUp(cfg.RoleSwitch.StepUp)
-	out.Session.Profiles = cloneSessionProfiles(cfg.Session.Profiles)
+	out.SessionProfiles.Profiles = cloneSessionProfiles(cfg.SessionProfiles.Profiles)
 	return out
 }
 
@@ -1491,26 +1497,26 @@ func (c *Config) effectiveProfileAccessTTL(p SessionProfile) time.Duration {
 // profile names set it is a no-op, so the zero value keeps validating exactly
 // as before.
 func (c *Config) validateSessionProfiles() error {
-	s := &c.Session
+	s := &c.SessionProfiles
 	if len(s.Profiles) == 0 {
 		if s.DefaultProfile != "" {
-			return errors.New("Session DefaultProfile \"" + s.DefaultProfile + "\" is set but no Profiles are defined")
+			return errors.New("SessionProfiles DefaultProfile \"" + s.DefaultProfile + "\" is set but no Profiles are defined")
 		}
 		if s.RememberMeProfile != "" {
-			return errors.New("Session RememberMeProfile \"" + s.RememberMeProfile + "\" is set but no Profiles are defined")
+			return errors.New("SessionProfiles RememberMeProfile \"" + s.RememberMeProfile + "\" is set but no Profiles are defined")
 		}
 		return nil
 	}
 
 	if s.DefaultProfile == "" {
-		return errors.New("Session Profiles require DefaultProfile")
+		return errors.New("SessionProfiles require DefaultProfile")
 	}
 	if _, ok := s.Profiles[s.DefaultProfile]; !ok {
-		return errors.New("Session DefaultProfile \"" + s.DefaultProfile + "\" is not a defined profile")
+		return errors.New("SessionProfiles DefaultProfile \"" + s.DefaultProfile + "\" is not a defined profile")
 	}
 	if s.RememberMeProfile != "" {
 		if _, ok := s.Profiles[s.RememberMeProfile]; !ok {
-			return errors.New("Session RememberMeProfile \"" + s.RememberMeProfile + "\" is not a defined profile")
+			return errors.New("SessionProfiles RememberMeProfile \"" + s.RememberMeProfile + "\" is not a defined profile")
 		}
 	}
 
@@ -1524,31 +1530,31 @@ func (c *Config) validateSessionProfiles() error {
 	for _, name := range names {
 		p := s.Profiles[name]
 		if !validSessionProfileName(name) {
-			return errors.New("Session Profiles names must be 1-32 characters from [a-z0-9_-] (profile \"" + name + "\")")
+			return errors.New("SessionProfiles names must be 1-32 characters from [a-z0-9_-] (profile \"" + name + "\")")
 		}
 		if p.AccessTTL < 0 {
-			return errors.New("Session Profile AccessTTL must be >= 0 (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile AccessTTL must be >= 0 (profile \"" + name + "\")")
 		}
 		if p.IdleTimeout < 0 {
-			return errors.New("Session Profile IdleTimeout must be >= 0 (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile IdleTimeout must be >= 0 (profile \"" + name + "\")")
 		}
 		if p.AbsoluteLifetime < 0 {
-			return errors.New("Session Profile AbsoluteLifetime must be >= 0 (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile AbsoluteLifetime must be >= 0 (profile \"" + name + "\")")
 		}
 		if p.AbsoluteLifetime == 0 && !p.AllowUnbounded {
-			return errors.New("Session Profile AbsoluteLifetime must be > 0 unless AllowUnbounded is set (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile AbsoluteLifetime must be > 0 unless AllowUnbounded is set (profile \"" + name + "\")")
 		}
 		if p.AllowUnbounded && p.AbsoluteLifetime > 0 {
-			return errors.New("Session Profile AllowUnbounded and AbsoluteLifetime are mutually exclusive (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile AllowUnbounded and AbsoluteLifetime are mutually exclusive (profile \"" + name + "\")")
 		}
 		if p.AllowUnbounded && p.IdleTimeout == 0 {
-			return errors.New("Session Profile AllowUnbounded requires IdleTimeout > 0: a fixed profile needs an AbsoluteLifetime (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile AllowUnbounded requires IdleTimeout > 0: a fixed profile needs an AbsoluteLifetime (profile \"" + name + "\")")
 		}
 		if p.RenewOnUse && p.IdleTimeout == 0 {
-			return errors.New("Session Profile RenewOnUse requires IdleTimeout > 0 (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile RenewOnUse requires IdleTimeout > 0 (profile \"" + name + "\")")
 		}
 		if p.AbsoluteLifetime > 0 && p.IdleTimeout > p.AbsoluteLifetime {
-			return errors.New("Session Profile IdleTimeout must be <= AbsoluteLifetime (profile \"" + name + "\")")
+			return errors.New("SessionProfiles profile IdleTimeout must be <= AbsoluteLifetime (profile \"" + name + "\")")
 		}
 	}
 	return nil
@@ -1557,14 +1563,14 @@ func (c *Config) validateSessionProfiles() error {
 // validateSessionProfilesProduction applies the ProductionMode limits to each
 // profile. validateSessionProfiles has already run.
 func (c *Config) validateSessionProfilesProduction() error {
-	names := make([]string, 0, len(c.Session.Profiles))
-	for name := range c.Session.Profiles {
+	names := make([]string, 0, len(c.SessionProfiles.Profiles))
+	for name := range c.SessionProfiles.Profiles {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	for _, name := range names {
-		p := c.Session.Profiles[name]
+		p := c.SessionProfiles.Profiles[name]
 		if c.effectiveProfileAccessTTL(p) > 15*time.Minute {
 			return errors.New("ProductionMode requires Session Profile access TTL <= 15m (profile \"" + name + "\")")
 		}
@@ -1588,15 +1594,15 @@ func (c *Config) validateSessionProfilesProduction() error {
 // called only when profiles are configured, so a config without them lints
 // exactly as before.
 func (c *Config) lintSessionProfiles(warn func(LintSeverity, string, string)) {
-	names := make([]string, 0, len(c.Session.Profiles))
-	for name := range c.Session.Profiles {
+	names := make([]string, 0, len(c.SessionProfiles.Profiles))
+	for name := range c.SessionProfiles.Profiles {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	var longCeiling, unbounded, renewOnUse []string
 	for _, name := range names {
-		p := c.Session.Profiles[name]
+		p := c.SessionProfiles.Profiles[name]
 		if p.AbsoluteLifetime > 365*24*time.Hour {
 			longCeiling = append(longCeiling, name)
 		}
@@ -1847,7 +1853,7 @@ func (c *Config) Lint() LintResult {
 			"Account.AllowDuplicateIdentifierAcrossTenants is a provider-owned contract; goAuth cannot enforce identifier uniqueness it cannot query — implement the rule in your UserProvider schema")
 	}
 
-	if len(c.Session.Profiles) > 0 {
+	if len(c.SessionProfiles.Profiles) > 0 {
 		c.lintSessionProfiles(warn)
 	}
 

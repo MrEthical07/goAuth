@@ -225,7 +225,7 @@ func (b *Builder) Build() (*Engine, error) {
 		cfg.Session.JitterEnabled,
 		cfg.Session.JitterRange,
 	)
-	if policies := sessionProfilePolicies(cfg.Session.Profiles); policies != nil {
+	if policies := sessionProfilePolicies(cfg.SessionProfiles.Profiles); policies != nil {
 		store.WithProfiles(policies)
 	}
 

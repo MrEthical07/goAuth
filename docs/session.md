@@ -117,7 +117,7 @@ A **session profile** is a named lifetime and access-token policy. One engine
 can then serve clients that need different things: a web app whose sessions
 last a fixed 15 days from login, a mobile app that stays signed in as long as
 it is used at least every 90 days (up to a 365-day ceiling), an agent with its
-own policy. Profiles are opt-in. With `Config.Session.Profiles` empty (the
+own policy. Profiles are opt-in. With `Config.SessionProfiles.Profiles` empty (the
 default) nothing changes: the same session bytes, Redis commands, tokens,
 errors, audit events and metrics as before, pinned by
 `TestSessionProfilesUnusedMatchesV070`.
@@ -136,11 +136,11 @@ inactivity, logout or revocation, and lint warns about it. A fixed profile
 always needs a ceiling, since nothing else would ever end it.
 
 ```go
-cfg.Session.Profiles = map[string]goAuth.SessionProfile{
+cfg.SessionProfiles.Profiles = map[string]goAuth.SessionProfile{
     "web":    {AbsoluteLifetime: 15 * 24 * time.Hour},
     "mobile": {IdleTimeout: 90 * 24 * time.Hour, AbsoluteLifetime: 365 * 24 * time.Hour, RenewOnUse: true},
 }
-cfg.Session.DefaultProfile = "web"
+cfg.SessionProfiles.DefaultProfile = "web"
 
 ctx = goAuth.WithSessionProfile(ctx, "mobile") // chosen by your server, see below
 access, refresh, err := engine.Login(ctx, identifier, password)
@@ -162,7 +162,7 @@ provider called.
 | Request | Result |
 |---------|--------|
 | profile not configured (or any profile on an engine with none) | `ErrUnknownSessionProfile`, no Redis command, no provider call, no Argon2 |
-| `RememberMe: true` and `Session.RememberMeProfile` set | that profile |
+| `RememberMe: true` and `SessionProfiles.RememberMeProfile` set | that profile |
 | `RememberMe: true` and no `RememberMeProfile` | `ErrSessionProfileConflict` |
 | `RememberMe: true` together with an explicit profile | `ErrSessionProfileConflict` |
 | no profile named | `DefaultProfile` |
