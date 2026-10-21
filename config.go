@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -100,6 +101,59 @@ type SessionConfig struct {
 	JitterRange        time.Duration
 	MaxSessionSize     int
 	SessionEncoding    string // "binary" (default) or "msgpack"
+
+	// Profiles defines named session profiles: per-client session lifetime
+	// and access-token policies, chosen per login with [WithSessionProfile].
+	// The zero value (no profiles) keeps the single, global lifetime policy
+	// and leaves every behavior and stored byte exactly as before profiles
+	// existed. Profiles are resolved from this map at use time, so editing
+	// or removing one affects sessions already issued under it; see
+	// docs/session.md.
+	//
+	//	Docs: docs/session.md, docs/config.md
+	Profiles map[string]SessionProfile
+	// DefaultProfile names the profile used when no profile is requested. It
+	// is required, and must be defined in Profiles, whenever Profiles is
+	// non-empty.
+	DefaultProfile string
+	// RememberMeProfile, when set, names the profile a login with
+	// [LoginOptions.RememberMe] set to true receives. With profiles
+	// configured and RememberMeProfile empty, RememberMe=true is refused
+	// with [ErrSessionProfileConflict] instead of silently doing nothing.
+	RememberMeProfile string
+}
+
+// SessionProfile is one named session policy. A profile is either FIXED
+// (IdleTimeout == 0: the session ends AbsoluteLifetime after login, however
+// often it is refreshed) or RENEWING (IdleTimeout > 0: the session ends
+// after IdleTimeout without a successful refresh, and every refresh renews
+// that window, never beyond the ceiling AbsoluteLifetime measured from
+// login).
+//
+// The zero value is not a valid profile: a profile must bound its lifetime
+// or set AllowUnbounded explicitly.
+//
+//	Docs: docs/session.md, docs/config.md
+type SessionProfile struct {
+	// AccessTTL is the lifetime of access tokens issued under this profile.
+	// Zero inherits JWT.AccessTTL.
+	AccessTTL time.Duration
+	// IdleTimeout makes the profile RENEWING when > 0: the inactivity window
+	// that every successful refresh restarts. Zero makes it FIXED.
+	IdleTimeout time.Duration
+	// AbsoluteLifetime is the hard ceiling on the session's life, measured
+	// from login. It may be zero only for a renewing profile that sets
+	// AllowUnbounded.
+	AbsoluteLifetime time.Duration
+	// AllowUnbounded is the explicit opt-in to a renewing profile with no
+	// ceiling: it must be used with IdleTimeout > 0 and AbsoluteLifetime == 0.
+	// Such a session is stored with the expiry [session.UnboundedExpiresAt].
+	AllowUnbounded bool
+	// RenewOnUse makes a successful ModeStrict validation also renew the idle
+	// window, in addition to refresh. It requires IdleTimeout > 0 and has no
+	// effect on ModeHybrid or ModeJWTOnly routes, which never read the
+	// session.
+	RenewOnUse bool
 }
 
 /*
@@ -809,6 +863,18 @@ func cloneConfig(cfg Config) Config {
 	out.JWT.VerifyKeys = cloneVerifyKeys(cfg.JWT.VerifyKeys)
 	out.WebAuthn.RPOrigins = cloneStrings(cfg.WebAuthn.RPOrigins)
 	out.RoleSwitch.StepUp = cloneStepUp(cfg.RoleSwitch.StepUp)
+	out.Session.Profiles = cloneSessionProfiles(cfg.Session.Profiles)
+	return out
+}
+
+func cloneSessionProfiles(profiles map[string]SessionProfile) map[string]SessionProfile {
+	if len(profiles) == 0 {
+		return nil
+	}
+	out := make(map[string]SessionProfile, len(profiles))
+	for name, profile := range profiles {
+		out[name] = profile
+	}
 	return out
 }
 
@@ -992,6 +1058,10 @@ func (c *Config) Validate() error {
 
 	if c.Session.SessionEncoding != "binary" && c.Session.SessionEncoding != "msgpack" {
 		return errors.New("SessionEncoding must be 'binary' or 'msgpack'")
+	}
+
+	if err := c.validateSessionProfiles(); err != nil {
+		return err
 	}
 
 	// Password
@@ -1346,6 +1416,12 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if c.Security.ProductionMode {
+		if err := c.validateSessionProfilesProduction(); err != nil {
+			return err
+		}
+	}
+
 	// RoleSwitch
 	if c.RoleSwitch.MaxAttempts < 0 {
 		return errors.New("RoleSwitch MaxAttempts must be >= 0 (0 = default)")
@@ -1379,6 +1455,173 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// maxSessionProfileNameLen mirrors session.MaxProfileNameLen, the longest name
+// the v6 session format can store.
+const maxSessionProfileNameLen = 32
+
+// validSessionProfileName reports whether name is 1 to 32 characters from
+// [a-z0-9_-].
+func validSessionProfileName(name string) bool {
+	if name == "" || len(name) > maxSessionProfileNameLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		switch {
+		case ch >= 'a' && ch <= 'z', ch >= '0' && ch <= '9', ch == '_', ch == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// effectiveProfileAccessTTL is the access-token lifetime a profile issues: its own
+// AccessTTL, or the global JWT.AccessTTL when it sets none.
+func (c *Config) effectiveProfileAccessTTL(p SessionProfile) time.Duration {
+	if p.AccessTTL > 0 {
+		return p.AccessTTL
+	}
+	return c.JWT.AccessTTL
+}
+
+// validateSessionProfiles checks the profile table. With no profiles and no
+// profile names set it is a no-op, so the zero value keeps validating exactly
+// as before.
+func (c *Config) validateSessionProfiles() error {
+	s := &c.Session
+	if len(s.Profiles) == 0 {
+		if s.DefaultProfile != "" {
+			return errors.New("Session DefaultProfile \"" + s.DefaultProfile + "\" is set but no Profiles are defined")
+		}
+		if s.RememberMeProfile != "" {
+			return errors.New("Session RememberMeProfile \"" + s.RememberMeProfile + "\" is set but no Profiles are defined")
+		}
+		return nil
+	}
+
+	if s.DefaultProfile == "" {
+		return errors.New("Session Profiles require DefaultProfile")
+	}
+	if _, ok := s.Profiles[s.DefaultProfile]; !ok {
+		return errors.New("Session DefaultProfile \"" + s.DefaultProfile + "\" is not a defined profile")
+	}
+	if s.RememberMeProfile != "" {
+		if _, ok := s.Profiles[s.RememberMeProfile]; !ok {
+			return errors.New("Session RememberMeProfile \"" + s.RememberMeProfile + "\" is not a defined profile")
+		}
+	}
+
+	// Sorted so the first error reported does not depend on map order.
+	names := make([]string, 0, len(s.Profiles))
+	for name := range s.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		p := s.Profiles[name]
+		if !validSessionProfileName(name) {
+			return errors.New("Session Profiles names must be 1-32 characters from [a-z0-9_-] (profile \"" + name + "\")")
+		}
+		if p.AccessTTL < 0 {
+			return errors.New("Session Profile AccessTTL must be >= 0 (profile \"" + name + "\")")
+		}
+		if p.IdleTimeout < 0 {
+			return errors.New("Session Profile IdleTimeout must be >= 0 (profile \"" + name + "\")")
+		}
+		if p.AbsoluteLifetime < 0 {
+			return errors.New("Session Profile AbsoluteLifetime must be >= 0 (profile \"" + name + "\")")
+		}
+		if p.AbsoluteLifetime == 0 && !p.AllowUnbounded {
+			return errors.New("Session Profile AbsoluteLifetime must be > 0 unless AllowUnbounded is set (profile \"" + name + "\")")
+		}
+		if p.AllowUnbounded && p.AbsoluteLifetime > 0 {
+			return errors.New("Session Profile AllowUnbounded and AbsoluteLifetime are mutually exclusive (profile \"" + name + "\")")
+		}
+		if p.AllowUnbounded && p.IdleTimeout == 0 {
+			return errors.New("Session Profile AllowUnbounded requires IdleTimeout > 0: a fixed profile needs an AbsoluteLifetime (profile \"" + name + "\")")
+		}
+		if p.RenewOnUse && p.IdleTimeout == 0 {
+			return errors.New("Session Profile RenewOnUse requires IdleTimeout > 0 (profile \"" + name + "\")")
+		}
+		if p.AbsoluteLifetime > 0 && p.IdleTimeout > p.AbsoluteLifetime {
+			return errors.New("Session Profile IdleTimeout must be <= AbsoluteLifetime (profile \"" + name + "\")")
+		}
+	}
+	return nil
+}
+
+// validateSessionProfilesProduction applies the ProductionMode limits to each
+// profile. validateSessionProfiles has already run.
+func (c *Config) validateSessionProfilesProduction() error {
+	names := make([]string, 0, len(c.Session.Profiles))
+	for name := range c.Session.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		p := c.Session.Profiles[name]
+		if c.effectiveProfileAccessTTL(p) > 15*time.Minute {
+			return errors.New("ProductionMode requires Session Profile access TTL <= 15m (profile \"" + name + "\")")
+		}
+		if p.IdleTimeout == 0 {
+			if p.AbsoluteLifetime > 30*24*time.Hour {
+				return errors.New("ProductionMode requires a fixed Session Profile AbsoluteLifetime <= 30d (profile \"" + name + "\")")
+			}
+			continue
+		}
+		if p.IdleTimeout > 90*24*time.Hour {
+			return errors.New("ProductionMode requires a renewing Session Profile IdleTimeout <= 90d (profile \"" + name + "\")")
+		}
+		if p.AbsoluteLifetime == 0 && !p.AllowUnbounded {
+			return errors.New("ProductionMode requires a renewing Session Profile to bound AbsoluteLifetime or set AllowUnbounded (profile \"" + name + "\")")
+		}
+	}
+	return nil
+}
+
+// lintSessionProfiles reports advisory findings about the profile table. It is
+// called only when profiles are configured, so a config without them lints
+// exactly as before.
+func (c *Config) lintSessionProfiles(warn func(LintSeverity, string, string)) {
+	names := make([]string, 0, len(c.Session.Profiles))
+	for name := range c.Session.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var longCeiling, unbounded, renewOnUse []string
+	for _, name := range names {
+		p := c.Session.Profiles[name]
+		if p.AbsoluteLifetime > 365*24*time.Hour {
+			longCeiling = append(longCeiling, name)
+		}
+		if p.AllowUnbounded {
+			unbounded = append(unbounded, name)
+		}
+		if p.RenewOnUse {
+			renewOnUse = append(renewOnUse, name)
+		}
+	}
+
+	if len(longCeiling) > 0 {
+		warn(LintWarn, "session_profile_ceiling_long",
+			"Session profile AbsoluteLifetime > 365d ("+strings.Join(longCeiling, ", ")+"); a stolen refresh token stays useful for that long - keep ceilings to a year or less")
+	}
+	if len(unbounded) > 0 {
+		warn(LintWarn, "session_profile_unbounded",
+			"Session profile sets AllowUnbounded ("+strings.Join(unbounded, ", ")+"); sessions under it have no absolute ceiling and end only by inactivity, logout or revocation")
+	}
+	if len(renewOnUse) > 0 && (c.ValidationMode == ModeHybrid || c.ValidationMode == ModeJWTOnly) {
+		warn(LintInfo, "session_profile_renew_on_use_stateless",
+			"Session profile sets RenewOnUse ("+strings.Join(renewOnUse, ", ")+") with ValidationMode Hybrid/JWTOnly; stateless validation never reads the session, so the idle window renews only on refresh")
+	}
+	warn(LintInfo, "session_profile_removal_ends_sessions",
+		"Session profiles are resolved from this config at use time: removing or renaming a profile ends every session issued under it at its next refresh or strict read - retire a profile by keeping it until its sessions have drained")
 }
 
 // LintSeverity classifies the importance of a lint warning.
@@ -1602,6 +1845,10 @@ func (c *Config) Lint() LintResult {
 	if c.Account.AllowDuplicateIdentifierAcrossTenants {
 		warn(LintInfo, "account_duplicate_identifier_provider_owned",
 			"Account.AllowDuplicateIdentifierAcrossTenants is a provider-owned contract; goAuth cannot enforce identifier uniqueness it cannot query — implement the rule in your UserProvider schema")
+	}
+
+	if len(c.Session.Profiles) > 0 {
+		c.lintSessionProfiles(warn)
 	}
 
 	if c.RoleSwitch.Enabled && (c.ValidationMode == ModeJWTOnly || c.ValidationMode == ModeHybrid) {

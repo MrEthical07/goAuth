@@ -45,6 +45,9 @@ Three presets are provided:
 | `JitterRange`             | `time.Duration`| 30 s   | ±jitter window |
 | `MaxSessionSize`          | `int`         | `512`   | Max encoded session bytes |
 | `SessionEncoding`         | `string`      | `"binary"` | `"binary"` (v5) or `"msgpack"` |
+| `Profiles`                | `map[string]SessionProfile` | none | Named per-client session policies; see [Session profiles](#session-profiles-configsessionprofiles). Unset = the single global policy, unchanged |
+| `DefaultProfile`          | `string`      | `""`    | Profile used when a login names none; required when `Profiles` is set |
+| `RememberMeProfile`       | `string`      | `""`    | Profile that `LoginOptions.RememberMe = true` selects; optional |
 
 ### MaxSessionDuration
 
@@ -62,6 +65,49 @@ values between `0` and 1 minute; `0` means unset.
   default — **24 h** for `ModeStrict`, **7 days** for `ModeHybrid`/`ModeJWTOnly` —
   raised to `min(RefreshTTL, AbsoluteSessionLifetime)` when that is longer, so
   configurations that predate this field keep their exact session lifetimes.
+
+### Session profiles (`Config.Session.Profiles`)
+
+A session profile is a named lifetime and access-token policy, so one engine
+can serve clients with different needs (a web app, a mobile app, an agent).
+Profiles are opt-in: with `Profiles` empty nothing changes, byte for byte.
+[session.md](session.md#session-profiles) explains the model and the expiry
+math; this section is the field reference.
+
+```go
+cfg.Session.Profiles = map[string]goAuth.SessionProfile{
+    "web":    {AbsoluteLifetime: 15 * 24 * time.Hour},
+    "mobile": {IdleTimeout: 90 * 24 * time.Hour, AbsoluteLifetime: 365 * 24 * time.Hour, RenewOnUse: true},
+}
+cfg.Session.DefaultProfile = "web"
+cfg.Session.RememberMeProfile = "mobile" // optional
+```
+
+| `SessionProfile` field | Type | Default | Description |
+|------------------------|------|---------|-------------|
+| `AccessTTL`            | `time.Duration` | `0` | Access-token lifetime for this profile; `0` inherits `JWT.AccessTTL` |
+| `IdleTimeout`          | `time.Duration` | `0` | `> 0` makes the profile **renewing**: the session ends after this long without a successful refresh, and each refresh restarts the window. `0` makes it **fixed** |
+| `AbsoluteLifetime`     | `time.Duration` | `0` | Hard ceiling measured from login. Must be `> 0` unless `AllowUnbounded` |
+| `AllowUnbounded`       | `bool`          | `false` | Explicit "no ceiling"; renewing profiles only, and exclusive with `AbsoluteLifetime` |
+| `RenewOnUse`           | `bool`          | `false` | A successful `ModeStrict` validation also renews the idle window. Needs `IdleTimeout > 0`. No effect on Hybrid or JWT-only routes |
+
+`Build()` rejects (all modes):
+
+- `Profiles` without a `DefaultProfile`, a `DefaultProfile` or `RememberMeProfile` that is not defined, or either set while `Profiles` is empty
+- a name that is empty, longer than 32 characters, or outside `[a-z0-9_-]`
+- a negative `AccessTTL`, `IdleTimeout` or `AbsoluteLifetime`
+- `AbsoluteLifetime == 0` without `AllowUnbounded`, `AllowUnbounded` together with an `AbsoluteLifetime`, or `AllowUnbounded` on a fixed profile (a fixed profile needs a ceiling)
+- `RenewOnUse` without `IdleTimeout`
+- `IdleTimeout` greater than a bounded `AbsoluteLifetime`
+
+`ProductionMode` additionally requires, per profile: an effective access TTL
+of at most 15 minutes; for a fixed profile an `AbsoluteLifetime` of at most 30
+days; for a renewing profile an `IdleTimeout` of at most 90 days and a bounded
+`AbsoluteLifetime` unless `AllowUnbounded` is set.
+
+Profile sessions are not subject to `AbsoluteSessionLifetime` or
+`MaxSessionDuration`: the profile is the lifetime policy for the sessions
+created under it.
 
 > **See also:** [session.md](session.md)
 
@@ -314,9 +360,10 @@ engine**:
 - `max_session_duration_long` (warn) — effective session ceiling > 30 days
 - `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on `ModeStrict`-resolved routes
 - `role_switch_stateless_validation` (info) — `RoleSwitch.Enabled` with `ModeJWTOnly`/`ModeHybrid`; a pre-switch access token stays valid on routes resolved in those modes until it expires (see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode))
+- `session_profile_*` codes — advisory notes on session profiles: a ceiling over 365 days or an unbounded profile (warn), `RenewOnUse` on a stateless validation mode and the "removing a profile ends its sessions" reminder (info); see [Session profiles](#session-profiles-configsessionprofiles)
 - `*_noop` codes — config knobs that are accepted but never read by the engine (see the field tables above)
 
-The complete code list (28 codes: 10 INFO, 14 WARN, 4 HIGH) lives in
+The complete code list (32 codes: 12 INFO, 16 WARN, 4 HIGH) lives in
 [config_lint.md](config_lint.md).
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)
