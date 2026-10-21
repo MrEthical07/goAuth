@@ -76,8 +76,12 @@ func (c *Config) Lint() LintResult
 | `tenant_header_noop` | INFO | `MultiTenant.TenantHeader` is set with multi-tenancy enabled but is never read (tenant comes from `WithTenantID(ctx)`) |
 | `tenant_enforce_isolation_noop` | WARN | `MultiTenant.EnforceIsolation` is deprecated and never read; tenant enforcement is governed entirely by `MultiTenant.Enabled` |
 | `account_duplicate_identifier_provider_owned` | INFO | `Account.AllowDuplicateIdentifierAcrossTenants` is a provider-owned contract; goAuth cannot enforce uniqueness it cannot query |
+| `session_profile_ceiling_long` | WARN | A session profile's `AbsoluteLifetime` is longer than 365 days |
+| `session_profile_unbounded` | WARN | A session profile sets `AllowUnbounded` (no absolute ceiling) |
+| `session_profile_renew_on_use_stateless` | INFO | A session profile sets `RenewOnUse` while `ValidationMode` is Hybrid or JWT-only (stateless validation never reads the session, so the idle window renews only on refresh) |
+| `session_profile_removal_ends_sessions` | INFO | Session profiles are configured: removing or renaming a profile ends every session issued under it at its next refresh or strict read |
 
-Summary: 10 INFO, 14 WARN, 4 HIGH.
+Summary: 12 INFO, 16 WARN, 4 HIGH.
 
 ### No-op knob warnings
 

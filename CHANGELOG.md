@@ -7,6 +7,164 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - Unreleased
+
+Minor release (SemVer), delivered as three pull requests; this section is
+filled in as they land. **This part (per-client session profiles) is additive.**
+Nothing is removed and no exported signature changed: `Config` gained one
+field, `SessionProfiles`, and `SessionConfig` is byte-for-byte what it was (it
+stays comparable with `==`; the profile table lives in its own top-level field
+because `Config` is already not comparable). `gorelease -base=v0.7.0` reports
+only compatible changes. **With profiles unused (the default), behavior is
+byte-for-byte what it was in v0.7.0:** the same session bytes in Redis
+(`session/golden_bytes_test.go` passes unmodified), the same MFA challenge bytes, the same Redis command
+sequence for login, refresh, validate and logout, the same token claims and
+lifetimes, errors, audit events and metrics. This was checked by running one
+scenario (every session-creating path, refresh, reuse, validation in all three
+modes, a role switch, both logouts and an MFA login) against the v0.7.0 tag and
+against this branch with no profile configured, and is now pinned by
+`TestSessionProfilesUnusedMatchesV070`.
+
+`gorelease -base=v0.7.0`:
+
+```
+# github.com/MrEthical07/goAuth
+## compatible changes
+Config.SessionProfiles, SessionProfilesConfig, SessionProfile,
+WithSessionProfile, SessionProfileFromContext,
+ErrUnknownSessionProfile, ErrSessionProfileConflict and their two Code* constants,
+SessionInfo.Profile, SessionInfo.IdleExpiresAt: added
+
+# github.com/MrEthical07/goAuth/jwt
+(*Manager).CreateAccessWithTTL: added
+
+# github.com/MrEthical07/goAuth/session
+(*Store).WithProfiles, (*Store).NewSessionLifetime, (*Store).HasProfiles,
+(*Store).Profile, ProfilePolicy, Session.Profile, Session.IdleExpiresAt,
+UnboundedExpiresAt, ProfileSchemaVersion, MaxProfileNameLen, ErrProfileUnknown,
+ErrSessionExpired, EndedProfileName: added
+
+# github.com/MrEthical07/goAuth/examples/session-profiles
+package added
+
+# summary
+Suggested version: v0.8.0
+```
+
+### Added
+
+- **Per-client session profiles.** A profile is a named session lifetime and
+  access-token policy, so one engine can serve a web app (fixed: ends 15 days
+  after login), a mobile app (renewing: a 90-day inactivity window renewed by
+  every successful refresh, up to a 365-day ceiling) and other clients with
+  their own policy. Configure `Config.SessionProfiles`
+  (`SessionProfilesConfig`: `Profiles map[string]SessionProfile`,
+  `DefaultProfile` and optionally `RememberMeProfile`); a `SessionProfile` has `AccessTTL`, `IdleTimeout`
+  (`0` = fixed, `> 0` = renewing), `AbsoluteLifetime` (a hard ceiling from
+  login), `AllowUnbounded` and `RenewOnUse`. The zero value (no profiles) is
+  v0.7.0.
+- **`WithSessionProfile(ctx, name)` and `SessionProfileFromContext(ctx)`**,
+  beside `WithTenantID`. The profile applies to every path that creates a
+  session (`Login`, `LoginWithResult`, `LoginWithOptions`, `LoginWithTOTP`,
+  `LoginWithBackupCode`, `ConfirmLoginMFA`, `ConfirmLoginMFAWithType`,
+  `CreateAccount` with auto-login). No profile on the context means the
+  `DefaultProfile`; `RememberMe` maps to `RememberMeProfile`. The profile is
+  resolved before any limiter is read, password verified or provider called.
+  Choose it from trusted server-side signals, never from request input.
+- **`ErrUnknownSessionProfile` (`AUTH_UNKNOWN_SESSION_PROFILE`) and
+  `ErrSessionProfileConflict` (`AUTH_SESSION_PROFILE_CONFLICT`)**, both
+  validation errors. Conflict covers `RememberMe` together with an explicit
+  profile, `RememberMe` with no `RememberMeProfile`, and an MFA confirm naming a
+  different profile than its challenge (the challenge is left unconsumed).
+- **Expiry mechanics enforced atomically in Redis.** The refresh script keeps
+  every existing check and its order, then resolves a profile session's policy
+  from the live configuration and renews a renewing profile's window to
+  `min(IdleTimeout +/- jitter, ceiling - now)` in the same Lua call as the
+  compare-and-swap; a fixed profile keeps its TTL. A role switch is a use
+  and renews the window, never past the ceiling. A `ModeStrict` read renews it
+  only with `RenewOnUse` and never applies the legacy sliding reset to a
+  profile session. Profiles are resolved from the current configuration:
+  shortening a ceiling shortens existing sessions, lengthening never extends
+  one, and removing a profile ends its sessions at their next use.
+- **Session schema v6**, written only for sessions created under a profile: the
+  unchanged v5 layout plus a length-prefixed profile name after `ExpiresAt`.
+  `CurrentSchemaVersion` stays 5, legacy sessions stay v5 forever, and
+  migration never converts v5 into v6 or rewrites a v6 record. Both Lua copies of
+  the blob parser read v6.
+- **MFA challenge record v3**, written only when a profile was resolved: v2
+  plus a length-prefixed profile name, so the profile survives the MFA step. A
+  challenge without a profile is still v2, byte for byte. The decoder accepts
+  v1-v3.
+- **`jwt.Manager.CreateAccessWithTTL`**, an additive method issuing an access
+  token with its own lifetime (a profile's `AccessTTL`). `CreateAccess` is
+  unchanged; only `exp` differs.
+- **Observability.** `SessionInfo` gains `Profile` and `IdleExpiresAt`. With
+  profiles configured the audit events `login_success`, `mfa_success`,
+  `refresh_success`, `refresh_invalid`, `logout_session` and `role_switched`
+  carry `metadata.profile`; a refresh of a removed profile is `refresh_invalid`
+  with reason `profile_unknown`, and a strict read that ends a profile session
+  emits the new `session_invalid` event (reason `expired` or `profile_unknown`).
+  No metric IDs were added.
+- **Config validation and lint.** `Build` rejects a missing or undefined
+  default, malformed names (`[a-z0-9_-]`, at most 32), negative durations, a
+  missing ceiling without `AllowUnbounded`, `RenewOnUse` without an idle window
+  and an idle window longer than the ceiling. `ProductionMode` additionally
+  requires, per profile, an effective access TTL of at most 15 minutes, a fixed
+  ceiling of at most 30 days, and a renewing idle window of at most 90 days
+  with a bounded ceiling unless `AllowUnbounded`. New lint codes:
+  `session_profile_ceiling_long` (warn), `session_profile_unbounded` (warn),
+  `session_profile_renew_on_use_stateless` (info) and
+  `session_profile_removal_ends_sessions` (info); the lint reference is now 32
+  codes (12 INFO, 16 WARN, 4 HIGH).
+- New `session` API: `Session.Profile`, `Session.IdleExpiresAt`,
+  `ProfilePolicy`, `Store.WithProfiles`, `Store.NewSessionLifetime`,
+  `Store.HasProfiles`, `Store.Profile`, `UnboundedExpiresAt`,
+  `ProfileSchemaVersion`, `MaxProfileNameLen`, `ErrProfileUnknown`,
+  `ErrSessionExpired` and `EndedProfileName`.
+- `examples/session-profiles`, a runnable walkthrough (built in CI next to
+  `http-minimal`), and real-Redis `TestRedisCompat` coverage for the profile
+  scripts.
+
+### Changed
+
+- With profiles configured, `RememberMe` no longer silently selects
+  `MaxSessionDuration`: it selects `SessionProfiles.RememberMeProfile`, or fails with
+  `ErrSessionProfileConflict` when none is set. Without profiles remember-me is
+  unchanged.
+- A session created under a profile is governed by that profile alone:
+  `AbsoluteSessionLifetime`, `MaxSessionDuration` and `SlidingExpiration` do
+  not apply to it (its strict-read renewal is `RenewOnUse`).
+- The refresh and swap Lua scripts changed (their SHA1 differs) because they
+  must parse v6 and apply profile rules. For a legacy session they take the old
+  path unchanged, and with no profile table the script arguments, and so the
+  commands sent to Redis, are the legacy ones.
+- `AllowUnbounded` is accepted only on a renewing profile (`IdleTimeout > 0`)
+  and is exclusive with `AbsoluteLifetime`: a fixed profile with no ceiling
+  would never expire, and the combination is rejected at `Build`.
+- Documentation: `session.md` (a full "Session profiles" section), `config.md`,
+  `config_lint.md`, `api-reference.md`, `goAuth-methods.md`, `mfa.md`,
+  `multi_tenancy.md`, `introspection.md`, `audit.md`, `role_switching.md`,
+  `jwt.md`, `error-model.md` and `migrations.md`.
+- New root source file `engine_sessionprofile.go` (the per-subsystem pattern of
+  `engine_roleswitch.go`); the root source whitelist in
+  `.github/workflows/go-race.yml` was updated.
+
+### Notes: rolling-deploy compatibility
+
+- **v6 sessions and v3 MFA challenge records cannot be read by v0.7.0.** A
+  v0.7.0 instance that meets one rejects it (sessions end; users sign in again;
+  nothing is corrupted). **Finish the deploy to v0.8.0 before enabling
+  profiles.** Sessions and challenges created without a profile are v5 and v2
+  and stay readable by v0.7.0 in both directions.
+- Removing or renaming a profile, or switching profiles off, ends the sessions
+  issued under it at their next use; this is also the way to roll profiles back.
+- Part 1 of 3: third-party sign-in (Google, Apple) and the change-email,
+  atomic `DeleteAllForUser`, opt-in fail-closed limiter and role-switch
+  MFA-proof cleanup work are separate pull requests. The release tag follows the
+  third.
+
+---
+
 ## [0.7.0] - 2026-10-04
 
 Minor release (SemVer): additive only. `gorelease -base=v0.6.2` reports **no

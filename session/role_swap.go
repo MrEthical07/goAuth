@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/clock"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -133,7 +134,7 @@ end
 
 local function parse_session(data)
   local version = string.byte(data, 1)
-  if not version or version < 1 or version > 5 then
+  if not version or version < 1 or version > 6 then
     return nil
   end
 
@@ -207,18 +208,55 @@ local function parse_session(data)
   if #data < idx + 15 then
     return nil
   end
+  local created_at = read_be64(data, idx)
   idx = idx + 8
   local expires_at = read_be64(data, idx)
-  if not expires_at then
+  if not created_at or not expires_at then
     return nil
+  end
+  idx = idx + 8
+
+  local profile = nil
+  if version >= 6 then
+    local profile_len = string.byte(data, idx)
+    if not profile_len or profile_len < 1 or profile_len > 32 then
+      return nil
+    end
+    if #data < idx + profile_len then
+      return nil
+    end
+    profile = string.sub(data, idx + 1, idx + profile_len)
   end
 
   return {
     user_id = user_id,
     refresh_hash = refresh_hash,
     refresh_offset = refresh_offset,
-    expires_at = expires_at
+    created_at = created_at,
+    expires_at = expires_at,
+    profile = profile
   }
+end
+
+-- find_profile looks a session profile up in the table passed in ARGV: entries
+-- separated by ';', each name:idle_ms:abs_ms:renew. idle_ms > 0 makes the
+-- profile renewing; abs_ms == 0 means no ceiling. Returns nil when the name is
+-- absent (the profile was removed from the configuration).
+local function find_profile(table_arg, name)
+  if not table_arg or table_arg == "" or not name then
+    return nil
+  end
+  for entry in string.gmatch(table_arg, "[^;]+") do
+    local n, idle, abs, renew = string.match(entry, "^([a-z0-9_%-]+):(%d+):(%d+):([01])$")
+    if n == name then
+      return {
+        idle_ms = tonumber(idle),
+        abs_ms = tonumber(abs),
+        renew = renew == "1"
+      }
+    end
+  end
+  return nil
 end
 
 local function decrement_count(count_key)
@@ -240,7 +278,9 @@ end
 // KEYS: old session, new session, tenant count, old assurance, new assurance.
 // ARGV: old session id, user-index prefix, presented refresh hash, now (unix),
 // new session blob, new session id, new assurance ("" = carry the old one
-// over, if any), expected user id.
+// over, if any), expected user id. When the session being replaced belongs to
+// a profile, four more: the profile table, a jitter in milliseconds, now in
+// milliseconds, and the profile name the new blob carries.
 //
 // The tenant count is left alone on success: one session out, one in.
 const swapSessionScript = luaSessionParser + `
@@ -257,6 +297,10 @@ local new_blob = ARGV[5]
 local new_session_id = ARGV[6]
 local new_assurance = ARGV[7]
 local expected_user = ARGV[8]
+local profile_table = ARGV[9]
+local jitter_ms = tonumber(ARGV[10] or "0") or 0
+local now_ms = tonumber(ARGV[11] or "0") or (now_unix * 1000)
+local expected_profile = ARGV[12]
 
 local data = redis.call("GET", old_key)
 if not data then
@@ -268,6 +312,15 @@ if not parsed or not parsed.user_id then
   return {4}
 end
 if parsed.user_id ~= expected_user then
+  return {4}
+end
+-- The replacement must carry the replaced session's profile, and a legacy
+-- session must stay legacy: a swap never moves a session between profiles.
+if expected_profile ~= nil then
+  if parsed.profile ~= expected_profile then
+    return {4}
+  end
+elseif parsed.profile ~= nil then
   return {4}
 end
 
@@ -301,6 +354,61 @@ if ttl <= 0 then
   return {1}
 end
 
+-- A profile session: resolve the profile from the live configuration, like
+-- refresh does. A removed profile or a passed effective ceiling ends the
+-- session (a rotate-equivalent check, so it runs before the replacement-ID
+-- check below, with the same side effects as expiry).
+local key_ms = nil
+local assurance_ms = nil
+if parsed.profile then
+  local policy = find_profile(profile_table, parsed.profile)
+  if not policy then
+    local deleted = redis.call("DEL", old_key)
+    redis.call("SREM", user_key, old_session_id)
+    if deleted == 1 then
+      decrement_count(count_key)
+    end
+    return {1, "profile_unknown", parsed.profile}
+  end
+
+  local ceiling_ms = parsed.expires_at * 1000
+  if policy.abs_ms > 0 then
+    local cap_ms = parsed.created_at * 1000 + policy.abs_ms
+    if cap_ms < ceiling_ms then
+      ceiling_ms = cap_ms
+    end
+  end
+  local remaining_ms = ceiling_ms - now_ms
+  if remaining_ms <= 0 then
+    local deleted = redis.call("DEL", old_key)
+    redis.call("SREM", user_key, old_session_id)
+    if deleted == 1 then
+      decrement_count(count_key)
+    end
+    return {1}
+  end
+
+  -- A switch counts as a use: a renewing session gets a fresh idle window,
+  -- never past the ceiling; a fixed one keeps what is left before it. The
+  -- assurance may live as long as the session can.
+  assurance_ms = remaining_ms
+  if policy.idle_ms > 0 then
+    key_ms = policy.idle_ms + jitter_ms
+    if key_ms > remaining_ms then
+      key_ms = remaining_ms
+    end
+    local floor_ms = 1000
+    if remaining_ms < floor_ms then
+      floor_ms = remaining_ms
+    end
+    if key_ms < floor_ms then
+      key_ms = floor_ms
+    end
+  else
+    key_ms = remaining_ms
+  end
+end
+
 -- Never overwrite a live session: the replacement ID must be unused. This
 -- runs after every rotate-equivalent check (including the deleting reuse
 -- branch) and before the first mutation, and has no side effects.
@@ -308,22 +416,26 @@ if redis.call("EXISTS", new_key) == 1 then
   return {5}
 end
 
--- The new session lives for exactly the old one's remaining absolute
+-- A legacy new session lives for exactly the old one's remaining absolute
 -- lifetime, so a switch can never extend a session.
 local lifetime_ms = (parsed.expires_at - now_unix) * 1000
+if not key_ms then
+  key_ms = lifetime_ms
+  assurance_ms = lifetime_ms
+end
 
 redis.call("DEL", old_key)
 redis.call("SREM", user_key, old_session_id)
-redis.call("SET", new_key, new_blob, "PX", lifetime_ms)
+redis.call("SET", new_key, new_blob, "PX", string.format("%d", key_ms))
 redis.call("SADD", user_key, new_session_id)
 
 if new_assurance ~= "" then
-  redis.call("SET", new_asa_key, new_assurance, "PX", lifetime_ms)
+  redis.call("SET", new_asa_key, new_assurance, "PX", string.format("%d", assurance_ms))
   redis.call("DEL", old_asa_key)
 else
   local carried = redis.call("GET", old_asa_key)
   if carried then
-    redis.call("SET", new_asa_key, carried, "PX", lifetime_ms)
+    redis.call("SET", new_asa_key, carried, "PX", string.format("%d", assurance_ms))
     redis.call("DEL", old_asa_key)
   end
 end
@@ -395,6 +507,34 @@ func (s *Store) SwapSession(
 		newAssurance = EncodeAssurance(*assurance)
 	}
 
+	now := clock.Now()
+	args := []interface{}{
+		oldSessionID,
+		s.userKey(tenantID, ""),
+		providedHash[:],
+		now.Unix(),
+		blob,
+		next.SessionID,
+		newAssurance,
+		next.UserID,
+	}
+	if next.Profile != "" {
+		// The replacement of a profile session carries the profile table, a
+		// jitter, the millisecond clock and its own profile name, which the
+		// script checks against the session it replaces. A legacy swap sends
+		// exactly the eight arguments it always did.
+		extra, err := s.profileScriptArgs(now)
+		if err != nil {
+			return err
+		}
+		if extra == nil {
+			// No table installed: the script resolves nothing and ends the
+			// session as an unknown-profile one.
+			extra = []interface{}{"", "0", now.UnixMilli()}
+		}
+		args = append(args, append(extra, next.Profile)...)
+	}
+
 	result, err := swapSessionLua.Run(
 		ctx,
 		s.redis,
@@ -405,14 +545,7 @@ func (s *Store) SwapSession(
 			s.assuranceKey(tenantID, oldSessionID),
 			s.assuranceKey(tenantID, next.SessionID),
 		},
-		oldSessionID,
-		s.userKey(tenantID, ""),
-		providedHash[:],
-		time.Now().Unix(),
-		blob,
-		next.SessionID,
-		newAssurance,
-		next.UserID,
+		args...,
 	).Result()
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
@@ -431,7 +564,7 @@ func (s *Store) SwapSession(
 	case rotateStatusNotFound:
 		return errors.Join(redis.Nil, ErrRefreshSessionNotFound)
 	case rotateStatusExpired:
-		return errors.Join(redis.Nil, ErrRefreshSessionExpired)
+		return expiredScriptError(parts)
 	case rotateStatusMismatch:
 		return ErrRefreshHashMismatch
 	case rotateStatusRotated:

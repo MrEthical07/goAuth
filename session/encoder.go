@@ -13,9 +13,23 @@ import (
 var errSessionTruncated = io.ErrUnexpectedEOF
 
 const (
-	// CurrentSchemaVersion is the currently encoded Redis session schema version.
+	// CurrentSchemaVersion is the schema version legacy sessions (those
+	// without a profile) are encoded with, and the version older records are
+	// migrated up to. It stays 5: raising it would rewrite every existing
+	// session into a format earlier releases cannot read.
 	CurrentSchemaVersion = 5
 
+	// ProfileSchemaVersion is the schema version of a session created under a
+	// named session profile. It is the v5 layout followed by a length-prefixed
+	// profile name after ExpiresAt, and is written only for such sessions.
+	// Migration never converts a v5 record into v6.
+	ProfileSchemaVersion = 6
+
+	// MaxProfileNameLen is the longest session profile name that can be
+	// stored.
+	MaxProfileNameLen = 32
+
+	sessionFormatVersionProfile = ProfileSchemaVersion
 	sessionFormatVersionCurrent = CurrentSchemaVersion
 	sessionFormatVersionV4      = 4
 	sessionFormatVersionV3      = 3
@@ -24,19 +38,25 @@ const (
 )
 
 // Encode serializes a [Session] into a compact binary format (v5 wire
-// protocol). The result is stored as the Redis value.
+// protocol, or v6 when s.Profile is set). The result is stored as the Redis
+// value.
 //
 //	Performance: single allocation; ~200 bytes per session.
 //	Docs: docs/session.md
 func Encode(s *Session) ([]byte, error) {
 	var buf bytes.Buffer
 
-	schemaVersion := s.SchemaVersion
-	if schemaVersion == 0 {
-		schemaVersion = sessionFormatVersionCurrent
+	// A session with a profile is always v6 and one without is always v5;
+	// SchemaVersion (zero, or what Decode read) must agree with that.
+	schemaVersion := byte(sessionFormatVersionCurrent)
+	if s.Profile != "" {
+		schemaVersion = sessionFormatVersionProfile
 	}
-	if schemaVersion != sessionFormatVersionCurrent {
-		return nil, fmt.Errorf("unsupported session schema version for encode: %d", schemaVersion)
+	if s.SchemaVersion != 0 && s.SchemaVersion != schemaVersion {
+		return nil, fmt.Errorf("unsupported session schema version for encode: %d", s.SchemaVersion)
+	}
+	if len(s.Profile) > MaxProfileNameLen {
+		return nil, errors.New("profile name too long")
 	}
 
 	buf.WriteByte(schemaVersion)
@@ -94,6 +114,11 @@ func Encode(s *Session) ([]byte, error) {
 		return nil, err
 	}
 
+	if schemaVersion == sessionFormatVersionProfile {
+		buf.WriteByte(byte(len(s.Profile)))
+		buf.WriteString(s.Profile)
+	}
+
 	return buf.Bytes(), nil
 }
 
@@ -108,7 +133,7 @@ func Decode(data []byte) (*Session, error) {
 	}
 
 	version := data[0]
-	if version < sessionFormatVersionV1 || version > sessionFormatVersionCurrent {
+	if version < sessionFormatVersionV1 || version > sessionFormatVersionProfile {
 		return nil, fmt.Errorf("unsupported session schema version: %d", version)
 	}
 
@@ -210,8 +235,8 @@ func Decode(data []byte) (*Session, error) {
 		pos += 32
 	}
 
-	// IPHash + UserAgentHash (v5)
-	if version == sessionFormatVersionCurrent {
+	// IPHash + UserAgentHash (v5+)
+	if version >= sessionFormatVersionCurrent {
 		if pos+64 > len(data) {
 			return nil, errSessionTruncated
 		}
@@ -228,6 +253,23 @@ func Decode(data []byte) (*Session, error) {
 	s.CreatedAt = int64(binary.BigEndian.Uint64(data[pos:]))
 	pos += 8
 	s.ExpiresAt = int64(binary.BigEndian.Uint64(data[pos:]))
+	pos += 8
+
+	// Profile (v6): a non-empty name, at most MaxProfileNameLen bytes.
+	if version >= sessionFormatVersionProfile {
+		if pos >= len(data) {
+			return nil, errSessionTruncated
+		}
+		n = int(data[pos])
+		pos++
+		if n < 1 || n > MaxProfileNameLen {
+			return nil, errors.New("invalid session profile name length")
+		}
+		if pos+n > len(data) {
+			return nil, errSessionTruncated
+		}
+		s.Profile = string(data[pos : pos+n])
+	}
 
 	return s, nil
 }

@@ -10,6 +10,7 @@ The `jwt` package manages access-token issuance and verification using configure
 |-----------|-----------|-------------|
 | `NewManager` | `func NewManager(cfg Config) (*Manager, error)` | Create a validated JWT manager |
 | `CreateAccess` | `(uid string, tid string, sid string, mask []byte, permV uint32, roleV uint32, acctV uint32, flags...) (string, error)` | Issue a signed access token |
+| `CreateAccessWithTTL` | `(ttl time.Duration, uid string, ...same as CreateAccess) (string, error)` | Issue a token with its own lifetime (used for a [session profile](session.md#session-profiles)'s `AccessTTL`); `ttl <= 0` uses the configured `AccessTTL`, the two-minute root-token cap still applies, and only `exp` differs |
 | `ParseAccess` | `(tokenStr string) (*AccessClaims, error)` | Verify and parse an access token |
 | `ParseAccessAllowExpired` | `(tokenStr string) (*AccessClaims, error)` | Like `ParseAccess`, but accepts tokens whose **only** defect is expiry. For cleanup flows (logout) — never use it to authorize access |
 | `GenerateEd25519Key` | `func GenerateEd25519Key() (publicKey, privateKey []byte, err error)` | Generate a raw Ed25519 keypair for provisioning/rotation |

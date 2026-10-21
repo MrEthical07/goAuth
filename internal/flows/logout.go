@@ -21,6 +21,11 @@ type LogoutDeps struct {
 	TenantIDFromToken       func(string) string
 	Now                     func() time.Time
 	SessionStore            LogoutSessionStore
+
+	// PeekProfile, when set, reports the session profile of a session just
+	// before it is destroyed, for the audit trail. The engine sets it only
+	// while session profiles are configured.
+	PeekProfile func(ctx context.Context, tenantID, sessionID string) string
 }
 
 type LogoutByAccessResult struct {
@@ -29,7 +34,9 @@ type LogoutByAccessResult struct {
 	// TokenExpired reports that the access token was expired but otherwise
 	// authentic; surfaced as audit metadata, not as an error.
 	TokenExpired bool
-	Err          error
+	// Profile is the destroyed session's profile, when PeekProfile is wired.
+	Profile string
+	Err     error
 }
 
 func RunLogoutInTenant(ctx context.Context, tenantID, sessionID string, deps LogoutDeps) error {
@@ -56,10 +63,15 @@ func RunLogoutByAccessToken(ctx context.Context, tokenStr string, deps LogoutDep
 	expired := claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(now())
 
 	tenantID := deps.TenantIDFromToken(claims.TID)
+	profile := ""
+	if deps.PeekProfile != nil {
+		profile = deps.PeekProfile(ctx, tenantID, claims.SID)
+	}
 	return LogoutByAccessResult{
 		TenantID:     tenantID,
 		SessionID:    claims.SID,
 		TokenExpired: expired,
+		Profile:      profile,
 		Err:          deps.SessionStore.Delete(ctx, tenantID, claims.SID),
 	}
 }

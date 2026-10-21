@@ -72,6 +72,9 @@ type RoleSwitchResult struct {
 	UserID       string
 	FromRole     string
 	ToRole       string
+	// Profile is the session profile the switched session keeps; empty for a
+	// legacy session.
+	Profile string
 
 	// StepUpMethod is how the target role's policy was satisfied, when it
 	// had one.
@@ -201,6 +204,7 @@ func RunSwitchRole(
 	base.UserID = sess.UserID
 	base.FromRole = sess.Role
 	base.ToRole = targetRole
+	base.Profile = sess.Profile
 
 	if sess.ExpiresAt <= deps.Now().Unix() {
 		// Same handling as Refresh's expired case: let the rotate script
@@ -290,6 +294,9 @@ func RunSwitchRole(
 		// past its absolute lifetime or MaxSessionDuration.
 		CreatedAt: sess.CreatedAt,
 		ExpiresAt: sess.ExpiresAt,
+		// A switch keeps the session's profile; the swap script checks it
+		// against the stored session.
+		Profile: sess.Profile,
 	}
 
 	// Tokens are built before the swap so a failure here cannot strand the

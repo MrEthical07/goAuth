@@ -85,6 +85,8 @@ const (
 	CodeAuthRoleSwitchSameRole             AuthCode = "AUTH_ROLE_SWITCH_SAME_ROLE"
 	CodeAuthStepUpRequired                 AuthCode = "AUTH_STEP_UP_REQUIRED"
 	CodeAuthRoleSwitchRateLimited          AuthCode = "AUTH_ROLE_SWITCH_RATE_LIMITED"
+	CodeAuthUnknownSessionProfile          AuthCode = "AUTH_UNKNOWN_SESSION_PROFILE"
+	CodeAuthSessionProfileConflict         AuthCode = "AUTH_SESSION_PROFILE_CONFLICT"
 	CodeAuthRefreshReuseDetected           AuthCode = "AUTH_REFRESH_REUSE_DETECTED"
 	CodeAuthPermissionDenied               AuthCode = "AUTH_PERMISSION_DENIED"
 	CodeSystemEngineNotReady               AuthCode = "SYSTEM_ENGINE_NOT_READY"
@@ -281,6 +283,10 @@ var (
 	ErrStepUpRequired = NewAuthError(CategoryAuthState, string(CodeAuthStepUpRequired), "step-up authentication required")
 	// ErrRoleSwitchRateLimited is returned when a session exceeded its role-switch attempt budget.
 	ErrRoleSwitchRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthRoleSwitchRateLimited), "role switch attempts rate limited")
+	// ErrUnknownSessionProfile is returned when the session profile named with WithSessionProfile (or stored with an MFA challenge) is not a configured profile. It is checked before any password verification, limiter or provider call.
+	ErrUnknownSessionProfile = NewAuthError(CategoryAuthValidation, string(CodeAuthUnknownSessionProfile), "unknown session profile")
+	// ErrSessionProfileConflict is returned when a session profile is requested in incompatible ways: RememberMe together with an explicit profile, RememberMe with no RememberMeProfile configured, or an MFA confirm naming a different profile than its challenge (which leaves the challenge unconsumed).
+	ErrSessionProfileConflict = NewAuthError(CategoryAuthValidation, string(CodeAuthSessionProfileConflict), "session profile conflict")
 	// ErrPermissionDenied is an exported constant or variable used by the authentication engine.
 	ErrPermissionDenied = NewAuthError(CategoryAuthState, string(CodeAuthPermissionDenied), "permission denied")
 	// ErrEngineNotReady is an exported constant or variable used by the authentication engine.

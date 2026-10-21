@@ -270,10 +270,72 @@ func (j *Manager) CreateAccess(
 	includeAccountVersion bool,
 	isRoot bool,
 ) (string, error) {
+	return j.createAccess(
+		0,
+		uid, tid, sid, mask,
+		permVersion, roleVersion, accountVersion,
+		includeMask, includePermVersion, includeRoleVersion, includeAccountVersion,
+		isRoot,
+	)
+}
+
+// CreateAccessWithTTL mints an access token exactly like [Manager.CreateAccess]
+// but with its own lifetime instead of the configured AccessTTL. Claims,
+// signing and format are identical; only exp differs. A ttl <= 0 means "use
+// the configured AccessTTL", and the root-token cap of two minutes still
+// applies on top of any ttl.
+//
+//	Docs: docs/jwt.md, docs/session.md
+func (j *Manager) CreateAccessWithTTL(
+	ttl time.Duration,
+	uid string,
+	tid string,
+	sid string,
+	mask []byte,
+	permVersion uint32,
+	roleVersion uint32,
+	accountVersion uint32,
+	includeMask bool,
+	includePermVersion bool,
+	includeRoleVersion bool,
+	includeAccountVersion bool,
+	isRoot bool,
+) (string, error) {
+	return j.createAccess(
+		ttl,
+		uid, tid, sid, mask,
+		permVersion, roleVersion, accountVersion,
+		includeMask, includePermVersion, includeRoleVersion, includeAccountVersion,
+		isRoot,
+	)
+}
+
+// createAccess is the shared body of CreateAccess and CreateAccessWithTTL;
+// ttlOverride <= 0 selects the configured AccessTTL.
+func (j *Manager) createAccess(
+	ttlOverride time.Duration,
+	uid string,
+	tid string,
+	sid string,
+	mask []byte,
+	permVersion uint32,
+	roleVersion uint32,
+	accountVersion uint32,
+	includeMask bool,
+	includePermVersion bool,
+	includeRoleVersion bool,
+	includeAccountVersion bool,
+	isRoot bool,
+) (string, error) {
+	ttl := j.config.AccessTTL
+	if ttlOverride > 0 {
+		ttl = ttlOverride
+	}
 
 	// Fast path: build JWT directly without library overhead.
 	if j.fast != nil && j.parsedSignKey != nil {
 		return j.createAccessFast(
+			ttl,
 			uid, tid, sid, mask,
 			permVersion, roleVersion, accountVersion,
 			includeMask, includePermVersion, includeRoleVersion, includeAccountVersion,
@@ -283,6 +345,7 @@ func (j *Manager) CreateAccess(
 
 	// Legacy path (fallback).
 	return j.createAccessLegacy(
+		ttl,
 		uid, tid, sid, mask,
 		permVersion, roleVersion, accountVersion,
 		includeMask, includePermVersion, includeRoleVersion, includeAccountVersion,
@@ -291,12 +354,12 @@ func (j *Manager) CreateAccess(
 }
 
 func (j *Manager) createAccessFast(
+	ttl time.Duration,
 	uid string, tid string, sid string, mask []byte,
 	permVersion, roleVersion, accountVersion uint32,
 	includeMask, includePermVersion, includeRoleVersion, includeAccountVersion bool,
 	isRoot bool,
 ) (string, error) {
-	ttl := j.config.AccessTTL
 	if isRoot && ttl > 2*time.Minute {
 		ttl = 2 * time.Minute
 	}
@@ -373,13 +436,12 @@ func (j *Manager) createAccessFast(
 }
 
 func (j *Manager) createAccessLegacy(
+	ttl time.Duration,
 	uid string, tid string, sid string, mask []byte,
 	permVersion, roleVersion, accountVersion uint32,
 	includeMask, includePermVersion, includeRoleVersion, includeAccountVersion bool,
 	isRoot bool,
 ) (string, error) {
-
-	ttl := j.config.AccessTTL
 
 	if isRoot {
 		// root TTL override: 2 minutes

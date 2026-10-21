@@ -55,6 +55,16 @@ func (d *Dispatcher) SinkErrors() uint64
 | `BufferSize` | `int` | Channel capacity |
 | `DropIfFull` | `bool` | Non-blocking send if true |
 
+## Session profile metadata
+
+With [session profiles](session.md#session-profiles) configured, events about a session that belongs to a profile carry `metadata.profile`: `login_success`, `mfa_success`, `refresh_success`, `refresh_invalid` (when the session is known), `logout_session` and `role_switched`. A legacy session's events, and every event of an engine without profiles, are unchanged.
+
+| Event | `reason` | When |
+|-------|----------|------|
+| `refresh_invalid` | `profile_unknown` | A refresh found the session's profile removed from the configuration; the session was deleted |
+| `session_invalid` | `expired` / `profile_unknown` | A `ModeStrict` read ended a profile session (its effective ceiling passed, or its profile was removed). New event, emitted only with profiles configured |
+| `login_failure` / `mfa_failure` | `session_profile` | An unknown or conflicting profile was requested (audit error `unknown_session_profile` or `session_profile_conflict`) |
+
 ## Strategies
 
 - **Drop-if-full** (`DropIfFull = true`): Non-blocking. Increments atomic `dropped` counter on overflow. Preferred for latency-sensitive deployments.

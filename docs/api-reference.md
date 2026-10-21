@@ -149,7 +149,7 @@ The root package contains the authentication engine, builder, configuration, typ
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `GetActiveSessionCount` | method | Returns the number of active sessions for a user. |
-| `ListActiveSessions` | method | Returns metadata for all active sessions of a user. |
+| `ListActiveSessions` | method | Returns metadata for all active sessions of a user, including each session's `Profile` and (renewing profiles) `IdleExpiresAt`. |
 | `GetSessionInfo` | method | Returns metadata for a single session by ID. |
 | `ActiveSessionEstimate` | method | Returns a probabilistic estimate of total active sessions (HyperLogLog). |
 | `Health` | method | Pings Redis and returns a `HealthStatus`. |
@@ -219,6 +219,8 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `MultiTenantConfig` | type | Tenant isolation and session caps. |
 | `RoleSwitchConfig` | type | Role switching, per-role step-up policies and the switch-attempt limiter. |
 | `RoleStepUpPolicy` | type | Proof required to switch into one target role. |
+| `SessionProfile` | type | One named session policy (`AccessTTL`, `IdleTimeout`, `AbsoluteLifetime`, `AllowUnbounded`, `RenewOnUse`); configured in `Config.SessionProfiles.Profiles`. See [session.md](session.md#session-profiles). |
+| `SessionProfilesConfig` | type | The `Config.SessionProfiles` field: `Profiles` (name to `SessionProfile`), `DefaultProfile` and `RememberMeProfile`. A top-level `Config` field so `SessionConfig` is unchanged. |
 | `ValidationMode` | type | Enum: `JWTOnly`, `Hybrid`, `Strict`. |
 | `RouteMode` | type | Per-route validation override. |
 | `ResetStrategyType` | type | Enum: `token`, `otp`, `uuid`. |
@@ -287,6 +289,8 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `WithTenantID` | func | Attaches a tenant ID to a `context.Context`. |
 | `TenantIDFromContext` | func | Returns the tenant attached with `WithTenantID` as `(tenant, true)`, or `("", false)` when none is attached. Never synthesizes the internal default `"0"`. |
 | `WithUserAgent` | func | Attaches a User-Agent string to a `context.Context`. |
+| `WithSessionProfile` | func | Names the session profile for sessions created under the context (every login path and auto-login account creation). Choose it from server-side signals only. |
+| `SessionProfileFromContext` | func | Returns the profile attached with `WithSessionProfile` as `(name, true)`, or `("", false)`. |
 
 ---
 
@@ -303,6 +307,7 @@ JWT token creation and parsing.
 | `Manager` | type | Stateless JWT issuer/verifier; safe for concurrent use. |
 | `NewManager` | func | Creates a `Manager` from a `Config`. |
 | `CreateAccess` | method | Signs a new access token with the given claims. |
+| `CreateAccessWithTTL` | method | Like `CreateAccess` with its own lifetime (a session profile's `AccessTTL`); only `exp` differs. `ttl <= 0` uses the configured `AccessTTL`. |
 | `ParseAccess` | method | Parses and validates an access token string. |
 | `ParseAccessAllowExpired` | method | Parses an access token accepting expiry as the only defect; for cleanup flows (logout), never authorization. |
 | `AccessClaims` | type | JWT claims struct embedded in access tokens. |
@@ -330,6 +335,13 @@ Redis-backed session storage with binary encoding.
 | `DeleteAllForUser` | method | Removes all sessions for a user (and optional tenant). |
 | `RotateRefreshHash` | method | Atomically replaces the refresh hash on an existing session. |
 | `SwapSession` | method | Atomically replaces one session with another (role switch): same checks as `RotateRefreshHash`, keeps the absolute lifetime, moves the assurance. |
+| `WithProfiles` | method | Installs the session profile table (`map[string]ProfilePolicy`); the engine calls it at Build. |
+| `NewSessionLifetime` | method | Returns the `ExpiresAt` ceiling and initial key TTL for a new session under a named profile. |
+| `HasProfiles` / `Profile` | method | Inspect the installed profile table. |
+| `ProfilePolicy` | type | The store's view of a profile: `IdleTimeout`, `AbsoluteLifetime`, `RenewOnUse`. |
+| `UnboundedExpiresAt` | const | The `ExpiresAt` sentinel (31 Dec 9999) of a session whose profile has no ceiling. |
+| `ProfileSchemaVersion` / `MaxProfileNameLen` | const | Schema version 6 (sessions with a profile) and the 32-byte profile name limit. |
+| `ErrProfileUnknown` / `ErrSessionExpired` | var | A profile session ended because its profile was removed or its ceiling passed; always joined with `redis.Nil`. `EndedProfileName(err)` returns the profile. |
 | `Peek` | method | Reads a session exactly as stored: no expiry filter, no schema migration, no Redis write. |
 | `SaveAssurance` / `GetAssurance` | method | Store and read a session's step-up assurance (`asa:<tenant>:<sid>`), outside the session blob. |
 | `Assurance` | struct | MFA time + method and last-proof time. `EncodeAssurance`/`DecodeAssurance` serialize it; `ErrAssuranceCorrupt` reports a bad value. |

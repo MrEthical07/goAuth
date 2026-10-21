@@ -1,5 +1,92 @@
 # Migrations
 
+## v0.8.0 Migration Notes (Non-Breaking)
+
+**No action needed unless you adopt session profiles.** v0.8.0 is additive: no
+exported signature changed and everything `gorelease -base=v0.7.0` lists is an
+addition (`Config` gained a `SessionProfiles` field; `SessionConfig` itself is
+unchanged). With profiles unused (the default) behavior is byte-for-byte what
+it was in v0.7.0: the same session bytes in Redis (`session/golden_bytes_test.go`
+passes unmodified), the same MFA challenge bytes, the same Redis commands for
+login, refresh, validate and logout, the same token claims and lifetimes, errors,
+audit events and metrics. `TestSessionProfilesUnusedMatchesV070` pins this: its
+expected values were captured by running the same scenario against the v0.7.0
+tag.
+
+### Optional: adopt session profiles
+
+[Session profiles](session.md#session-profiles) give different clients different
+session lifetimes: a fixed lifetime (for example a web app, 15 days from login) or
+a renewing one (for example a mobile app, 90 days of inactivity renewed by each
+refresh, up to a 365-day ceiling), plus an optional per-profile access-token TTL.
+
+1. **Finish any rolling deploy first.** A session created under a profile is
+   stored as schema **v6**, and an MFA challenge created under one as record
+   **v3**; v0.7.0 binaries cannot read either. Roll every instance to v0.8.0
+   *before* configuring profiles, or an older instance that meets such a record
+   fails on it. Sessions created without a profile are still v5 and stay readable
+   by v0.7.0.
+2. **Define the profiles** in `Config.SessionProfiles.Profiles` and set
+   `DefaultProfile` (required once any profile exists):
+
+   ```go
+   cfg.SessionProfiles.Profiles = map[string]goAuth.SessionProfile{
+       "web":    {AbsoluteLifetime: 15 * 24 * time.Hour},
+       "mobile": {IdleTimeout: 90 * 24 * time.Hour, AbsoluteLifetime: 365 * 24 * time.Hour, RenewOnUse: true},
+   }
+   cfg.SessionProfiles.DefaultProfile = "web"
+   ```
+
+   `Build` validates the table (see [config.md](config.md#session-profiles-configsessionprofiles));
+   in `ProductionMode` it also caps a profile's access TTL at 15 minutes, a fixed
+   ceiling at 30 days and a renewing idle window at 90 days. Run `cfg.Lint()` and
+   read the `session_profile_*` findings.
+3. **Pick the profile server-side** and attach it to the context of every login:
+   `ctx = goAuth.WithSessionProfile(ctx, "mobile")`. Decide it from your own
+   routing or from the authenticated API client, never from a header or body field
+   the end user controls. Existing call sites that name no profile get the default.
+4. **Map remember-me, if you use it.** With profiles configured,
+   `LoginOptions{RememberMe: true}` is no longer the silent "durable session up to
+   `MaxSessionDuration`" it was. Either set `SessionProfiles.RememberMeProfile` (for
+   example `"mobile"`) so remember-me selects that profile, or stop sending
+   `RememberMe` and name the profile instead. `RememberMe` with no
+   `RememberMeProfile`, or together with `WithSessionProfile`, fails with
+   `ErrSessionProfileConflict` instead of guessing. Without profiles remember-me
+   is unchanged.
+5. **Map the two new errors** in your HTTP layer: `ErrUnknownSessionProfile`
+   (`AUTH_UNKNOWN_SESSION_PROFILE`, a server-side bug, 400) and
+   `ErrSessionProfileConflict` (`AUTH_SESSION_PROFILE_CONFLICT`, 409). Both are
+   returned before any password is verified or limiter touched.
+6. **Know what existing sessions do.** Sessions issued before you enable profiles
+   stay legacy (v5) and keep their lifetime and sliding behavior until they
+   expire; only new logins get profiles. `AbsoluteSessionLifetime` and
+   `MaxSessionDuration` no longer apply to a session created under a profile.
+7. **Operate profiles as live configuration.** The policy is resolved from the
+   config each time a session is refreshed, switched or read strictly. Shortening a
+   profile's ceiling shortens existing sessions; lengthening never extends one;
+   **removing or renaming a profile ends its sessions** at their next use
+   (audited as `profile_unknown`), as does switching profiles off entirely. Keep a
+   retired profile until its sessions have drained.
+8. **Renewal and Hybrid.** A refresh always renews a renewing profile. `RenewOnUse`
+   renews on `ModeStrict` reads only; on Hybrid and JWT-only routes, which never
+   read the session, mobile sessions stay alive by refreshing.
+
+New surface, all additive: `WithSessionProfile` / `SessionProfileFromContext`,
+`SessionProfile`, `SessionProfilesConfig` and the `Config.SessionProfiles` field
+(`Profiles`, `DefaultProfile`, `RememberMeProfile`), `ErrUnknownSessionProfile` /
+`ErrSessionProfileConflict`, `SessionInfo.Profile` / `IdleExpiresAt`,
+`jwt.Manager.CreateAccessWithTTL`, and in `session`: `Session.Profile`,
+`ProfilePolicy`, `Store.WithProfiles` / `NewSessionLifetime`. A new
+`session_invalid` audit event is emitted only with profiles configured.
+
+### Rolling back
+
+Downgrading to v0.7.0 after profiles were in use leaves v6 sessions and v3
+challenges that v0.7.0 cannot decode. Sessions end (users sign in again);
+nothing corrupts. To roll back cleanly, remove the profile configuration first
+(on v0.8.0 that ends the profile sessions at their next use) and let challenges
+(three minutes) drain.
+
 ## v0.7.0 Migration Notes (Non-Breaking)
 
 No action needed unless you adopt the features. v0.7.0 is additive: no exported
@@ -330,9 +417,9 @@ goAuth stores Redis session blobs with an embedded schema byte (`Session.SchemaV
 
 ### Current behavior
 
-- Current schema version: `5` (`session.CurrentSchemaVersion`)
+- Current schema version: `5` (`session.CurrentSchemaVersion`); sessions created under a session profile use the separate version `6` (`session.ProfileSchemaVersion`), written only for them
 - Unknown/future schema versions: fail closed with a clear decode error
-- Legacy supported versions (`1-4`): decoded safely and migrated on read
+- Legacy supported versions (`1-4`): decoded safely and migrated on read, up to `5` and never beyond: migration never converts v5 into v6 and never rewrites a v6 record
 
 ### Read-time migration strategy
 

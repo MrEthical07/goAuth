@@ -247,6 +247,10 @@ switch, logout or reuse revocation deleted in between.
 - When role switching is disabled the refresh path is untouched: no extra
   reads, no provider calls.
 
+## Session profiles
+
+The replacement session keeps the old one's [session profile](session.md#session-profiles), `CreatedAt` and `ExpiresAt`. A switch counts as a use: on a **renewing** profile the new key gets a fresh idle window (never past the ceiling, so switching back and forth cannot stretch a session), on a **fixed** profile it keeps what is left before the ceiling. The swap script resolves the profile from the live configuration like refresh does (a removed profile or a passed ceiling ends the session, `ErrSessionNotFound`) and refuses to change a session's profile. `role_switched` carries `metadata.profile`.
+
 ## Step-up
 
 `StepUp[targetRole]` demands proof before a session may take that role.

@@ -69,6 +69,12 @@ type AccountErrors struct {
 	AccountExists               error
 	ProviderDuplicateIdentifier error
 	SessionCreationFailed       error
+
+	// UnknownSessionProfile and SessionProfileConflict are returned when the
+	// requested session profile does not exist or is requested in two
+	// incompatible ways. They are only used while profiles are configured.
+	UnknownSessionProfile  error
+	SessionProfileConflict error
 }
 
 type AccountDeps struct {
@@ -93,6 +99,11 @@ type AccountDeps struct {
 	CreateUser         func(context.Context, AccountCreateUserInput) (AccountUserRecord, error)
 	IssueSessionTokens func(context.Context, AccountUserRecord, bool) (string, string, error)
 
+	// ResolveSessionProfile is nil unless session profiles are configured.
+	// It is consulted only for an auto-login, the one case in which account
+	// creation issues a session.
+	ResolveSessionProfile SessionProfileResolver
+
 	MetricInc     func(int)
 	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
 	EmitRateLimit func(context.Context, string, string, func() map[string]string)
@@ -115,11 +126,20 @@ type AccountSessionDeps struct {
 	SaveSession        func(context.Context, *session.Session, time.Duration) error
 	IssueAccessToken   func(*session.Session) (string, error)
 
+	// Session profiles; nil unless profiles are configured.
+	ResolveSessionProfile  SessionProfileResolver
+	SessionProfileLifetime SessionProfileLifetime
+
 	MetricInc            func(int)
 	SessionCreatedMetric int
 
 	ErrEngineNotReady     error
 	ErrAccountRoleInvalid error
+
+	// ErrUnknownSessionProfile and ErrSessionProfileConflict are returned for
+	// an invalid profile request; used only while profiles are configured.
+	ErrUnknownSessionProfile  error
+	ErrSessionProfileConflict error
 }
 
 func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps AccountDeps) (*AccountCreateResult, error) {
@@ -147,6 +167,19 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 			return nil, deps.Errors.AccountCreationInvalid
 		}
 		tenantID = explicitTenantID
+	}
+
+	// An auto-login creates a session, so its profile is chosen before the
+	// limiter is consumed, the password is hashed or the provider is called.
+	if deps.AutoLogin && deps.ResolveSessionProfile != nil {
+		name, status := deps.ResolveSessionProfile(ctx, req.RememberMe)
+		switch status {
+		case SessionProfileUnknown:
+			return nil, deps.Errors.UnknownSessionProfile
+		case SessionProfileConflict:
+			return nil, deps.Errors.SessionProfileConflict
+		}
+		ctx = withResolvedSessionProfile(ctx, name)
 	}
 
 	if req.Identifier == "" {
@@ -328,6 +361,17 @@ func RunIssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, r
 		return "", "", deps.ErrEngineNotReady
 	}
 
+	profile, profileStatus := sessionProfileFor(ctx, rememberMe, deps.ResolveSessionProfile)
+	switch profileStatus {
+	case SessionProfileUnknown:
+		return "", "", deps.ErrUnknownSessionProfile
+	case SessionProfileConflict:
+		return "", "", deps.ErrSessionProfileConflict
+	}
+	if profile != "" && deps.SessionProfileLifetime == nil {
+		return "", "", deps.ErrEngineNotReady
+	}
+
 	mask, ok := deps.GetRoleMask(user.Role)
 	if !ok {
 		return "", "", deps.ErrAccountRoleInvalid
@@ -348,7 +392,14 @@ func RunIssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, r
 	}
 
 	now := deps.Now()
-	sessionLifetime := deps.SessionLifetime(rememberMe)
+	plan := legacyPlan(now, deps.SessionLifetime(rememberMe))
+	if profile != "" {
+		var lifetimeErr error
+		plan, lifetimeErr = profilePlan(profile, now, deps.SessionProfileLifetime)
+		if lifetimeErr != nil {
+			return "", "", lifetimeErr
+		}
+	}
 	accountVersion := user.AccountVersion
 	if accountVersion == 0 {
 		accountVersion = 1
@@ -366,10 +417,11 @@ func RunIssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, r
 		Status:            user.Status,
 		RefreshHash:       deps.HashRefreshSecret(refreshSecret),
 		CreatedAt:         now.Unix(),
-		ExpiresAt:         now.Add(sessionLifetime).Unix(),
+		ExpiresAt:         plan.expiresAt,
+		Profile:           plan.profile,
 	}
 
-	if err := deps.SaveSession(ctx, sess, sessionLifetime); err != nil {
+	if err := deps.SaveSession(ctx, sess, plan.ttl); err != nil {
 		return "", "", err
 	}
 	deps.MetricInc(deps.SessionCreatedMetric)

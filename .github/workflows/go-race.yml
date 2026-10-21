@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          expected="$(printf '%s\n' builder.go config.go context.go doc.go engine.go engine_roleswitch.go engine_webauthn.go error_mapping.go errors.go goAuth.go types.go | sort)"
+          expected="$(printf '%s\n' builder.go config.go context.go doc.go engine.go engine_roleswitch.go engine_sessionprofile.go engine_webauthn.go error_mapping.go errors.go goAuth.go types.go | sort)"
           actual="$(ls -1 *.go | grep -v '_test.go$' | sort)"
 
           if [ "$actual" != "$expected" ]; then
@@ -109,7 +109,9 @@ jobs:
         run: go test ./...
 
       - name: Build example app
-        run: go build ./examples/http-minimal/...
+        run: |
+          go build ./examples/http-minimal/...
+          go build ./examples/session-profiles/...
 
       - name: Check engine.go delegate complexity
         run: go test -run TestEngine_DelegateMethodComplexity -v .
@@ -141,7 +143,11 @@ jobs:
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          # gosec@latest pins an x/tools that cannot read the export data of
+          # current Go 1.27 patch releases ("could not import errors ..."), so
+          # it is built against the newest x/tools instead.
+          gosec_dir="$(mktemp -d)"
+          (cd "$gosec_dir" && go mod init gosecbuild && go get github.com/securego/gosec/v2/cmd/gosec@latest golang.org/x/tools@latest && go build -o "$(go env GOPATH)/bin/gosec" github.com/securego/gosec/v2/cmd/gosec)
 
       - name: Run staticcheck
         if: matrix.run_extended
@@ -177,4 +183,4 @@ jobs:
           check-latest: true
 
       - name: Run race tests
-        run: go test -race ./...
+        run: go test -race -timeout 20m ./...

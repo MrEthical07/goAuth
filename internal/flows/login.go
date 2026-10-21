@@ -51,6 +51,10 @@ type MFALoginChallengeRecord struct {
 	ExpiresAt  int64
 	Attempts   uint16
 	RememberMe bool
+	// Profile is the session profile resolved at login, so the session
+	// issued after the second factor receives it. Empty when no profiles
+	// are configured.
+	Profile string
 }
 
 // LoginMetrics carries metric IDs needed by login/mfa flows.
@@ -98,6 +102,12 @@ type LoginErrors struct {
 	WebAuthnCloneDetected    error
 	WebAuthnCeremonyExpired  error
 	WebAuthnUnavailable      error
+
+	// UnknownSessionProfile and SessionProfileConflict are returned when the
+	// requested session profile does not exist or is requested in two
+	// incompatible ways. They are only used while profiles are configured.
+	UnknownSessionProfile  error
+	SessionProfileConflict error
 }
 
 // LoginDeps captures login+mfa dependencies.
@@ -188,6 +198,12 @@ type LoginDeps struct {
 	SaveSession        func(context.Context, *session.Session, time.Duration) error
 	IssueAccessToken   func(*session.Session) (string, error)
 
+	// Session profiles; all three are nil unless profiles are configured, and
+	// a nil ResolveSessionProfile leaves every login exactly as it was.
+	ResolveSessionProfile  SessionProfileResolver
+	ConfirmSessionProfile  SessionProfileConfirmer
+	SessionProfileLifetime SessionProfileLifetime
+
 	MetricInc     func(int)
 	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
 	EmitRateLimit func(context.Context, string, string, func() map[string]string)
@@ -196,6 +212,18 @@ type LoginDeps struct {
 	Metrics LoginMetrics
 	Events  LoginEvents
 	Errors  LoginErrors
+}
+
+// profileRejection maps a failed profile resolution to the host's sentinel,
+// or nil when the profile was resolved.
+func (d LoginDeps) profileRejection(status SessionProfileStatus) error {
+	switch status {
+	case SessionProfileUnknown:
+		return d.Errors.UnknownSessionProfile
+	case SessionProfileConflict:
+		return d.Errors.SessionProfileConflict
+	}
+	return nil
 }
 
 // dummyTimingHash is a syntactically valid Argon2id hash used to equalize
@@ -245,6 +273,23 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 	}
 
 	tenantID := deps.TenantIDFromContext(ctx)
+
+	// Choose the session profile first: an unknown or conflicting request is
+	// refused before any limiter is read, any password is hashed and any
+	// provider is called.
+	if deps.ResolveSessionProfile != nil {
+		name, status := deps.ResolveSessionProfile(ctx, opts.RememberMe)
+		if rejected := deps.profileRejection(status); rejected != nil {
+			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", rejected, func() map[string]string {
+				return map[string]string{
+					"identifier": username,
+					"reason":     "session_profile",
+				}
+			})
+			return nil, rejected
+		}
+		ctx = withResolvedSessionProfile(ctx, name)
+	}
 
 	if deps.CheckLoginRate != nil {
 		if err := deps.CheckLoginRate(ctx, username); err != nil {
@@ -575,6 +620,26 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, mapped
 	}
 
+	// The profile resolved at login wins. A confirm that names a different
+	// profile is refused here, before anything is consumed or counted, so the
+	// challenge stays usable with the right profile.
+	if deps.ConfirmSessionProfile != nil {
+		name, status := deps.ConfirmSessionProfile(ctx, record.Profile, record.RememberMe)
+		if rejected := deps.profileRejection(status); rejected != nil {
+			deps.EmitAudit(ctx, deps.Events.MFAFailure, false, record.UserID, record.TenantID, "", rejected, func() map[string]string {
+				return map[string]string{
+					"reason": "session_profile",
+				}
+			})
+			return nil, rejected
+		}
+		ctx = withResolvedSessionProfile(ctx, name)
+	} else if record.Profile != "" {
+		// The challenge was created under a profile this engine no longer
+		// has configured.
+		return nil, deps.Errors.UnknownSessionProfile
+	}
+
 	if tenant := deps.TenantIDFromContext(ctx); tenant != "" && record.TenantID != "" && tenant != record.TenantID {
 		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
 		deps.MetricInc(deps.Metrics.MFALoginFailure)
@@ -742,7 +807,11 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	}
 
 	deps.MetricInc(deps.Metrics.MFALoginSuccess)
-	deps.EmitAudit(ctx, deps.Events.MFASuccess, true, user.UserID, record.TenantID, "", nil, nil)
+	var successMeta func() map[string]string
+	if profile := ResolvedSessionProfile(ctx); profile != "" {
+		successMeta = func() map[string]string { return profileMeta(nil, profile) }
+	}
+	deps.EmitAudit(ctx, deps.Events.MFASuccess, true, user.UserID, record.TenantID, "", nil, successMeta)
 	return &LoginResult{
 		AccessToken:  access,
 		RefreshToken: refresh,
@@ -845,6 +914,7 @@ func RunCreateMFALoginChallenge(ctx context.Context, userID, tenantID string, re
 		ExpiresAt:  deps.Now().Add(ttl).Unix(),
 		Attempts:   0,
 		RememberMe: rememberMe,
+		Profile:    ResolvedSessionProfile(ctx),
 	}
 
 	if err := deps.SaveMFAChallenge(ctx, challengeID, record, ttl); err != nil {
@@ -889,6 +959,16 @@ func RunIssueLoginSessionTokens(
 		deps.SessionLifetime == nil ||
 		deps.SaveSession == nil ||
 		deps.IssueAccessToken == nil {
+		return "", "", deps.Errors.EngineNotReady
+	}
+
+	// Every session-creating path applies a profile: one a flow resolved up
+	// front, or else a fresh resolution here.
+	profile, profileStatus := sessionProfileFor(ctx, rememberMe, deps.ResolveSessionProfile)
+	if rejected := deps.profileRejection(profileStatus); rejected != nil {
+		return "", "", rejected
+	}
+	if profile != "" && deps.SessionProfileLifetime == nil {
 		return "", "", deps.Errors.EngineNotReady
 	}
 
@@ -945,6 +1025,21 @@ func RunIssueLoginSessionTokens(
 
 	now := deps.Now()
 	sessionLifetime := deps.SessionLifetime(rememberMe)
+	plan := legacyPlan(now, sessionLifetime)
+	if profile != "" {
+		var lifetimeErr error
+		plan, lifetimeErr = profilePlan(profile, now, deps.SessionProfileLifetime)
+		if lifetimeErr != nil {
+			deps.MetricInc(deps.Metrics.LoginFailure)
+			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, lifetimeErr, func() map[string]string {
+				return map[string]string{
+					"identifier": username,
+					"reason":     "session_profile_lifetime",
+				}
+			})
+			return "", "", lifetimeErr
+		}
+	}
 	accountVersion := user.AccountVersion
 	if accountVersion == 0 {
 		accountVersion = 1
@@ -975,10 +1070,11 @@ func RunIssueLoginSessionTokens(
 		IPHash:            ipHash,
 		UserAgentHash:     userAgentHash,
 		CreatedAt:         now.Unix(),
-		ExpiresAt:         now.Add(sessionLifetime).Unix(),
+		ExpiresAt:         plan.expiresAt,
+		Profile:           plan.profile,
 	}
 
-	if err := deps.SaveSession(ctx, sess, sessionLifetime); err != nil {
+	if err := deps.SaveSession(ctx, sess, plan.ttl); err != nil {
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
@@ -1029,9 +1125,9 @@ func RunIssueLoginSessionTokens(
 	deps.MetricInc(deps.Metrics.SessionCreated)
 	deps.MetricInc(deps.Metrics.LoginSuccess)
 	deps.EmitAudit(ctx, deps.Events.LoginSuccess, true, user.UserID, tenantID, sessionID, nil, func() map[string]string {
-		return map[string]string{
+		return profileMeta(map[string]string{
 			"identifier": username,
-		}
+		}, plan.profile)
 	})
 
 	return access, refresh, nil

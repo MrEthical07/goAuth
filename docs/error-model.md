@@ -114,6 +114,8 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `CodeAuthRoleSwitchSameRole` | `AUTH_ROLE_SWITCH_SAME_ROLE` |
 | `CodeAuthStepUpRequired` | `AUTH_STEP_UP_REQUIRED` |
 | `CodeAuthRoleSwitchRateLimited` | `AUTH_ROLE_SWITCH_RATE_LIMITED` |
+| `CodeAuthUnknownSessionProfile` | `AUTH_UNKNOWN_SESSION_PROFILE` |
+| `CodeAuthSessionProfileConflict` | `AUTH_SESSION_PROFILE_CONFLICT` |
 | `CodeAuthPermissionDenied` | `AUTH_PERMISSION_DENIED` |
 | `CodeSystemEngineNotReady` | `SYSTEM_ENGINE_NOT_READY` |
 | `CodeSystemProviderDuplicateIdentifier` | `SYSTEM_PROVIDER_DUPLICATE_IDENTIFIER` |
@@ -187,6 +189,8 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `ErrRoleSwitchSameRole` | `CategoryAuthValidation` | `CodeAuthRoleSwitchSameRole` | `session already holds this role` |
 | `ErrStepUpRequired` | `CategoryAuthState` | `CodeAuthStepUpRequired` | `step-up authentication required` |
 | `ErrRoleSwitchRateLimited` | `CategoryAuthAbuse` | `CodeAuthRoleSwitchRateLimited` | `role switch attempts rate limited` |
+| `ErrUnknownSessionProfile` | `CategoryAuthValidation` | `CodeAuthUnknownSessionProfile` | `unknown session profile` |
+| `ErrSessionProfileConflict` | `CategoryAuthValidation` | `CodeAuthSessionProfileConflict` | `session profile conflict` |
 | `ErrPermissionDenied` | `CategoryAuthState` | `CodeAuthPermissionDenied` | `permission denied` |
 | `ErrEngineNotReady` | `CategorySystem` | `CodeSystemEngineNotReady` | `engine not initialized` |
 | `ErrProviderDuplicateIdentifier` | `CategorySystem` | `CodeSystemProviderDuplicateIdentifier` | `provider duplicate identifier` |
@@ -224,6 +228,8 @@ These status mappings are recommended for API adapters wrapping goAuth.
 | `AUTH_ACCOUNT_EXISTS` | `409 Conflict` |
 | `AUTH_TOTP_ALREADY_ENABLED` | `409 Conflict` |
 | Validation failures (`AUTH_*_INVALID`, password policy, route mode) | `400 Bad Request` |
+| `AUTH_UNKNOWN_SESSION_PROFILE` | `400 Bad Request` (a caller bug: the profile name is chosen server-side, see [session.md](session.md#session-profiles)) |
+| `AUTH_SESSION_PROFILE_CONFLICT` | `409 Conflict` |
 | Abuse and attempt limits (`AUTH_*_LIMITED`, `AUTH_*_ATTEMPTS_*`, `AUTH_REFRESH_REUSE_DETECTED`) | `429 Too Many Requests` (`AUTH_ROLE_SWITCH_RATE_LIMITED` included; for the role-switch endpoint `AUTH_REFRESH_REUSE_DETECTED` is better served as `401`, since the session no longer exists) |
 | Unavailable dependency codes (`SYSTEM_UNAVAILABLE*`) | `503 Service Unavailable` |
 | `SYSTEM_INTERNAL_ERROR` | `500 Internal Server Error` |
