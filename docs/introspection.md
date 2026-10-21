@@ -30,6 +30,15 @@ type HealthStatus struct {
 
 Returned by `ListActiveSessions` and `GetSessionInfo`. Converted from internal `*session.Session` via `toSessionInfo()`.
 
+Besides the identity and version fields it carries two [session profile](session.md#session-profiles) fields:
+
+| Field | Meaning |
+|-------|---------|
+| `Profile` | The profile the session was created under; empty for a legacy session |
+| `IdleExpiresAt` | Unix time a **renewing**-profile session lapses unless refreshed (or, with `RenewOnUse`, used) first, computed from the key's remaining lifetime; `0` for legacy and fixed-profile sessions |
+
+`ExpiresAt` stays the hard ceiling (`session.UnboundedExpiresAt` for an unbounded profile). A profile session whose profile has been removed or whose effective ceiling has passed is not listed (the read-only views never delete). Filling `IdleExpiresAt` costs one extra pipelined `PTTL` round trip, and only when renewing-profile sessions are present.
+
 ## Internal Flow Functions
 
 Each public method delegates to a flow function in `internal/flows/introspection.go`:

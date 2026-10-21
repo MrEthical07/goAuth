@@ -57,6 +57,14 @@ argument carries the raw assertion response JSON for webauthn — see
 [webauthn.md](webauthn.md)). When a user has both WebAuthn credentials and TOTP,
 `MFATypes` lists both and `MFAType` prefers `"webauthn"` (phishing-resistant first).
 
+### Session profiles
+
+With [session profiles](session.md#session-profiles) configured, the profile is resolved at the password step (an explicit `WithSessionProfile`, else the remember-me mapping, else the default) and stored with the challenge, so it **survives the MFA step**: the session issued by `ConfirmLoginMFA` / `ConfirmLoginMFAWithType` (or by `LoginWithTOTP` / `LoginWithBackupCode`, which do both steps) gets the stored profile. The challenge record is **v3**, the v2 layout plus a length-prefixed profile name; with no profiles configured it is still written as v2, byte for byte.
+
+- **The stored profile wins.** A confirm that names no profile, or the same one, issues the stored profile.
+- **A confirm naming a different profile** fails with `ErrSessionProfileConflict`. The challenge is **not consumed** and no attempt is counted, so the same challenge still works with the right profile (or none). The check runs before any factor is verified.
+- A challenge created before profiles were configured carries none and is resolved like a fresh login at confirm; one whose profile has since been removed fails with `ErrUnknownSessionProfile` and is left to expire.
+
 ### Step-up for role switching
 
 When `Config.RoleSwitch.StepUp` is configured, a session issued after a successful second factor (`ConfirmLoginMFA`, `ConfirmLoginMFAWithType` with `totp`/`backup`/`webauthn`, `LoginWithTOTP`, `LoginWithBackupCode`) records an MFA assurance beside the session, and `Engine.SwitchRole` can use it to satisfy a `RequireMFA` policy without asking again. A switch can also take an inline `totp` or `backup_code` proof; a user who has no TOTP enrolled never satisfies a policy with a made-up code. WebAuthn as an *inline* factor is a planned follow-up; a fresh WebAuthn login satisfies the policy. See [role_switching.md](role_switching.md#step-up).
@@ -207,6 +215,7 @@ Rate limiting for TOTP and backup codes uses dedicated domain limiters (`TOTPLim
 - **Enabling TOTP**: Setting `Config.TOTP.Enabled = true` does not retroactively require MFA for existing users. Users must individually set up TOTP via `GenerateTOTPSetup` + `ConfirmTOTPSetup`.
 - **Skew changes**: Increasing `Skew` widens the acceptance window. Decreasing it may cause valid codes from slower users to be rejected.
 - **Backup code regeneration**: `RegenerateBackupCodes` replaces all existing codes. Users must save the new codes immediately.
+- **Session profiles (v0.8.0)**: the MFA challenge record becomes v3 (carries the profile) only while profiles are configured; v3 records cannot be read by v0.7.0, so finish a rolling deploy first. See [migrations.md](migrations.md#v080-migration-notes-non-breaking).
 - **Role-switch step-up (v0.7.0)**: opt-in via `Config.RoleSwitch`; with it unused nothing about MFA login changes. See [migrations.md](migrations.md#v070-migration-notes-non-breaking).
 
 ## See Also

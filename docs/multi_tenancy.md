@@ -190,6 +190,10 @@ lint warning when set; none affects behavior.
 | `MultiTenant.TenantHeader` | **Deprecated, no-op.** The engine and shipped middleware never read it. Extract the header in your HTTP layer and use `WithTenantID`. Warns `tenant_header_noop`. |
 | `Account.AllowDuplicateIdentifierAcrossTenants` | **Provider-owned contract.** goAuth never queries across tenants, so it cannot enforce global identifier uniqueness — only your provider's schema can (a unique index on `identifier` versus on `(tenant_id, identifier)`). Warns `account_duplicate_identifier_provider_owned`. |
 
+## Session profiles
+
+[Session profiles](session.md#session-profiles) are **tenant-agnostic**: `Config.Session.Profiles` is one table for the whole engine, every tenant sees the same profiles, and a session's profile is stored with the session under its tenant-scoped key. Nothing about choosing a profile (`WithSessionProfile`), the expiry math, live-config resolution or the invalidation guarantees depends on the tenant, so profiles behave identically with `MultiTenant.Enabled` on or off. Per-tenant lifetimes are not supported; if tenants need different policies, define one profile per policy and pick it server-side from the tenant.
+
 ## Adopting multi-tenancy
 
 1. Implement `TenantAwareUserProvider` on your existing provider, scoping
