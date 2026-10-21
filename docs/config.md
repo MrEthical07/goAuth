@@ -350,7 +350,7 @@ Zero value = disabled. With it disabled, behavior is exactly what it was before 
 | `Strategy`           | `VerificationStrategyType` | `VerificationToken`  | Code format: `VerificationToken`, `VerificationUUID` or `VerificationOTP` (the zero value is the same default as `EmailVerification`) |
 | `OTPDigits`          | `int`                      | `0` (= 6)            | OTP length, 6 to 10 |
 | `VerificationTTL`    | `time.Duration`            | `0` (= 15m)          | Challenge lifetime, 1m to 24h (at most 15m in OTP mode) |
-| `MaxAttempts`        | `int`                      | `0` (= 5)            | Confirm attempts per challenge (at most 5 in OTP mode) |
+| `MaxAttempts`        | `int`                      | `0` (= 5)            | Confirm attempts per challenge (at most 65535; at most 5 in OTP mode) |
 | `RequestMaxAttempts` | `int`                      | `0` (= 5)            | Requests per user within `RequestCooldown` before `ErrEmailChangeRateLimited` |
 | `RequestCooldown`    | `time.Duration`            | `0` (= 1h)           | Rate-limit window for `RequestMaxAttempts` |
 | `KeepOtherSessions`  | `bool`                     | `false`              | `false`: a confirmed change revokes every session except `ConfirmEmailChangeOptions.KeepSessionID` |
@@ -397,7 +397,7 @@ engine**:
 - MFA challenge TTL and attempt limits positive
 - WebAuthn (when enabled): RPID/RPDisplayName/RPOrigins present, valid attestation and user-verification enums, CeremonyTTL within 10s–10m; `RequireForLogin` requires `Enabled`
 - RoleSwitch: `MaxAttempts`, `Cooldown` and every `StepUp[...].MaxAge` are `>= 0`; `StepUp` keys are non-empty; `RequireMFA` requires `TOTP.Enabled` or `WebAuthn.Enabled`; `StepUp` keys must be registered roles and `Enabled` requires a `RoleSwitchProvider` (both checked by Builder)
-- EmailChange (when enabled): the user provider implements `EmailChangeProvider`; a known `Strategy`; `VerificationTTL` 0 or 1m..24h; non-negative counts and windows; in OTP mode `OTPDigits` 6..10, `MaxAttempts` <= 5 and `VerificationTTL` <= 15m
+- EmailChange (when enabled): the user provider implements `EmailChangeProvider`; a known `Strategy`; `VerificationTTL` 0 or 1m..24h; non-negative counts and windows; in OTP mode `OTPDigits` 6..10, `MaxAttempts` <= 5 and `VerificationTTL` <= 15m; `MaxAttempts` is at most 65535 in every mode
 - ExternalAuth (when enabled): at least one provider; names `[a-z0-9_-]{1,32}`; a known `Kind`; non-empty `ClientIDs`; https `Issuer` and `JWKSURL` (required for `oidc`); `AllowedHostedDomains` only for google; `Algorithms` only for oidc and from the allowed set; `MaxAttempts`, `Cooldown` `>= 0`, `ClockLeeway` 0-5m, `KeyRefreshMin` 1s-24h, `KeyMaxStale` 0-30d and `>= KeyRefreshMin` (5m when unset); no two providers may share an issuer and a client ID (a token would verify under both); `AllowSignup` requires `Account.Enabled`; `AutoLinkVerifiedEmail` requires `EmailVerification.Enabled`; the user provider must implement `ExternalIdentityProvider` (checked by Builder)
 
 ## Config Linting

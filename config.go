@@ -614,7 +614,9 @@ const (
 	emailChangeMinTTL          = time.Minute
 	emailChangeMaxTTL          = 24 * time.Hour
 	emailChangeDefaultAttempts = 5
-	emailChangeDefaultDigits   = 6
+	// The attempt counter is stored in two bytes.
+	emailChangeMaxAttemptsLimit = 65535
+	emailChangeDefaultDigits    = 6
 )
 
 // resolved returns the config with every zero default filled in.
@@ -644,8 +646,8 @@ func (c *Config) validateEmailChange() error {
 	if e.VerificationTTL < 0 || (e.VerificationTTL != 0 && (e.VerificationTTL < emailChangeMinTTL || e.VerificationTTL > emailChangeMaxTTL)) {
 		return errors.New("EmailChange VerificationTTL must be between 1m and 24h (0 = default 15m)")
 	}
-	if e.MaxAttempts < 0 {
-		return errors.New("EmailChange MaxAttempts must be >= 0 (0 = default)")
+	if e.MaxAttempts < 0 || e.MaxAttempts > emailChangeMaxAttemptsLimit {
+		return errors.New("EmailChange MaxAttempts must be between 0 and 65535 (0 = default)")
 	}
 	if e.RequestMaxAttempts < 0 {
 		return errors.New("EmailChange RequestMaxAttempts must be >= 0 (0 = default)")

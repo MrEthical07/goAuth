@@ -47,6 +47,7 @@ func TestConfigValidateEmailChange(t *testing.T) {
 		{"ttl above a day", func(c *EmailChangeConfig) { c.VerificationTTL = 25 * time.Hour }, "VerificationTTL"},
 		{"negative ttl", func(c *EmailChangeConfig) { c.VerificationTTL = -time.Minute }, "VerificationTTL"},
 		{"negative attempts", func(c *EmailChangeConfig) { c.MaxAttempts = -1 }, "MaxAttempts"},
+		{"attempts beyond the stored counter", func(c *EmailChangeConfig) { c.MaxAttempts = 65536 }, "MaxAttempts"},
 		{"negative request attempts", func(c *EmailChangeConfig) { c.RequestMaxAttempts = -1 }, "RequestMaxAttempts"},
 		{"negative cooldown", func(c *EmailChangeConfig) { c.RequestCooldown = -time.Second }, "RequestCooldown"},
 		{"negative digits", func(c *EmailChangeConfig) { c.OTPDigits = -6 }, "OTPDigits"},
@@ -70,6 +71,7 @@ func TestConfigValidateEmailChange(t *testing.T) {
 func TestConfigValidateEmailChangeAccepts(t *testing.T) {
 	cases := map[string]func(*EmailChangeConfig){
 		"zero values with Enabled": func(c *EmailChangeConfig) {},
+		"largest attempt count":    func(c *EmailChangeConfig) { c.MaxAttempts = 65535 },
 		"token with a day": func(c *EmailChangeConfig) {
 			c.Strategy = VerificationToken
 			c.VerificationTTL = 24 * time.Hour

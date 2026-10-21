@@ -473,10 +473,18 @@ func (e *Engine) cancelEmailChange(ctx context.Context, userID string) error {
 	}
 	// The challenge is stored under the tenant of the request that made it, which
 	// for a single-tenant deployment may be the user's own; look the user up to
-	// find it.
+	// find it. A lookup that fails must not fall back to the context tenant: that
+	// would delete the wrong pointer and report a cancellation that did not happen.
 	if !e.tenantScopedLookup() {
-		if user, err := e.lookupUserByID(ctx, userID); err == nil {
+		user, err := e.lookupEmailChangeUser(ctx, tenantID, userID)
+		switch {
+		case err == nil:
 			tenantID = e.emailChangeTenant(ctx, user)
+		case errors.Is(err, ErrUserNotFound):
+			// No such user: nothing can be confirmed, so nothing is pending.
+			return nil
+		default:
+			return e.emailChangeFail(ctx, tenantID, userID, "cancel", emailChangeReasonUnavailable, err)
 		}
 	}
 	if err := e.emailChangeStore.Cancel(ctx, tenantID, userID); err != nil {

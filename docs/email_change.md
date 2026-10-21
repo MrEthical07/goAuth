@@ -114,7 +114,7 @@ goAuth has no public "recent MFA" accessor (the assurance it keeps per session s
 | `Strategy` | `VerificationToken` | Code format, the email-verification strategies (`VerificationToken`, `VerificationUUID`, `VerificationOTP`). The zero value is the same default as `EmailVerification`. |
 | `OTPDigits` | 6 | Code length in OTP mode, 6 to 10. |
 | `VerificationTTL` | 15m | Challenge lifetime, 1m to 24h; at most 15m in OTP mode. |
-| `MaxAttempts` | 5 | Confirm attempts per challenge; at most 5 in OTP mode. |
+| `MaxAttempts` | 5 | Confirm attempts per challenge, at most 65535; at most 5 in OTP mode. |
 | `RequestMaxAttempts` | 5 | Requests per user per `RequestCooldown`. |
 | `RequestCooldown` | 1h | Window for `RequestMaxAttempts`. |
 | `KeepOtherSessions` | `false` | When `false`, a confirmed change revokes every session except `KeepSessionID`. Lint `email_change_keeps_other_sessions` (INFO) when on. |

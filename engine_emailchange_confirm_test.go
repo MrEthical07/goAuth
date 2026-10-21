@@ -517,3 +517,67 @@ func TestEmailChangePasswordlessUser(t *testing.T) {
 		t.Fatalf("account = %+v", got)
 	}
 }
+
+// With multi-tenancy off, a challenge is stored under the user's own tenant
+// when the record carries one. Cancel must find it there, and must not report
+// success when the lookup that finds it fails.
+func TestCancelEmailChangeFindsTheLegacyTenantAndReportsLookupFailures(t *testing.T) {
+	env := newECEnv(t, nil)
+	u := env.user(rsUserID)
+	u.TenantID = "legacy-tenant"
+	env.setUser(u)
+
+	req := env.mustRequest(ecNewEmail)
+	if keys := env.keys("aec:legacy-tenant:*"); len(keys) != 1 {
+		t.Fatalf("the challenge is not under the user's tenant: %v", env.keys("aec*"))
+	}
+
+	env.up.setLookupErr(errors.New("db down"))
+	err := env.engine.CancelEmailChange(env.ctx(), rsUserID)
+	requireCode(t, err, CodeSystemUnavailable)
+	if len(env.keys("aec:legacy-tenant:*")) != 1 {
+		t.Fatal("a failed cancel removed the challenge or claimed to")
+	}
+	env.waitForAudit(auditEventEmailChangeFailure, "unavailable")
+
+	env.up.setLookupErr(nil)
+	if err := env.engine.CancelEmailChange(env.ctx(), rsUserID); err != nil {
+		t.Fatalf("CancelEmailChange: %v", err)
+	}
+	if keys := env.changeKeys(); len(keys) != 0 {
+		t.Fatalf("cancel left %v", keys)
+	}
+	if _, err := env.confirm(req, ConfirmEmailChangeOptions{}); !errors.Is(err, ErrEmailChangeInvalid) {
+		t.Fatalf("confirm after cancel = %v", err)
+	}
+}
+
+// The attempt counter is two bytes in the record: counting past 255 must work,
+// and the configuration refuses a limit that does not fit.
+func TestEmailChangeAttemptCounterSpansTwoBytes(t *testing.T) {
+	env := newECEnv(t, func(c *EmailChangeConfig) {
+		c.Strategy = VerificationToken
+		c.VerificationTTL = time.Hour
+		c.MaxAttempts = 1000
+	})
+	req := env.mustRequest(ecNewEmail)
+	_, rawID, _ := strings.Cut(req.VerificationID, ":")
+	wrong := req.Code + "x"
+	for i := 0; i < 300; i++ {
+		if _, err := env.engine.ConfirmEmailChange(env.ctx(), req.VerificationID, wrong, ConfirmEmailChangeOptions{}); !errors.Is(err, ErrEmailChangeInvalid) {
+			t.Fatalf("attempt %d = %v", i, err)
+		}
+	}
+	// Mangled codes are refused before the store; use real wrong hashes.
+	hash, err := parseEmailVerificationChallengeCode(VerificationToken, rawID, req.Code, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash[0] ^= 0xFF
+	for i := 0; i < 300; i++ {
+		if _, err := env.engine.emailChangeStore.Consume(env.ctx(), env.tenant, rawID, hash, int(VerificationToken), 1000); !errors.Is(err, stores.ErrEmailChangeSecretMismatch) {
+			t.Fatalf("store attempt %d = %v", i, err)
+		}
+	}
+	env.mustConfirm(req, ConfirmEmailChangeOptions{})
+}
