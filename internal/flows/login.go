@@ -238,8 +238,9 @@ const dummyTimingHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==
 // unknown identifier.
 var errTenantMismatch = errors.New("goauth: user belongs to a different tenant")
 
-// RunLoginWithResult executes the login flow and either issues tokens or returns MFA challenge details.
-func RunLoginWithResult(ctx context.Context, username, password string, opts LoginOptions, deps LoginDeps) (*LoginResult, error) {
+// normalizeLoginDeps fills the optional hooks every login entry point may
+// leave nil.
+func normalizeLoginDeps(deps *LoginDeps) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
@@ -264,6 +265,11 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 	if deps.UserAgentFromContext == nil {
 		deps.UserAgentFromContext = func(context.Context) string { return "" }
 	}
+}
+
+// RunLoginWithResult executes the login flow and either issues tokens or returns MFA challenge details.
+func RunLoginWithResult(ctx context.Context, username, password string, opts LoginOptions, deps LoginDeps) (*LoginResult, error) {
+	normalizeLoginDeps(&deps)
 	if deps.AccountStatusError == nil ||
 		deps.GetUserByIdentifier == nil ||
 		deps.VerifyPassword == nil ||
@@ -435,6 +441,58 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, deps.Errors.InvalidCredentials
 	}
 
+	return runCompleteLogin(ctx, username, user, tenantID, opts, deps, func() {
+		if deps.PasswordUpgradeOnLogin {
+			if needsUpgrade, err := deps.PasswordNeedsUpgrade(user.PasswordHash); err == nil && needsUpgrade {
+				if upgradedHash, err := deps.HashPassword(password); err == nil {
+					var updateErr error
+					if deps.UpdatePasswordHashInTenant != nil {
+						updateErr = deps.UpdatePasswordHashInTenant(ctx, tenantID, user.UserID, upgradedHash)
+					} else {
+						updateErr = deps.UpdatePasswordHash(user.UserID, upgradedHash)
+					}
+					if updateErr != nil {
+						deps.Warn("goAuth: password hash upgrade update failed")
+					}
+				} else {
+					deps.Warn("goAuth: password hash upgrade generation failed")
+				}
+			}
+		}
+		password = ""
+	})
+}
+
+// RunCompleteLogin finishes a login whose primary factor the caller already
+// verified (a password, or an external identity): account status, device
+// binding, session hardening, the MFA decision with its challenge, and session
+// issuance. username is the identifier the audit trail and the login limiter
+// know the account by.
+func RunCompleteLogin(ctx context.Context, username string, user LoginUserRecord, opts LoginOptions, deps LoginDeps) (*LoginResult, error) {
+	normalizeLoginDeps(&deps)
+	if deps.AccountStatusError == nil ||
+		deps.IssueLoginSessionTokens == nil ||
+		deps.EnforceSessionHardening == nil {
+		return nil, deps.Errors.EngineNotReady
+	}
+	return runCompleteLogin(ctx, username, user, deps.TenantIDFromContext(ctx), opts, deps, nil)
+}
+
+// runCompleteLogin is the part of a login that follows the primary factor,
+// shared by every way of authenticating so that they cannot drift apart. The
+// caller has resolved the session profile and consumed its limiters.
+// afterAccountChecks, when set, runs once the account is known to be usable
+// and before anything is issued; the password path uses it for the
+// rehash-on-login upgrade.
+func runCompleteLogin(
+	ctx context.Context,
+	username string,
+	user LoginUserRecord,
+	tenantID string,
+	opts LoginOptions,
+	deps LoginDeps,
+	afterAccountChecks func(),
+) (*LoginResult, error) {
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", statusErr, func() map[string]string {
@@ -457,24 +515,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, deps.Errors.AccountUnverified
 	}
 
-	if deps.PasswordUpgradeOnLogin {
-		if needsUpgrade, err := deps.PasswordNeedsUpgrade(user.PasswordHash); err == nil && needsUpgrade {
-			if upgradedHash, err := deps.HashPassword(password); err == nil {
-				var updateErr error
-				if deps.UpdatePasswordHashInTenant != nil {
-					updateErr = deps.UpdatePasswordHashInTenant(ctx, tenantID, user.UserID, upgradedHash)
-				} else {
-					updateErr = deps.UpdatePasswordHash(user.UserID, upgradedHash)
-				}
-				if updateErr != nil {
-					deps.Warn("goAuth: password hash upgrade update failed")
-				}
-			} else {
-				deps.Warn("goAuth: password hash upgrade generation failed")
-			}
-		}
+	if afterAccountChecks != nil {
+		afterAccountChecks()
 	}
-	password = ""
 
 	if deps.DeviceBindingEnabled {
 		if deps.EnforceIPBinding && deps.ClientIPFromContext(ctx) == "" {

@@ -62,10 +62,11 @@ var expectedEngineBoundaryMethods = map[string]struct{}{
 
 var flowEntryRawErrBudget = map[string]map[string]int{
 	"internal/flows/login.go": {
+		"RunCompleteLogin":           3,
 		"RunConfirmLoginMFAWithType": 1,
 		"RunCreateMFALoginChallenge": 0,
 		"RunIssueLoginSessionTokens": 5,
-		"RunLoginWithResult":         3,
+		"RunLoginWithResult":         0,
 	},
 	"internal/flows/password_reset.go": {
 		"RunConfirmPasswordResetWithMFA": 1,
