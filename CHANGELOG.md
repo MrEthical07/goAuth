@@ -423,6 +423,16 @@ v0.8.0 is a valid semantic version for this release.
 
 #### Fixed
 
+- `LinkExternalIdentity`, `UnlinkExternalIdentity` and `ListExternalIdentities`
+  read every error from the signed-in user's lookup as "account not found". Only
+  `ErrUserNotFound` (from the provider or the tenant-mismatch backstop) means
+  that now; any other provider error is reported as `ErrSystemUnavailable`
+  (503), so a database blip no longer tells a client to sign the user out.
+  The link-failure audit reason for it is `lookup_failed`.
+- `UnlinkExternalIdentity` audits its failures as
+  `external_identity_unlink_failure` with the reason `disabled`,
+  `user_not_found`, `account_status`, `last_login_method` or `unavailable`, as
+  link failures already were. Nothing is added to the success path.
 - `TestSessionProfilesUnusedMatchesV070` flaked about once in 55 runs: its
   argument printer read a random 32-byte refresh hash that started with the byte 2
   as an MFA challenge record. A test-only change; 36 of 2000 runs failed before

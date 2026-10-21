@@ -218,6 +218,8 @@ type extMockProvider struct {
 	getErr, createErr, linkErr, listErr, unlinkErr error
 	// identifierErr, when set, fails the by-identifier lookups (an outage).
 	identifierErr error
+	// idErr, when set, fails the by-ID lookups (an outage).
+	idErr error
 
 	gets, creates, linksMade, unlinks, lists int
 	lastCreate                               CreateUserInput
@@ -249,7 +251,14 @@ func (p *extMockProvider) GetUserByIdentifier(identifier string) (UserRecord, er
 func (p *extMockProvider) GetUserByID(userID string) (UserRecord, error) {
 	p.emu.Lock()
 	defer p.emu.Unlock()
-	return p.tenantMockProvider.GetUserByID(userID)
+	if p.idErr != nil {
+		return UserRecord{}, p.idErr
+	}
+	user, err := p.tenantMockProvider.GetUserByID(userID)
+	if err != nil {
+		return UserRecord{}, ErrUserNotFound
+	}
+	return user, nil
 }
 
 func (p *extMockProvider) GetUserByIdentifierInTenant(ctx context.Context, tenantID, identifier string) (UserRecord, error) {
@@ -268,7 +277,16 @@ func (p *extMockProvider) GetUserByIdentifierInTenant(ctx context.Context, tenan
 func (p *extMockProvider) GetUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error) {
 	p.emu.Lock()
 	defer p.emu.Unlock()
-	return p.tenantMockProvider.GetUserByIDInTenant(ctx, tenantID, userID)
+	if p.idErr != nil {
+		return UserRecord{}, p.idErr
+	}
+	user, err := p.tenantMockProvider.GetUserByIDInTenant(ctx, tenantID, userID)
+	if err != nil {
+		// A provider returns ErrUserNotFound for a missing user; the engine
+		// reports any other error as an outage.
+		return UserRecord{}, ErrUserNotFound
+	}
+	return user, nil
 }
 
 func (p *extMockProvider) GetUserByExternalIdentity(ctx context.Context, tenantID, provider, subject string) (UserRecord, error) {
