@@ -104,10 +104,14 @@ func spbArg(arg interface{}) string {
 	switch {
 	case len(raw) > 100 && raw[0] == 5:
 		return "blob:" + spbBlob(raw)
-	case len(raw) >= 13 && len(raw) < 100 && raw[0] == 2 && !spbPrintable(raw):
-		return "challenge:" + spbChallenge(raw)
+	// A random 32-byte hash must be recognized before the challenge case:
+	// about one in 256 of them starts with the byte 2 and would otherwise be
+	// rendered as an MFA challenge record, whose unmasked bytes differ per
+	// run. No challenge in this scenario is exactly 32 bytes long.
 	case len(raw) == 32 && !spbPrintable(raw):
 		return "<bin32>"
+	case len(raw) >= 13 && len(raw) < 100 && raw[0] == 2 && !spbPrintable(raw):
+		return "challenge:" + spbChallenge(raw)
 	case len(raw) > 200 && strings.Contains(string(raw), "redis.call"):
 		return "<lua>"
 	}
