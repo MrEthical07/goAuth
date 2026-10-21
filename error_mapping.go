@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/MrEthical07/goAuth/internal/limiters"
+	"github.com/MrEthical07/goAuth/internal/oidc"
 	"github.com/MrEthical07/goAuth/internal/rate"
 	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/session"
@@ -83,6 +84,19 @@ var publicAuthSentinels = []*AuthError{
 	ErrRoleSwitchRateLimited,
 	ErrUnknownSessionProfile,
 	ErrSessionProfileConflict,
+	ErrExternalAuthDisabled,
+	ErrExternalProviderUnknown,
+	ErrExternalTokenInvalid,
+	ErrExternalTokenReplayed,
+	ErrExternalProviderUnavailable,
+	ErrExternalEmailUnverified,
+	ErrExternalAccountNotFound,
+	ErrExternalAccountLinkRequired,
+	ErrExternalLinkRequiresVerification,
+	ErrExternalIdentityInUse,
+	ErrLastLoginMethod,
+	ErrPasswordNotSet,
+	ErrExternalLoginRateLimited,
 	ErrPermissionDenied,
 	ErrEngineNotReady,
 	ErrProviderDuplicateIdentifier,
@@ -134,6 +148,18 @@ func mapToAuthError(err error) *AuthError {
 	case errors.Is(err, limiters.ErrRoleSwitchRateLimited):
 		return WrapAuthError(ErrRoleSwitchRateLimited, err)
 	case errors.Is(err, limiters.ErrRoleSwitchUnavailable):
+		return WrapAuthError(ErrSystemUnavailable, err)
+	case errors.Is(err, limiters.ErrExternalRateLimited):
+		return WrapAuthError(ErrExternalLoginRateLimited, err)
+	case errors.Is(err, limiters.ErrExternalUnavailable):
+		return WrapAuthError(ErrSystemUnavailable, err)
+	case errors.Is(err, oidc.ErrInvalid):
+		return WrapAuthError(ErrExternalTokenInvalid, err)
+	case errors.Is(err, oidc.ErrReplayed):
+		return WrapAuthError(ErrExternalTokenReplayed, err)
+	case errors.Is(err, oidc.ErrUnavailable):
+		return WrapAuthError(ErrExternalProviderUnavailable, err)
+	case errors.Is(err, oidc.ErrStore):
 		return WrapAuthError(ErrSystemUnavailable, err)
 	case errors.Is(err, limiters.ErrBackupCodeRateLimited):
 		return WrapAuthError(ErrBackupCodeRateLimited, err)

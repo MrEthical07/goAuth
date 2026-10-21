@@ -1638,6 +1638,18 @@ const (
 	auditErrRoleSwitchRateLimited  AuditErrorCode = "role_switch_rate_limited"
 	auditErrUnknownSessionProfile  AuditErrorCode = "unknown_session_profile"
 	auditErrSessionProfileConflict AuditErrorCode = "session_profile_conflict"
+	auditErrExternalDisabled       AuditErrorCode = "external_disabled"
+	auditErrExternalProvider       AuditErrorCode = "external_provider_unknown"
+	auditErrExternalTokenInvalid   AuditErrorCode = "external_token_invalid"
+	auditErrExternalTokenReplayed  AuditErrorCode = "external_token_replayed"
+	auditErrExternalUnavailable    AuditErrorCode = "external_provider_unavailable"
+	auditErrExternalEmailUnver     AuditErrorCode = "external_email_unverified"
+	auditErrExternalNotFound       AuditErrorCode = "external_account_not_found"
+	auditErrExternalLinkRequired   AuditErrorCode = "external_link_required"
+	auditErrExternalLinkVerify     AuditErrorCode = "external_link_requires_verification"
+	auditErrExternalInUse          AuditErrorCode = "external_identity_in_use"
+	auditErrLastLoginMethod        AuditErrorCode = "last_login_method"
+	auditErrPasswordNotSet         AuditErrorCode = "password_not_set"
 	auditErrInvalidToken           AuditErrorCode = "invalid_token"
 	auditErrSessionNotFound        AuditErrorCode = "session_not_found"
 	auditErrUserNotFound           AuditErrorCode = "user_not_found"
@@ -1756,7 +1768,8 @@ func auditErrorCode(err error) AuditErrorCode {
 		errors.Is(err, ErrPasswordResetRateLimited),
 		errors.Is(err, ErrEmailVerificationRateLimited),
 		errors.Is(err, ErrAccountCreationRateLimited),
-		errors.Is(err, ErrPasswordVerifyRateLimited):
+		errors.Is(err, ErrPasswordVerifyRateLimited),
+		errors.Is(err, ErrExternalLoginRateLimited):
 		return auditErrRateLimited
 	case errors.Is(err, ErrRefreshReuse):
 		return auditErrRefreshReuse
@@ -1774,6 +1787,30 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrUnknownSessionProfile
 	case errors.Is(err, ErrSessionProfileConflict):
 		return auditErrSessionProfileConflict
+	case errors.Is(err, ErrExternalAuthDisabled):
+		return auditErrExternalDisabled
+	case errors.Is(err, ErrExternalProviderUnknown):
+		return auditErrExternalProvider
+	case errors.Is(err, ErrExternalTokenInvalid):
+		return auditErrExternalTokenInvalid
+	case errors.Is(err, ErrExternalTokenReplayed):
+		return auditErrExternalTokenReplayed
+	case errors.Is(err, ErrExternalProviderUnavailable):
+		return auditErrExternalUnavailable
+	case errors.Is(err, ErrExternalEmailUnverified):
+		return auditErrExternalEmailUnver
+	case errors.Is(err, ErrExternalAccountNotFound):
+		return auditErrExternalNotFound
+	case errors.Is(err, ErrExternalAccountLinkRequired):
+		return auditErrExternalLinkRequired
+	case errors.Is(err, ErrExternalLinkRequiresVerification):
+		return auditErrExternalLinkVerify
+	case errors.Is(err, ErrExternalIdentityInUse):
+		return auditErrExternalInUse
+	case errors.Is(err, ErrLastLoginMethod):
+		return auditErrLastLoginMethod
+	case errors.Is(err, ErrPasswordNotSet):
+		return auditErrPasswordNotSet
 	case errors.Is(err, ErrRefreshInvalid),
 		errors.Is(err, ErrPasswordResetInvalid),
 		errors.Is(err, ErrEmailVerificationInvalid),

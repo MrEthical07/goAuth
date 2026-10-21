@@ -87,6 +87,19 @@ const (
 	CodeAuthRoleSwitchRateLimited          AuthCode = "AUTH_ROLE_SWITCH_RATE_LIMITED"
 	CodeAuthUnknownSessionProfile          AuthCode = "AUTH_UNKNOWN_SESSION_PROFILE"
 	CodeAuthSessionProfileConflict         AuthCode = "AUTH_SESSION_PROFILE_CONFLICT"
+	CodeAuthExternalDisabled               AuthCode = "AUTH_EXTERNAL_DISABLED"
+	CodeAuthExternalProviderUnknown        AuthCode = "AUTH_EXTERNAL_PROVIDER_UNKNOWN"
+	CodeAuthExternalTokenInvalid           AuthCode = "AUTH_EXTERNAL_TOKEN_INVALID"
+	CodeAuthExternalTokenReplayed          AuthCode = "AUTH_EXTERNAL_TOKEN_REPLAYED"
+	CodeSystemUnavailableExternalProvider  AuthCode = "SYSTEM_UNAVAILABLE_EXTERNAL_PROVIDER"
+	CodeAuthExternalEmailUnverified        AuthCode = "AUTH_EXTERNAL_EMAIL_UNVERIFIED"
+	CodeAuthExternalAccountNotFound        AuthCode = "AUTH_EXTERNAL_ACCOUNT_NOT_FOUND"
+	CodeAuthExternalLinkRequired           AuthCode = "AUTH_EXTERNAL_LINK_REQUIRED"
+	CodeAuthExternalLinkRequiresVerify     AuthCode = "AUTH_EXTERNAL_LINK_REQUIRES_VERIFICATION"
+	CodeAuthExternalIdentityInUse          AuthCode = "AUTH_EXTERNAL_IDENTITY_IN_USE"
+	CodeAuthLastLoginMethod                AuthCode = "AUTH_LAST_LOGIN_METHOD"
+	CodeAuthPasswordNotSet                 AuthCode = "AUTH_PASSWORD_NOT_SET"
+	CodeAuthExternalLoginRateLimited       AuthCode = "AUTH_EXTERNAL_LOGIN_RATE_LIMITED"
 	CodeAuthRefreshReuseDetected           AuthCode = "AUTH_REFRESH_REUSE_DETECTED"
 	CodeAuthPermissionDenied               AuthCode = "AUTH_PERMISSION_DENIED"
 	CodeSystemEngineNotReady               AuthCode = "SYSTEM_ENGINE_NOT_READY"
@@ -287,6 +300,32 @@ var (
 	ErrUnknownSessionProfile = NewAuthError(CategoryAuthValidation, string(CodeAuthUnknownSessionProfile), "unknown session profile")
 	// ErrSessionProfileConflict is returned when a session profile is requested in incompatible ways: RememberMe together with an explicit profile, RememberMe with no RememberMeProfile configured, or an MFA confirm naming a different profile than its challenge (which leaves the challenge unconsumed).
 	ErrSessionProfileConflict = NewAuthError(CategoryAuthValidation, string(CodeAuthSessionProfileConflict), "session profile conflict")
+	// ErrExternalAuthDisabled is returned by the external sign-in methods when Config.ExternalAuth.Enabled is false.
+	ErrExternalAuthDisabled = NewAuthError(CategoryAuthState, string(CodeAuthExternalDisabled), "external sign-in disabled")
+	// ErrExternalProviderUnknown is returned when the provider name is not a key of Config.ExternalAuth.Providers.
+	ErrExternalProviderUnknown = NewAuthError(CategoryAuthValidation, string(CodeAuthExternalProviderUnknown), "unknown external provider")
+	// ErrExternalTokenInvalid is returned when the ID token fails verification: signature, issuer, audience, time claims, nonce or structure. The cause is deliberately not reported.
+	ErrExternalTokenInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthExternalTokenInvalid), "external identity token invalid")
+	// ErrExternalTokenReplayed is returned when the exact ID token was already used.
+	ErrExternalTokenReplayed = NewAuthError(CategoryAuthAbuse, string(CodeAuthExternalTokenReplayed), "external identity token already used")
+	// ErrExternalProviderUnavailable is returned when a token cannot be verified because the provider's signing keys cannot be fetched and no usable cached copy remains. No token is accepted in that case.
+	ErrExternalProviderUnavailable = NewAuthError(CategorySystem, string(CodeSystemUnavailableExternalProvider), "external identity provider unavailable")
+	// ErrExternalEmailUnverified is returned when the provider did not supply a verified email, which is required to link or create an account. An unverified email is never used.
+	ErrExternalEmailUnverified = NewAuthError(CategoryAuthState, string(CodeAuthExternalEmailUnverified), "external identity email not verified")
+	// ErrExternalAccountNotFound is returned when no account matches the identity and sign-up is not allowed.
+	ErrExternalAccountNotFound = NewAuthError(CategoryAuthState, string(CodeAuthExternalAccountNotFound), "no account for this external identity")
+	// ErrExternalAccountLinkRequired is returned when a local account has the identity's verified email but automatic linking is off: the user must sign in another way and link the identity.
+	ErrExternalAccountLinkRequired = NewAuthError(CategoryAuthState, string(CodeAuthExternalLinkRequired), "account exists; sign in and link the external identity")
+	// ErrExternalLinkRequiresVerification is returned when the matching local account has not verified its own email, so linking it would not be safe.
+	ErrExternalLinkRequiresVerification = NewAuthError(CategoryAuthState, string(CodeAuthExternalLinkRequiresVerify), "account email must be verified before linking")
+	// ErrExternalIdentityInUse is returned when the identity is already linked to a different user. User providers return it from ExternalIdentityProvider for a uniqueness conflict.
+	ErrExternalIdentityInUse = NewAuthError(CategoryAuthState, string(CodeAuthExternalIdentityInUse), "external identity already linked to another account")
+	// ErrLastLoginMethod is returned when unlinking would leave an account with no way to sign in.
+	ErrLastLoginMethod = NewAuthError(CategoryAuthState, string(CodeAuthLastLoginMethod), "cannot remove the last sign-in method")
+	// ErrPasswordNotSet is returned by ChangePassword and VerifyPassword for an account that has no password (one created through external sign-in). A password can be set through password reset.
+	ErrPasswordNotSet = NewAuthError(CategoryAuthState, string(CodeAuthPasswordNotSet), "account has no password")
+	// ErrExternalLoginRateLimited is returned when external sign-in attempts exceeded ExternalAuth.MaxAttempts within Cooldown.
+	ErrExternalLoginRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthExternalLoginRateLimited), "external sign-in attempts rate limited")
 	// ErrPermissionDenied is an exported constant or variable used by the authentication engine.
 	ErrPermissionDenied = NewAuthError(CategoryAuthState, string(CodeAuthPermissionDenied), "permission denied")
 	// ErrEngineNotReady is an exported constant or variable used by the authentication engine.
