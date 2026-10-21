@@ -94,7 +94,9 @@ To adopt it (see [external_identity.md](external_identity.md)):
 1. **Add the schema.** A table with a unique `(tenant_id, provider, subject)`
    (example in the guide). Existing users need no migration.
 2. **Implement `ExternalIdentityProvider`** on your `UserProvider`:
-   `GetUserByExternalIdentity` (return `ErrUserNotFound` when none),
+   `GetUserByExternalIdentity` (return `ErrUserNotFound` when none; your
+   by-identifier lookups must likewise return `ErrUserNotFound` for a missing
+   user, since any other error is treated as a failure),
    `CreateUserWithExternalIdentity` (user and link in one transaction;
    `ErrProviderDuplicateIdentifier` / `ErrExternalIdentityInUse` on a conflict),
    `LinkExternalIdentity`, `UnlinkExternalIdentity`, `ListExternalIdentities`.
@@ -109,7 +111,10 @@ To adopt it (see [external_identity.md](external_identity.md)):
    works.
 6. **Decide on linking.** `AutoLinkVerifiedEmail` requires
    `EmailVerification.Enabled` (`Build` fails otherwise: without it, pre-hijacking
-   is possible). Without it, tell users who hit `ErrExternalAccountLinkRequired`
+   is possible), and it trusts an Active account to have a verified email. If
+   you already have accounts that were never verified (created before
+   verification was on, imported, or created Active by an admin), mark them
+   `PendingVerification` first, or leave auto-linking off. Without it, tell users who hit `ErrExternalAccountLinkRequired`
    to sign in and link from settings, behind a step-up of your own.
 7. **Optionally** call `Engine.WarmExternalKeys` at startup, and pass your own
    client with `Builder.WithHTTPClient` (proxy, egress policy).

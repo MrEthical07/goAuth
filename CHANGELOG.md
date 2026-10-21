@@ -321,10 +321,14 @@ v0.8.0 is a valid semantic version for this release.
   verification (skipped without an IP, because a shared bucket would let anyone
   lock out the provider) and per identity after; reset on success.
 - **Config and lint:** `Config.ExternalAuth` (`ExternalAuthConfig`,
-  `ExternalProviderConfig`, `ExternalKindGoogle|Apple|OIDC`) with validation and
-  deep copy in `cloneConfig`; lint codes `external_signup_passwordless` (info) and
-  `external_key_max_stale_long` (warn, above 72h); the lint reference is now 34
-  codes (13 INFO, 17 WARN, 4 HIGH).
+  `ExternalProviderConfig`, `ExternalKindGoogle|Apple|OIDC`) with validation (including that no
+  two providers share an issuer and a client ID, and `KeyMaxStale >= KeyRefreshMin`) and
+  deep copy in `cloneConfig`; lint codes `external_signup_passwordless` (info),
+  `external_key_max_stale_long` (warn, above 72h) and
+  `external_autolink_trusts_active_status` (info: auto-link treats an Active
+  account as email-verified, which legacy accounts may not be); the lint
+  reference is now 35 codes
+  (14 INFO, 17 WARN, 4 HIGH).
 - **Errors:** `ErrExternalAuthDisabled` (403), `ErrExternalProviderUnknown` (400),
   `ErrExternalTokenInvalid` (401), `ErrExternalTokenReplayed` (401),
   `ErrExternalProviderUnavailable` (503), `ErrExternalEmailUnverified` (403),

@@ -73,6 +73,10 @@ engine, err := goAuth.New().
     Build()
 ```
 
+Two providers may not share an issuer and a client ID (`Build` fails): the
+single-use record of a token is kept per provider name, so a token valid under
+both would be usable once under each. List each client ID under one provider.
+
 The provider name (`"google"`, `"apple"`; `[a-z0-9_-]`, 1 to 32 characters) is
 what you pass to the API and what is stored with each link. It does not have to
 equal the kind: you can name two OIDC providers `"corp-sso"` and `"partner"`.
@@ -89,7 +93,7 @@ equal the kind: you can name two OIDC providers `"corp-sso"` and `"partner"`.
 | `Cooldown` | `0` (= 15m) | Rate-limit window |
 | `ClockLeeway` | `0` (= 60s) | Tolerance for `exp`, `iat`, `nbf`; maximum 5m |
 | `KeyRefreshMin` | `0` (= 5m) | Minimum interval between key-set fetches per provider, and the shortest cache lifetime honoured; 1s to 24h |
-| `KeyMaxStale` | `0` (= 24h) | How long the last good key set may keep verifying while the provider is unreachable; up to 30d (lint warns above 72h) |
+| `KeyMaxStale` | `0` (= 24h) | How long the last good key set may keep verifying while the provider is unreachable; at least `KeyRefreshMin` (5m when unset), up to 30d (lint warns above 72h) |
 
 ### `ExternalProviderConfig`
 
@@ -244,6 +248,8 @@ attack ("pre-hijacking"):
 linked by it, and an account still pending verification is refused (row 4) even
 with the knob on. Where you cannot or do not want email verification, leave
 auto-linking off and let signed-in users link from settings.
+
+**Auto-link trusts the status.** goAuth has no per-account "email verified" flag: it treats an **Active** account as one whose address was verified. That is true for every account created while `EmailVerification` was enabled, and false for accounts created before it was (or imported, or created Active by an admin): such an account may have been registered by someone who never owned the address. Before turning auto-linking on in an existing deployment, mark those accounts `PendingVerification` (or leave auto-linking off); lint reports `external_autolink_trusts_active_status` as a reminder.
 
 The same reasoning applies to `LinkExternalIdentity`: an account pending email
 verification cannot be linked (`ErrExternalLinkRequiresVerification`), because
@@ -415,6 +421,7 @@ type ExternalIdentityProvider interface {
 }
 ```
 
+- Your **`GetUserByIdentifier` / `GetUserByIdentifierInTenant` must return `ErrUserNotFound` for a missing user** (they are used to match the provider's email). Any other error is treated as a failure (HTTP 503) and never as "no such account", so an outage cannot lead to an account being created.
 - `GetUserByExternalIdentity` returns `ErrUserNotFound` when there is none. Any
   other error is treated as a backend failure (HTTP 503), never as "not found".
 - `CreateUserWithExternalIdentity` creates the user (`input.PasswordHash == ""`)

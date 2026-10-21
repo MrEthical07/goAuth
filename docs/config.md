@@ -322,7 +322,7 @@ Zero value = disabled. With it disabled, behavior is exactly what it was before 
 | `Cooldown`              | `time.Duration`                     | `0` (= 15m)   | Rate-limit window for `MaxAttempts` |
 | `ClockLeeway`           | `time.Duration`                     | `0` (= 60s)   | Tolerance for the token's `exp`, `iat`, `nbf`; at most 5m |
 | `KeyRefreshMin`         | `time.Duration`                     | `0` (= 5m)    | Minimum interval between key-set fetches per provider (also bounds refetches for an unknown key id) and the shortest cache lifetime honoured; 1s to 24h |
-| `KeyMaxStale`           | `time.Duration`                     | `0` (= 24h)   | How long the last good key set may keep verifying while the provider is unreachable; at most 30d (lint warns above 72h) |
+| `KeyMaxStale`           | `time.Duration`                     | `0` (= 24h)   | How long the last good key set may keep verifying while the provider is unreachable; at least `KeyRefreshMin` (5m when unset), at most 30d (lint warns above 72h) |
 
 `ExternalProviderConfig`:
 
@@ -379,7 +379,7 @@ engine**:
 - MFA challenge TTL and attempt limits positive
 - WebAuthn (when enabled): RPID/RPDisplayName/RPOrigins present, valid attestation and user-verification enums, CeremonyTTL within 10s–10m; `RequireForLogin` requires `Enabled`
 - RoleSwitch: `MaxAttempts`, `Cooldown` and every `StepUp[...].MaxAge` are `>= 0`; `StepUp` keys are non-empty; `RequireMFA` requires `TOTP.Enabled` or `WebAuthn.Enabled`; `StepUp` keys must be registered roles and `Enabled` requires a `RoleSwitchProvider` (both checked by Builder)
-- ExternalAuth (when enabled): at least one provider; names `[a-z0-9_-]{1,32}`; a known `Kind`; non-empty `ClientIDs`; https `Issuer` and `JWKSURL` (required for `oidc`); `AllowedHostedDomains` only for google; `Algorithms` only for oidc and from the allowed set; `MaxAttempts`, `Cooldown` `>= 0`, `ClockLeeway` 0-5m, `KeyRefreshMin` 1s-24h, `KeyMaxStale` 0-30d and `>= KeyRefreshMin`; `AllowSignup` requires `Account.Enabled`; `AutoLinkVerifiedEmail` requires `EmailVerification.Enabled`; the user provider must implement `ExternalIdentityProvider` (checked by Builder)
+- ExternalAuth (when enabled): at least one provider; names `[a-z0-9_-]{1,32}`; a known `Kind`; non-empty `ClientIDs`; https `Issuer` and `JWKSURL` (required for `oidc`); `AllowedHostedDomains` only for google; `Algorithms` only for oidc and from the allowed set; `MaxAttempts`, `Cooldown` `>= 0`, `ClockLeeway` 0-5m, `KeyRefreshMin` 1s-24h, `KeyMaxStale` 0-30d and `>= KeyRefreshMin` (5m when unset); no two providers may share an issuer and a client ID (a token would verify under both); `AllowSignup` requires `Account.Enabled`; `AutoLinkVerifiedEmail` requires `EmailVerification.Enabled`; the user provider must implement `ExternalIdentityProvider` (checked by Builder)
 
 ## Config Linting
 
@@ -393,10 +393,10 @@ engine**:
 - `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on `ModeStrict`-resolved routes
 - `role_switch_stateless_validation` (info) — `RoleSwitch.Enabled` with `ModeJWTOnly`/`ModeHybrid`; a pre-switch access token stays valid on routes resolved in those modes until it expires (see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode))
 - `session_profile_*` codes — advisory notes on session profiles: a ceiling over 365 days or an unbounded profile (warn), `RenewOnUse` on a stateless validation mode and the "removing a profile ends its sessions" reminder (info); see [Session profiles](#session-profiles-configsessionprofiles)
-- `external_signup_passwordless` (info) — `ExternalAuth.AllowSignup` creates accounts without a password; `external_key_max_stale_long` (warn) — `ExternalAuth.KeyMaxStale` above 72h keeps trusting cached provider keys that long during an outage
+- `external_autolink_trusts_active_status` (info) — `ExternalAuth.AutoLinkVerifiedEmail` treats an Active account as email-verified, which legacy or imported accounts may not be; `external_signup_passwordless` (info) — `ExternalAuth.AllowSignup` creates accounts without a password; `external_key_max_stale_long` (warn) — `ExternalAuth.KeyMaxStale` above 72h keeps trusting cached provider keys that long during an outage
 - `*_noop` codes — config knobs that are accepted but never read by the engine (see the field tables above)
 
-The complete code list (34 codes: 13 INFO, 17 WARN, 4 HIGH) lives in
+The complete code list (35 codes: 14 INFO, 17 WARN, 4 HIGH) lives in
 [config_lint.md](config_lint.md).
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)
