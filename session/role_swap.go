@@ -133,7 +133,7 @@ end
 
 local function parse_session(data)
   local version = string.byte(data, 1)
-  if not version or version < 1 or version > 5 then
+  if not version or version < 1 or version > 6 then
     return nil
   end
 
@@ -207,17 +207,33 @@ local function parse_session(data)
   if #data < idx + 15 then
     return nil
   end
+  local created_at = read_be64(data, idx)
   idx = idx + 8
   local expires_at = read_be64(data, idx)
-  if not expires_at then
+  if not created_at or not expires_at then
     return nil
+  end
+  idx = idx + 8
+
+  local profile = nil
+  if version >= 6 then
+    local profile_len = string.byte(data, idx)
+    if not profile_len or profile_len < 1 or profile_len > 32 then
+      return nil
+    end
+    if #data < idx + profile_len then
+      return nil
+    end
+    profile = string.sub(data, idx + 1, idx + profile_len)
   end
 
   return {
     user_id = user_id,
     refresh_hash = refresh_hash,
     refresh_offset = refresh_offset,
-    expires_at = expires_at
+    created_at = created_at,
+    expires_at = expires_at,
+    profile = profile
   }
 end
 
