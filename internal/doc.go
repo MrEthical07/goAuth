@@ -7,6 +7,7 @@
 //   - flows — pure-function flow orchestrators for every Engine operation
 //   - limiters — domain-specific rate limiters (account, backup-code, email, TOTP, reset)
 //   - metrics — lock-free counters and latency histograms
+//   - oidc — OpenID Connect ID-token verification and provider key cache
 //   - rate — core Redis-backed rate limit primitives
 //   - security — scanner baseline and perf regression tooling
 //   - stores — shared store interface adapters

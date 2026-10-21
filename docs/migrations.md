@@ -2,9 +2,9 @@
 
 ## v0.8.0 Migration Notes (Non-Breaking)
 
-**No action needed unless you adopt session profiles.** v0.8.0 is additive: no
+**No action needed unless you adopt session profiles or external sign-in.** v0.8.0 is additive: no
 exported signature changed and everything `gorelease -base=v0.7.0` lists is an
-addition (`Config` gained a `SessionProfiles` field; `SessionConfig` itself is
+addition (`Config` gained `SessionProfiles` and `ExternalAuth` fields; `SessionConfig` itself is
 unchanged). With profiles unused (the default) behavior is byte-for-byte what
 it was in v0.7.0: the same session bytes in Redis (`session/golden_bytes_test.go`
 passes unmodified), the same MFA challenge bytes, the same Redis commands for
@@ -79,7 +79,85 @@ New surface, all additive: `WithSessionProfile` / `SessionProfileFromContext`,
 `ProfilePolicy`, `Store.WithProfiles` / `NewSessionLifetime`. A new
 `session_invalid` audit event is emitted only with profiles configured.
 
-### Rolling back
+### Optional: adopt external sign-in (Google, Sign in with Apple, OIDC)
+
+**No action unless you enable `Config.ExternalAuth`.** With it off (the default)
+behavior is byte-for-byte what it was before the feature: the same Redis commands
+for login, refresh, validate, logout, `VerifyPassword` and `ChangePassword`, the
+same audit events and metrics, no new keys, no network call.
+`TestExternalAuthUnusedMatchesMain` pins this; its expected transcript was
+captured by running the same scenario against the commit the feature branched
+from.
+
+To adopt it (see [external_identity.md](external_identity.md)):
+
+1. **Add the schema.** A table with a unique `(tenant_id, provider, subject)`
+   (example in the guide). Existing users need no migration.
+2. **Implement `ExternalIdentityProvider`** on your `UserProvider`:
+   `GetUserByExternalIdentity` (return `ErrUserNotFound` when none; your
+   by-identifier lookups must likewise return `ErrUserNotFound` for a missing
+   user, since any other error is treated as a failure),
+   `CreateUserWithExternalIdentity` (user and link in one transaction;
+   `ErrProviderDuplicateIdentifier` / `ErrExternalIdentityInUse` on a conflict),
+   `LinkExternalIdentity`, `UnlinkExternalIdentity`, `ListExternalIdentities`.
+   `Build` fails with `ExternalAuth.Enabled` and a provider that lacks them.
+3. **Allow an empty `PasswordHash`.** External sign-up creates accounts with
+   none. goAuth treats `""` as "no password" everywhere (see below); make sure
+   your column allows it and your own code does not assume a hash.
+4. **Configure providers** with every client ID that can obtain a token for your
+   users (Google web/iOS/Android IDs; Apple Services ID and bundle ID).
+5. **Issue a nonce per sign-in** from your server and pass it as
+   `ExternalLoginOptions.Nonce`; pass `WithClientIP(ctx, ip)` so the per-IP limit
+   works.
+6. **Decide on linking.** `AutoLinkVerifiedEmail` requires
+   `EmailVerification.Enabled` (`Build` fails otherwise: without it, pre-hijacking
+   is possible), and it trusts an Active account to have a verified email. If
+   you already have accounts that were never verified (created before
+   verification was on, imported, or created Active by an admin), mark them
+   `PendingVerification` first, or leave auto-linking off. Without it, tell users who hit `ErrExternalAccountLinkRequired`
+   to sign in and link from settings, behind a step-up of your own.
+7. **Optionally** call `Engine.WarmExternalKeys` at startup, and pass your own
+   client with `Builder.WithHTTPClient` (proxy, egress policy).
+
+Behavior changes that apply **even if you never enable external sign-in** and
+only matter for accounts with an empty `PasswordHash` (which could not log in
+before either):
+
+- Password login against such an account now runs a dummy Argon2 verification
+  (it used to fail instantly on the unparsable empty hash) and is audited with
+  reason `password_not_set` instead of `password_mismatch`; it still returns
+  `ErrInvalidCredentials` and counts toward the login limiter and auto-lockout.
+- `ChangePassword` and `VerifyPassword` return the new `ErrPasswordNotSet`
+  (`AUTH_PASSWORD_NOT_SET`, suggested HTTP 409) instead of
+  `ErrInvalidCredentials` for such an account.
+- A recent-authentication role-switch step-up no longer lists `"password"` as a
+  factor for such an account.
+
+Accounts that have a password are unaffected.
+
+New surface, all additive: `Config.ExternalAuth` (`ExternalAuthConfig`,
+`ExternalProviderConfig`, `ExternalKind*`), `Engine.LoginWithExternalIdentity` /
+`LinkExternalIdentity` / `UnlinkExternalIdentity` / `ListExternalIdentities` /
+`WarmExternalKeys`, `Builder.WithHTTPClient`, `ExternalIdentity`,
+`ExternalIdentityProvider`, `ExternalLoginOptions`, `LoginResult.NewAccount` /
+`LinkedIdentity`, and the sentinels `ErrExternalAuthDisabled`,
+`ErrExternalProviderUnknown`, `ErrExternalTokenInvalid`,
+`ErrExternalTokenReplayed`, `ErrExternalProviderUnavailable`,
+`ErrExternalEmailUnverified`, `ErrExternalAccountNotFound`,
+`ErrExternalAccountLinkRequired`, `ErrExternalLinkRequiresVerification`,
+`ErrExternalIdentityInUse`, `ErrLastLoginMethod`, `ErrPasswordNotSet`,
+`ErrExternalLoginRateLimited`. New Redis keys appear only when enabled:
+`axt:<provider>:<hash>` (single-use records, expiring with the token) and
+`rl:extlogin:*` (limiter counters).
+
+### Rolling back external sign-in
+
+Set `ExternalAuth.Enabled` to `false` (or downgrade). Sessions already issued stay
+valid; users who signed up through a provider have no password and can set one
+through password reset. The link table is yours and is not touched; the Redis
+keys expire on their own.
+
+### Rolling back session profiles
 
 Downgrading to v0.7.0 after profiles were in use leaves v6 sessions and v3
 challenges that v0.7.0 cannot decode. Sessions end (users sign in again);

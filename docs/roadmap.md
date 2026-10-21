@@ -39,23 +39,24 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | `Engine.RevokePermission` for dynamic permission changes | P2 | maintainer | planned | API: runtime permission mutation without rebuild |
-| SSO / OIDC + OAuth2 social login | P1 | maintainer | planned (v0.5.0, own cycle) | API: enterprise SSO and consumer social login via external IdPs |
+| SSO phase 1: OIDC ID-token sign-in (Google, Sign in with Apple, generic OIDC), identity linking | P1 | maintainer | **done** (v0.8.0) | API: social login from an ID token the app already holds; see [external_identity.md](external_identity.md) |
+| SSO phase 2: OAuth2 authorization-code + PKCE exchange, redirect/callback orchestration, provider connectors | P2 | maintainer | planned | API: framework-shaped flow in an optional subpackage |
 | WebAuthn passwordless / usernameless login | P2 | maintainer | planned | API: extend the v0.4.0 second-factor support to full passwordless (credential model already retains the needed flags) |
 
-### Note: SSO / OIDC + OAuth2 (deferred)
+### Note: SSO / OIDC + OAuth2
 
-SSO was evaluated during the v0.4.0 cycle and deferred to its own release. It is a
+SSO was evaluated during the v0.4.0 cycle and deferred to its own release; phase 1 shipped in v0.8.0. It is a
 subsystem rather than a single feature (provider abstraction, JWKS fetch/cache, code
 exchange, ID-token validation, identity linking, and callback orchestration), it adds
 outbound HTTP to third-party IdPs plus new dependencies, and its identity-linking policy
 is a security-sensitive design decision (account-takeover risk on unverified emails) that
 warrants a dedicated design pass. When picked up, it should be split into two phases:
 
-1. **Library-shaped (in scope for the engine):** OIDC ID-token verification (JWKS +
+1. **Library-shaped (in scope for the engine) -- done in v0.8.0:** OIDC ID-token verification (JWKS +
    `iss`/`aud`/`nonce`/`exp`) and the `ExternalIdentityProvider` linking primitive
    (following the `WebAuthnCredentialProvider` capability-interface pattern). The host app
    owns the redirect dance and hands goAuth the result.
-2. **Framework-shaped (optional subpackage):** full OAuth2 authorization-code + PKCE
+2. **Framework-shaped (optional subpackage) -- still planned:** full OAuth2 authorization-code + PKCE
    redirect/callback orchestration and per-provider connectors, kept out of the core so the
    engine stays lean and dependency-light.
 
@@ -87,6 +88,8 @@ Items previously on the roadmap that have been resolved:
 
 | Item | Priority | Resolved In | Impact |
 |------|----------|-------------|--------|
+| SSO phase 1: OIDC ID-token sign-in (Google, Apple, generic OIDC) with tenant-scoped identity linking | P1 | v0.8.0 | API |
+| Per-client session profiles | P1 | v0.8.0 | API |
 | Remember-me logins + configurable absolute session ceiling (`MaxSessionDuration`) | P1 | v0.4.0 | Security/API |
 | Hybrid mode aligned with per-route selection design (`RequireHybrid`, explicit-override fix) | P1 | v0.4.0 | Correctness |
 | Graceful logout with expired access tokens | P2 | v0.4.0 | Correctness/DX |

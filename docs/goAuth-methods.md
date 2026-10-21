@@ -55,6 +55,7 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 | `WithAuditSink` | `b.WithAuditSink(sink)` | `sink AuditSink` | `*Builder`; required when `cfg.Audit.Enabled == true` |
 | `WithMetricsEnabled` | `b.WithMetricsEnabled(enabled)` | `enabled bool` | `*Builder`; toggles in-process metrics |
 | `WithLatencyHistograms` | `b.WithLatencyHistograms(enabled)` | `enabled bool` | `*Builder`; toggles latency histograms |
+| `WithHTTPClient` | `b.WithHTTPClient(client)` | `client *http.Client` | `*Builder`; client for external identity providers' key fetches (default 5s timeout); nothing is fetched at `Build` |
 | `Build` | `b.Build()` | none | `(*Engine, error)`; validates config and builds immutable engine |
 
 ## 2) Config and Lint Methods
@@ -115,6 +116,18 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 | `Refresh` | `engine.Refresh(ctx, refreshToken)` | `ctx`, `refreshToken string` | `(newAccess string, newRefresh string, err error)`; with `RoleSwitch.Enabled` it first re-checks that the session's role is still held (`ErrRoleNotAllowed` ends the session) |
 | `SwitchRole` | `engine.SwitchRole(ctx, refreshToken, targetRole, opts)` | `ctx`, `refreshToken string`, `targetRole string`, `opts RoleSwitchOptions` | `(*RoleSwitchResult, error)`; swaps the session for one carrying `targetRole`. Result is non-nil only on success or with `ErrStepUpRequired`. See [role_switching.md](role_switching.md) |
 
+### 5.2a External Identity (opt-in: `Config.ExternalAuth`)
+
+See [external_identity.md](external_identity.md). All return `ErrExternalAuthDisabled` unless `ExternalAuth.Enabled`.
+
+| Method | Invocation | Parameters | Returns / Purpose |
+|---|---|---|---|
+| `LoginWithExternalIdentity` | `engine.LoginWithExternalIdentity(ctx, provider, idToken, opts)` | `ctx`, `provider string`, `idToken string`, `opts ExternalLoginOptions` (`Nonce` required, `DisplayName`, `RememberMe`) | `(*LoginResult, error)`; verifies the ID token, resolves/links/creates the account and continues like a password login (MFA via `ConfirmLoginMFA`). `NewAccount` / `LinkedIdentity` report what happened. Pass `WithClientIP` for the per-IP limit |
+| `LinkExternalIdentity` | `engine.LinkExternalIdentity(ctx, userID, provider, idToken, nonce)` | `ctx`, `userID string` (from the session), `provider`, `idToken`, `nonce string` | `(*ExternalIdentity, error)`; idempotent for the same user; `ErrExternalIdentityInUse` for another user's. Require a step-up first |
+| `UnlinkExternalIdentity` | `engine.UnlinkExternalIdentity(ctx, userID, provider, subject)` | `ctx`, `userID`, `provider`, `subject string` | `error`; `ErrLastLoginMethod` for a password-less user's only identity |
+| `ListExternalIdentities` | `engine.ListExternalIdentities(ctx, userID)` | `ctx`, `userID string` | `([]ExternalIdentity, error)` |
+| `WarmExternalKeys` | `engine.WarmExternalKeys(ctx)` | `ctx` | `error`; optional startup fetch of provider keys (`ErrExternalProviderUnavailable` on failure) |
+
 ### 5.3 Token Validation and Permissions
 
 | Method | Invocation | Parameters | Returns / Purpose |
@@ -140,7 +153,7 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 |---|---|---|---|
 | `CreateAccount` | `engine.CreateAccount(ctx, req)` | `ctx`, `req CreateAccountRequest` | `(*CreateAccountResult, error)` |
 | `ChangePassword` | `engine.ChangePassword(ctx, userID, oldPassword, newPassword)` | `ctx`, `userID string`, `oldPassword string`, `newPassword string` | `error`; invalidates all user sessions on success |
-| `VerifyPassword` | `engine.VerifyPassword(ctx, userID, password)` | `ctx`, `userID string`, `password string` | `error`; step-up check, no state change, shares `ChangePassword`'s rate limiter |
+| `VerifyPassword` | `engine.VerifyPassword(ctx, userID, password)` | `ctx`, `userID string`, `password string` | `error`; step-up check, no state change, shares `ChangePassword`'s rate limiter; `ErrPasswordNotSet` for an account with no password |
 | `DisableAccount` | `engine.DisableAccount(ctx, userID)` | `ctx`, `userID string` | `error` |
 | `EnableAccount` | `engine.EnableAccount(ctx, userID)` | `ctx`, `userID string` | `error` |
 | `UnlockAccount` | `engine.UnlockAccount(ctx, userID)` | `ctx`, `userID string` | `error`; unlocks account and resets lockout counter |
@@ -213,7 +226,7 @@ Used by `goAuth.NewMetrics(cfg)`.
 
 ### LoginResult
 
-Returned by `LoginWithResult`, `ConfirmLoginMFA`, and `ConfirmLoginMFAWithType`.
+Returned by `LoginWithResult`, `LoginWithExternalIdentity`, `ConfirmLoginMFA`, and `ConfirmLoginMFAWithType`.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -222,6 +235,8 @@ Returned by `LoginWithResult`, `ConfirmLoginMFA`, and `ConfirmLoginMFAWithType`.
 | `MFARequired` | `bool` | True when second factor is required |
 | `MFAType` | `string` | MFA type requested by flow |
 | `MFASession` | `string` | Challenge ID used by MFA confirm methods |
+| `NewAccount` | `bool` | `LoginWithExternalIdentity` created the account in this call |
+| `LinkedIdentity` | `bool` | `LoginWithExternalIdentity` linked the identity to an existing account in this call |
 
 ## 7) Invocation Notes
 

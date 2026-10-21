@@ -298,6 +298,107 @@ type LoginResult struct {
 	// with (e.g. "webauthn", "totp"). MFAType is always MFATypes[0], the
 	// preferred factor. Empty when MFARequired is false.
 	MFATypes []string
+
+	// NewAccount is true when [Engine.LoginWithExternalIdentity] created the
+	// account in this call. Always false for every other login.
+	NewAccount bool
+	// LinkedIdentity is true when [Engine.LoginWithExternalIdentity] linked
+	// the external identity to an existing account in this call, because its
+	// verified email matched and Config.ExternalAuth.AutoLinkVerifiedEmail
+	// is on. Always false for every other login.
+	LinkedIdentity bool
+}
+
+// ExternalIdentity is a link between a local account and an identity at an
+// external provider such as Google or Sign in with Apple.
+//
+// The pair (Provider, Subject) identifies the person at the provider and is
+// stable; Email is not (providers let users change it), so it is stored for
+// display and never used to find an account after the link exists.
+//
+//	Docs: docs/external_identity.md
+type ExternalIdentity struct {
+	// Provider is the name from Config.ExternalAuth.Providers.
+	Provider string
+	// Subject is the provider's stable user identifier (the token's sub).
+	Subject string
+	// Email is the address the provider reported, trimmed and otherwise as
+	// sent. It may be empty (Sign in with Apple omits it after the first
+	// sign-in).
+	Email string
+	// EmailVerified is whether the provider vouched for Email.
+	EmailVerified bool
+	// IsPrivateEmail is true for an Apple private-relay address.
+	IsPrivateEmail bool
+	// DisplayName is the name the application supplied; Apple sends it to the
+	// client only once, so goAuth never sees it in a token.
+	DisplayName string
+	// LinkedAt is when the link was made.
+	LinkedAt time.Time
+}
+
+// ExternalIdentityProvider is an optional capability interface a
+// [UserProvider] can additionally implement to enable external sign-in. It is
+// detected via type assertion at [Builder.Build]; when
+// [Config.ExternalAuth] is enabled and the user provider does not implement
+// it, Build fails. Existing UserProvider implementations are unaffected while
+// the feature is off.
+//
+// Every method is scoped to tenantID, which goAuth takes from the request
+// context (the default tenant "0" when none is attached). An identity linked
+// in one tenant must not be found in another.
+//
+// Storage contract: (tenant_id, provider, subject) is unique, so one external
+// identity belongs to at most one account per tenant, and the same user may
+// hold several identities.
+//
+//	Docs: docs/external_identity.md
+type ExternalIdentityProvider interface {
+	// GetUserByExternalIdentity returns the account the identity is linked
+	// to within tenantID. It must return [ErrUserNotFound] when there is
+	// none, and must not return an account of another tenant.
+	GetUserByExternalIdentity(ctx context.Context, tenantID, provider, subject string) (UserRecord, error)
+
+	// CreateUserWithExternalIdentity creates a password-less account
+	// (input.PasswordHash is empty) and links identity to it as one atomic
+	// step: either both exist afterwards or neither does. It must return
+	// [ErrProviderDuplicateIdentifier] when the identifier (the email) is
+	// already taken and [ErrExternalIdentityInUse] when the identity is
+	// already linked; goAuth retries the sign-in once on either, because a
+	// concurrent first sign-in of the same person produces them.
+	CreateUserWithExternalIdentity(ctx context.Context, input CreateUserInput, identity ExternalIdentity) (UserRecord, error)
+
+	// LinkExternalIdentity links identity to the account userID in tenantID.
+	// It must return [ErrExternalIdentityInUse] when the identity is linked
+	// to a different account, and succeed without change when it is already
+	// linked to this one.
+	LinkExternalIdentity(ctx context.Context, tenantID, userID string, identity ExternalIdentity) error
+
+	// UnlinkExternalIdentity removes the link. Removing one that does not
+	// exist is not an error.
+	UnlinkExternalIdentity(ctx context.Context, tenantID, userID, provider, subject string) error
+
+	// ListExternalIdentities returns every identity linked to the account
+	// (empty slice when none).
+	ListExternalIdentities(ctx context.Context, tenantID, userID string) ([]ExternalIdentity, error)
+}
+
+// ExternalLoginOptions carries the per-sign-in inputs of
+// [Engine.LoginWithExternalIdentity].
+//
+//	Docs: docs/external_identity.md
+type ExternalLoginOptions struct {
+	// Nonce is the raw nonce the server issued for this sign-in and the
+	// client put in its request to the provider. Required. The token's nonce
+	// claim must equal it, or equal its lowercase hex SHA-256 (the form Sign
+	// in with Apple's native flow carries).
+	Nonce string
+	// DisplayName is passed to the user provider when this sign-in creates an
+	// account. Optional.
+	DisplayName string
+	// RememberMe has the meaning it has in [LoginOptions], including the
+	// session-profile rules.
+	RememberMe bool
 }
 
 // BackupCodeRecord stores the SHA-256 hash of a single backup code.

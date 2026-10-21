@@ -15,6 +15,7 @@ import (
 	"github.com/MrEthical07/goAuth/internal/clock"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
+	"github.com/MrEthical07/goAuth/internal/oidc"
 	"github.com/MrEthical07/goAuth/internal/rate"
 	internalsecurity "github.com/MrEthical07/goAuth/internal/security"
 	"github.com/MrEthical07/goAuth/internal/stores"
@@ -60,10 +61,14 @@ type Engine struct {
 	totp                  *totpManager
 	jwtManager            *jwt.Manager
 	userProvider          UserProvider
+	verifyHashFn          func(password, encodedHash string) (bool, error)
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
 	roleSwitchProvider    RoleSwitchProvider
 	roleSwitchLimiter     *limiters.RoleSwitchLimiter
+	externalProvider      ExternalIdentityProvider
+	externalVerifier      *oidc.Verifier
+	externalLimiter       *limiters.ExternalLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
 }
@@ -840,8 +845,11 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		})
 		return mapToAuthError(statusErr)
 	}
+	if err := e.rejectPasswordless(ctx, auditEventPasswordChangeFailure, user); err != nil {
+		return mapToAuthError(err)
+	}
 
-	oldOK, err := e.passwordHash.Verify(oldPassword, user.PasswordHash)
+	oldOK, err := e.verifyHash(oldPassword, user.PasswordHash)
 	if err != nil || !oldOK {
 		e.metricInc(MetricPasswordChangeInvalidOld)
 		e.emitAudit(ctx, auditEventPasswordChangeInvalidOld, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
@@ -849,7 +857,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 	}
 	e.resetPasswordVerifyLimiter(ctx, limiterTenant, userID)
 
-	samePassword, err := e.passwordHash.Verify(newPassword, user.PasswordHash)
+	samePassword, err := e.verifyHash(newPassword, user.PasswordHash)
 	if err == nil && samePassword {
 		e.metricInc(MetricPasswordChangeReuseRejected)
 		e.emitAudit(ctx, auditEventPasswordChangeReuse, false, userID, user.TenantID, "", ErrPasswordReuse, nil)
@@ -968,8 +976,11 @@ func (e *Engine) VerifyPassword(ctx context.Context, userID, password string) er
 		})
 		return mapToAuthError(statusErr)
 	}
+	if err := e.rejectPasswordless(ctx, auditEventPasswordVerifyFailure, user); err != nil {
+		return mapToAuthError(err)
+	}
 
-	ok, err := e.passwordHash.Verify(password, user.PasswordHash)
+	ok, err := e.verifyHash(password, user.PasswordHash)
 	password = ""
 	if err != nil || !ok {
 		e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
@@ -1638,6 +1649,18 @@ const (
 	auditErrRoleSwitchRateLimited  AuditErrorCode = "role_switch_rate_limited"
 	auditErrUnknownSessionProfile  AuditErrorCode = "unknown_session_profile"
 	auditErrSessionProfileConflict AuditErrorCode = "session_profile_conflict"
+	auditErrExternalDisabled       AuditErrorCode = "external_disabled"
+	auditErrExternalProvider       AuditErrorCode = "external_provider_unknown"
+	auditErrExternalTokenInvalid   AuditErrorCode = "external_token_invalid"
+	auditErrExternalTokenReplayed  AuditErrorCode = "external_token_replayed"
+	auditErrExternalUnavailable    AuditErrorCode = "external_provider_unavailable"
+	auditErrExternalEmailUnver     AuditErrorCode = "external_email_unverified"
+	auditErrExternalNotFound       AuditErrorCode = "external_account_not_found"
+	auditErrExternalLinkRequired   AuditErrorCode = "external_link_required"
+	auditErrExternalLinkVerify     AuditErrorCode = "external_link_requires_verification"
+	auditErrExternalInUse          AuditErrorCode = "external_identity_in_use"
+	auditErrLastLoginMethod        AuditErrorCode = "last_login_method"
+	auditErrPasswordNotSet         AuditErrorCode = "password_not_set"
 	auditErrInvalidToken           AuditErrorCode = "invalid_token"
 	auditErrSessionNotFound        AuditErrorCode = "session_not_found"
 	auditErrUserNotFound           AuditErrorCode = "user_not_found"
@@ -1756,7 +1779,8 @@ func auditErrorCode(err error) AuditErrorCode {
 		errors.Is(err, ErrPasswordResetRateLimited),
 		errors.Is(err, ErrEmailVerificationRateLimited),
 		errors.Is(err, ErrAccountCreationRateLimited),
-		errors.Is(err, ErrPasswordVerifyRateLimited):
+		errors.Is(err, ErrPasswordVerifyRateLimited),
+		errors.Is(err, ErrExternalLoginRateLimited):
 		return auditErrRateLimited
 	case errors.Is(err, ErrRefreshReuse):
 		return auditErrRefreshReuse
@@ -1774,6 +1798,30 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrUnknownSessionProfile
 	case errors.Is(err, ErrSessionProfileConflict):
 		return auditErrSessionProfileConflict
+	case errors.Is(err, ErrExternalAuthDisabled):
+		return auditErrExternalDisabled
+	case errors.Is(err, ErrExternalProviderUnknown):
+		return auditErrExternalProvider
+	case errors.Is(err, ErrExternalTokenInvalid):
+		return auditErrExternalTokenInvalid
+	case errors.Is(err, ErrExternalTokenReplayed):
+		return auditErrExternalTokenReplayed
+	case errors.Is(err, ErrExternalProviderUnavailable):
+		return auditErrExternalUnavailable
+	case errors.Is(err, ErrExternalEmailUnverified):
+		return auditErrExternalEmailUnver
+	case errors.Is(err, ErrExternalAccountNotFound):
+		return auditErrExternalNotFound
+	case errors.Is(err, ErrExternalAccountLinkRequired):
+		return auditErrExternalLinkRequired
+	case errors.Is(err, ErrExternalLinkRequiresVerification):
+		return auditErrExternalLinkVerify
+	case errors.Is(err, ErrExternalIdentityInUse):
+		return auditErrExternalInUse
+	case errors.Is(err, ErrLastLoginMethod):
+		return auditErrLastLoginMethod
+	case errors.Is(err, ErrPasswordNotSet):
+		return auditErrPasswordNotSet
 	case errors.Is(err, ErrRefreshInvalid),
 		errors.Is(err, ErrPasswordResetInvalid),
 		errors.Is(err, ErrEmailVerificationInvalid),
@@ -2791,7 +2839,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.UpdateTOTPLastUsedCounter = e.userProvider.UpdateTOTPLastUsedCounter
 	}
 	if e != nil && e.passwordHash != nil {
-		deps.VerifyPassword = e.passwordHash.Verify
+		deps.VerifyPassword = e.verifyHash
 		deps.PasswordNeedsUpgrade = e.passwordHash.NeedsUpgrade
 		deps.HashPassword = e.passwordHash.Hash
 	}

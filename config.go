@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/oidc"
 	"github.com/go-webauthn/webauthn/protocol"
 )
 
@@ -37,6 +39,7 @@ type Config struct {
 	Security          SecurityConfig
 	MultiTenant       MultiTenantConfig
 	RoleSwitch        RoleSwitchConfig
+	ExternalAuth      ExternalAuthConfig
 	Database          DatabaseConfig
 	Permission        PermissionConfig
 	Cache             CacheConfig
@@ -543,6 +546,122 @@ type RoleStepUpPolicy struct {
 
 /*
 ====================================
+EXTERNAL AUTH CONFIG
+====================================
+*/
+
+// ExternalAuthConfig controls sign-in with an OpenID Connect ID token the
+// application already obtained from Google, Sign in with Apple or another
+// OIDC provider ([Engine.LoginWithExternalIdentity]). The zero value disables
+// the feature, and a disabled engine behaves exactly as it did before the
+// feature existed: no extra Redis or provider calls on login, refresh,
+// validation or logout, and no new keys.
+//
+// goAuth only verifies a token; it never runs the OAuth2 authorization-code
+// exchange, PKCE, redirects or discovery, and it stores no provider refresh
+// token. Enabling the feature requires the user provider to implement
+// [ExternalIdentityProvider] (checked at [Builder.Build]).
+//
+//	Docs: docs/config.md, docs/external_identity.md
+type ExternalAuthConfig struct {
+	// Enabled turns external sign-in on. Default: false. When false,
+	// LoginWithExternalIdentity and the link methods return
+	// [ErrExternalAuthDisabled].
+	Enabled bool
+
+	// Providers maps the provider name used in the API and in stored
+	// identity links ([a-z0-9_-], 1 to 32 characters) to its settings. At
+	// least one is required when Enabled.
+	Providers map[string]ExternalProviderConfig
+
+	// AutoLinkVerifiedEmail links an external identity to the existing local
+	// account whose identifier equals the provider's verified email, instead
+	// of refusing with [ErrExternalAccountLinkRequired]. Default: false. It
+	// requires EmailVerification.Enabled: without it a local account can
+	// claim an email it never proved, and auto-linking would let an attacker
+	// who pre-registered a victim's address take over the victim's later
+	// sign-in with the provider.
+	AutoLinkVerifiedEmail bool
+
+	// AllowSignup creates a password-less account on the first sign-in of an
+	// identity that matches no account. Default: false. It requires
+	// Account.Enabled; the account gets Account.DefaultRole and is Active,
+	// because the provider verified the email.
+	AllowSignup bool
+
+	// MaxAttempts is how many sign-in attempts one source (client IP, or
+	// provider when the IP is unknown) and one identity may make within
+	// Cooldown before [ErrExternalLoginRateLimited]. Zero selects the default
+	// of 10. Counters reset on a successful sign-in.
+	MaxAttempts int
+
+	// Cooldown is the rate-limit window for MaxAttempts. Zero selects the
+	// default of 15 minutes.
+	Cooldown time.Duration
+
+	// ClockLeeway is the tolerance for exp, iat and nbf. Zero selects the
+	// default of 60 seconds; the maximum is 5 minutes.
+	ClockLeeway time.Duration
+
+	// KeyRefreshMin is the minimum interval between key-set fetches for a
+	// provider, which also bounds refetches triggered by an unknown key id.
+	// It is also the shortest cache lifetime honoured. Zero selects the
+	// default of 5 minutes; the maximum is 24 hours.
+	KeyRefreshMin time.Duration
+
+	// KeyMaxStale is how long after it was fetched the last good key set may
+	// keep verifying tokens while the provider is unreachable. After that no
+	// token is accepted ([ErrExternalProviderUnavailable]). Zero selects the
+	// default of 24 hours; the maximum is 30 days.
+	KeyMaxStale time.Duration
+}
+
+// External provider kinds for [ExternalProviderConfig.Kind].
+const (
+	ExternalKindGoogle = "google"
+	ExternalKindApple  = "apple"
+	ExternalKindOIDC   = "oidc"
+)
+
+// Default issuers and key-set URLs of the built-in provider kinds, from the
+// providers' OpenID Connect discovery documents.
+const (
+	googleExternalIssuer    = "https://accounts.google.com"
+	googleExternalIssuerAlt = "accounts.google.com"
+	googleExternalJWKSURL   = "https://www.googleapis.com/oauth2/v3/certs"
+	appleExternalIssuer     = "https://appleid.apple.com"
+	appleExternalJWKSURL    = "https://appleid.apple.com/auth/keys"
+)
+
+// ExternalProviderConfig configures one external identity provider.
+type ExternalProviderConfig struct {
+	// Kind is "google", "apple" or "oidc" (see the ExternalKind constants).
+	Kind string
+
+	// ClientIDs are the accepted audiences: the web client ID, the iOS and
+	// Android client IDs, or the Apple Services ID and bundle ID. Required.
+	ClientIDs []string
+
+	// Issuer is the expected iss. Defaulted for google (which also accepts
+	// "accounts.google.com") and apple; required for oidc.
+	Issuer string
+
+	// JWKSURL is where the provider publishes its signing keys. It must be
+	// https. Defaulted for google and apple; required for oidc.
+	JWKSURL string
+
+	// AllowedHostedDomains, google only: when set, the token's hd claim must
+	// match one of them.
+	AllowedHostedDomains []string
+
+	// Algorithms, oidc only: the accepted signature algorithms, from RS256,
+	// RS384, RS512, ES256 and ES384. Default: RS256. "none" and HMAC
+	// algorithms are never accepted.
+	Algorithms []string
+}
+
+/*
+====================================
 DATABASE CONFIG
 ====================================
 */
@@ -870,6 +989,21 @@ func cloneConfig(cfg Config) Config {
 	out.WebAuthn.RPOrigins = cloneStrings(cfg.WebAuthn.RPOrigins)
 	out.RoleSwitch.StepUp = cloneStepUp(cfg.RoleSwitch.StepUp)
 	out.SessionProfiles.Profiles = cloneSessionProfiles(cfg.SessionProfiles.Profiles)
+	out.ExternalAuth.Providers = cloneExternalProviders(cfg.ExternalAuth.Providers)
+	return out
+}
+
+func cloneExternalProviders(providers map[string]ExternalProviderConfig) map[string]ExternalProviderConfig {
+	if len(providers) == 0 {
+		return nil
+	}
+	out := make(map[string]ExternalProviderConfig, len(providers))
+	for name, p := range providers {
+		p.ClientIDs = cloneStrings(p.ClientIDs)
+		p.AllowedHostedDomains = cloneStrings(p.AllowedHostedDomains)
+		p.Algorithms = cloneStrings(p.Algorithms)
+		out[name] = p
+	}
 	return out
 }
 
@@ -1447,6 +1581,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.validateExternalAuth(); err != nil {
+		return err
+	}
+
 	// Permission
 	switch c.Permission.MaxBits {
 	case 64, 128, 256, 512:
@@ -1628,6 +1766,183 @@ func (c *Config) lintSessionProfiles(warn func(LintSeverity, string, string)) {
 	}
 	warn(LintInfo, "session_profile_removal_ends_sessions",
 		"Session profiles are resolved from this config at use time: removing or renaming a profile ends every session issued under it at its next refresh or strict read - retire a profile by keeping it until its sessions have drained")
+}
+
+// Bounds of the external-auth durations.
+const (
+	maxExternalClockLeeway   = 5 * time.Minute
+	maxExternalKeyRefreshMin = 24 * time.Hour
+	maxExternalKeyMaxStale   = 30 * 24 * time.Hour
+	minExternalKeyRefreshMin = time.Second
+	externalKeyStaleLintAt   = 72 * time.Hour
+)
+
+// validateExternalAuth checks Config.ExternalAuth. A disabled feature is not
+// inspected at all, so the zero value keeps validating exactly as before.
+func (c *Config) validateExternalAuth() error {
+	e := &c.ExternalAuth
+	if !e.Enabled {
+		return nil
+	}
+	if len(e.Providers) == 0 {
+		return errors.New("ExternalAuth is enabled but no Providers are defined")
+	}
+
+	names := make([]string, 0, len(e.Providers))
+	for name := range e.Providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := validateExternalProvider(name, e.Providers[name]); err != nil {
+			return err
+		}
+	}
+
+	if err := c.validateExternalProvidersDistinct(); err != nil {
+		return err
+	}
+
+	if e.MaxAttempts < 0 {
+		return errors.New("ExternalAuth MaxAttempts must be >= 0 (0 = default)")
+	}
+	if e.Cooldown < 0 {
+		return errors.New("ExternalAuth Cooldown must be >= 0 (0 = default)")
+	}
+	if e.ClockLeeway < 0 || e.ClockLeeway > maxExternalClockLeeway {
+		return errors.New("ExternalAuth ClockLeeway must be between 0 and 5m (0 = default 60s)")
+	}
+	if e.KeyRefreshMin != 0 && (e.KeyRefreshMin < minExternalKeyRefreshMin || e.KeyRefreshMin > maxExternalKeyRefreshMin) {
+		return errors.New("ExternalAuth KeyRefreshMin must be between 1s and 24h (0 = default 5m)")
+	}
+	if e.KeyMaxStale < 0 || e.KeyMaxStale > maxExternalKeyMaxStale {
+		return errors.New("ExternalAuth KeyMaxStale must be between 0 and 30d (0 = default 24h)")
+	}
+	// KeyRefreshMin is also the shortest time a fetched key set is trusted, so
+	// a KeyMaxStale below it (the 5 minute default when unset) could not be
+	// honoured.
+	refreshMin := e.KeyRefreshMin
+	if refreshMin == 0 {
+		refreshMin = oidc.DefaultKeyRefreshMin
+	}
+	if e.KeyMaxStale != 0 && e.KeyMaxStale < refreshMin {
+		return errors.New("ExternalAuth KeyMaxStale must be >= KeyRefreshMin (5m when unset)")
+	}
+
+	if e.AllowSignup && !c.Account.Enabled {
+		return errors.New("ExternalAuth AllowSignup requires Account.Enabled")
+	}
+	if e.AutoLinkVerifiedEmail && !c.EmailVerification.Enabled {
+		return errors.New("ExternalAuth AutoLinkVerifiedEmail requires EmailVerification.Enabled: without it a local account can claim an email it never proved, and auto-linking would enable account pre-hijacking")
+	}
+	return nil
+}
+
+// validateExternalProvidersDistinct refuses two providers that could accept
+// the same token: an overlapping issuer and a shared client ID. The single-use
+// record of a token is kept per provider name, so a token valid under both
+// would be usable once under each.
+func (c *Config) validateExternalProvidersDistinct() error {
+	resolved := c.externalProviderConfigs()
+	for i := range resolved {
+		for j := i + 1; j < len(resolved); j++ {
+			a, b := resolved[i], resolved[j]
+			if sharesString(a.Issuers, b.Issuers) && sharesString(a.ClientIDs, b.ClientIDs) {
+				return errors.New("ExternalAuth providers \"" + a.Name + "\" and \"" + b.Name + "\" accept the same issuer and client ID; a token would verify under both, so list each client ID under one provider")
+			}
+		}
+	}
+	return nil
+}
+
+func sharesString(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func validateExternalProvider(name string, p ExternalProviderConfig) error {
+	label := "ExternalAuth provider \"" + name + "\""
+	if !validSessionProfileName(name) {
+		return errors.New(label + ": the name must be 1 to 32 characters from [a-z0-9_-]")
+	}
+	switch p.Kind {
+	case ExternalKindGoogle, ExternalKindApple, ExternalKindOIDC:
+	default:
+		return errors.New(label + ": Kind must be \"google\", \"apple\" or \"oidc\"")
+	}
+	if len(p.ClientIDs) == 0 {
+		return errors.New(label + ": ClientIDs must not be empty")
+	}
+	for _, id := range p.ClientIDs {
+		if strings.TrimSpace(id) == "" || strings.TrimSpace(id) != id {
+			return errors.New(label + ": ClientIDs must not contain empty or padded values")
+		}
+	}
+
+	if p.Kind == ExternalKindOIDC && p.Issuer == "" {
+		return errors.New(label + ": Issuer is required for kind oidc")
+	}
+	if p.Issuer != "" {
+		u, err := url.Parse(p.Issuer)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New(label + ": Issuer must be an https URL without a query or fragment")
+		}
+	}
+	if p.Kind == ExternalKindOIDC && p.JWKSURL == "" {
+		return errors.New(label + ": JWKSURL is required for kind oidc")
+	}
+	if p.JWKSURL != "" {
+		u, err := url.Parse(p.JWKSURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return errors.New(label + ": JWKSURL must be an https URL")
+		}
+	}
+
+	if len(p.AllowedHostedDomains) > 0 {
+		if p.Kind != ExternalKindGoogle {
+			return errors.New(label + ": AllowedHostedDomains is only valid for kind google")
+		}
+		for _, d := range p.AllowedHostedDomains {
+			if strings.TrimSpace(d) == "" || strings.ContainsAny(d, "@ ") {
+				return errors.New(label + ": AllowedHostedDomains must be bare domain names")
+			}
+		}
+	}
+
+	if len(p.Algorithms) > 0 {
+		if p.Kind != ExternalKindOIDC {
+			return errors.New(label + ": Algorithms is only configurable for kind oidc")
+		}
+		for _, alg := range p.Algorithms {
+			if !oidc.AllowedAlgorithm(alg) {
+				return errors.New(label + ": algorithm \"" + alg + "\" is not allowed (use RS256, RS384, RS512, ES256 or ES384)")
+			}
+		}
+	}
+	return nil
+}
+
+// lintExternalAuth reports advisory findings about external sign-in. It is
+// called only when the feature is enabled.
+func (c *Config) lintExternalAuth(warn func(LintSeverity, string, string)) {
+	if c.ExternalAuth.AllowSignup {
+		warn(LintInfo, "external_signup_passwordless",
+			"ExternalAuth.AllowSignup creates accounts without a password; they can set one through password reset, and cannot use ChangePassword or VerifyPassword until then")
+	}
+	if c.ExternalAuth.AutoLinkVerifiedEmail {
+		warn(LintInfo, "external_autolink_trusts_active_status",
+			"ExternalAuth.AutoLinkVerifiedEmail treats an Active account as one whose email was verified; accounts created before EmailVerification was enabled, imported, or created Active by an admin were never verified - mark them PendingVerification (or leave auto-linking off) so a provider email cannot be linked to an account someone else registered")
+	}
+	if c.ExternalAuth.KeyMaxStale > externalKeyStaleLintAt {
+		warn(LintWarn, "external_key_max_stale_long",
+			"ExternalAuth.KeyMaxStale > 72h keeps verifying tokens with cached provider keys for that long during an outage; a revoked or leaked provider key stays trusted that long - consider 72h or less")
+	}
 }
 
 // LintSeverity classifies the importance of a lint warning.
@@ -1855,6 +2170,10 @@ func (c *Config) Lint() LintResult {
 
 	if len(c.SessionProfiles.Profiles) > 0 {
 		c.lintSessionProfiles(warn)
+	}
+
+	if c.ExternalAuth.Enabled {
+		c.lintExternalAuth(warn)
 	}
 
 	if c.RoleSwitch.Enabled && (c.ValidationMode == ModeJWTOnly || c.ValidationMode == ModeHybrid) {

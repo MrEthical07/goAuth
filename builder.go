@@ -3,6 +3,7 @@ package goAuth
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
@@ -33,6 +34,7 @@ type Builder struct {
 
 	userProvider UserProvider
 	auditSink    AuditSink
+	httpClient   *http.Client
 
 	built bool
 }
@@ -97,6 +99,19 @@ func (b *Builder) WithUserProvider(up UserProvider) *Builder {
 //	Docs: docs/audit.md
 func (b *Builder) WithAuditSink(sink AuditSink) *Builder {
 	b.auditSink = sink
+	return b
+}
+
+// WithHTTPClient sets the HTTP client used to fetch external identity
+// providers' signing keys (see Config.ExternalAuth). When unset, a client with
+// a 5-second timeout is used. Only https key URLs are ever requested, and
+// redirects to anything else are refused whatever the client's own policy.
+// Nothing is fetched at [Builder.Build]; keys are fetched on first use or by
+// [Engine.WarmExternalKeys].
+//
+//	Docs: docs/external_identity.md
+func (b *Builder) WithHTTPClient(client *http.Client) *Builder {
+	b.httpClient = client
 	return b
 }
 
@@ -323,6 +338,23 @@ func (b *Builder) Build() (*Engine, error) {
 		engine.roleSwitchLimiter = limiters.NewRoleSwitchLimiter(b.redis, limiters.RoleSwitchConfig{
 			MaxAttempts: cfg.RoleSwitch.MaxAttempts,
 			Cooldown:    cfg.RoleSwitch.Cooldown,
+			WindowMode:  windowMode,
+		})
+	}
+	if cfg.ExternalAuth.Enabled {
+		provider, ok := b.userProvider.(ExternalIdentityProvider)
+		if !ok {
+			return nil, errors.New("ExternalAuth is enabled but the user provider does not implement ExternalIdentityProvider")
+		}
+		verifier, err := newExternalVerifier(cfg, b.redis, b.httpClient)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ExternalAuth configuration: %w", err)
+		}
+		engine.externalProvider = provider
+		engine.externalVerifier = verifier
+		engine.externalLimiter = limiters.NewExternalLimiter(b.redis, limiters.ExternalConfig{
+			MaxAttempts: cfg.ExternalAuth.MaxAttempts,
+			Cooldown:    cfg.ExternalAuth.Cooldown,
 			WindowMode:  windowMode,
 		})
 	}
