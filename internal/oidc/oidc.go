@@ -138,6 +138,9 @@ func NewVerifier(configs []ProviderConfig, opts Options) (*Verifier, error) {
 	if opts.KeyMaxStale <= 0 {
 		opts.KeyMaxStale = DefaultKeyMaxStale
 	}
+	if opts.KeyMaxStale < opts.KeyRefreshMin {
+		return nil, errors.New("oidc: KeyMaxStale must be at least KeyRefreshMin")
+	}
 	v := &Verifier{
 		providers: make(map[string]*provider, len(configs)),
 		replay:    opts.Replay,

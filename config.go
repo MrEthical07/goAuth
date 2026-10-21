@@ -1799,6 +1799,10 @@ func (c *Config) validateExternalAuth() error {
 		}
 	}
 
+	if err := c.validateExternalProvidersDistinct(); err != nil {
+		return err
+	}
+
 	if e.MaxAttempts < 0 {
 		return errors.New("ExternalAuth MaxAttempts must be >= 0 (0 = default)")
 	}
@@ -1814,8 +1818,15 @@ func (c *Config) validateExternalAuth() error {
 	if e.KeyMaxStale < 0 || e.KeyMaxStale > maxExternalKeyMaxStale {
 		return errors.New("ExternalAuth KeyMaxStale must be between 0 and 30d (0 = default 24h)")
 	}
-	if e.KeyMaxStale != 0 && e.KeyRefreshMin != 0 && e.KeyMaxStale < e.KeyRefreshMin {
-		return errors.New("ExternalAuth KeyMaxStale must be >= KeyRefreshMin")
+	// KeyRefreshMin is also the shortest time a fetched key set is trusted, so
+	// a KeyMaxStale below it (the 5 minute default when unset) could not be
+	// honoured.
+	refreshMin := e.KeyRefreshMin
+	if refreshMin == 0 {
+		refreshMin = oidc.DefaultKeyRefreshMin
+	}
+	if e.KeyMaxStale != 0 && e.KeyMaxStale < refreshMin {
+		return errors.New("ExternalAuth KeyMaxStale must be >= KeyRefreshMin (5m when unset)")
 	}
 
 	if e.AllowSignup && !c.Account.Enabled {
@@ -1825,6 +1836,34 @@ func (c *Config) validateExternalAuth() error {
 		return errors.New("ExternalAuth AutoLinkVerifiedEmail requires EmailVerification.Enabled: without it a local account can claim an email it never proved, and auto-linking would enable account pre-hijacking")
 	}
 	return nil
+}
+
+// validateExternalProvidersDistinct refuses two providers that could accept
+// the same token: an overlapping issuer and a shared client ID. The single-use
+// record of a token is kept per provider name, so a token valid under both
+// would be usable once under each.
+func (c *Config) validateExternalProvidersDistinct() error {
+	resolved := c.externalProviderConfigs()
+	for i := range resolved {
+		for j := i + 1; j < len(resolved); j++ {
+			a, b := resolved[i], resolved[j]
+			if sharesString(a.Issuers, b.Issuers) && sharesString(a.ClientIDs, b.ClientIDs) {
+				return errors.New("ExternalAuth providers \"" + a.Name + "\" and \"" + b.Name + "\" accept the same issuer and client ID; a token would verify under both, so list each client ID under one provider")
+			}
+		}
+	}
+	return nil
+}
+
+func sharesString(a, b []string) bool {
+	for _, x := range a {
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validateExternalProvider(name string, p ExternalProviderConfig) error {
@@ -1895,6 +1934,10 @@ func (c *Config) lintExternalAuth(warn func(LintSeverity, string, string)) {
 	if c.ExternalAuth.AllowSignup {
 		warn(LintInfo, "external_signup_passwordless",
 			"ExternalAuth.AllowSignup creates accounts without a password; they can set one through password reset, and cannot use ChangePassword or VerifyPassword until then")
+	}
+	if c.ExternalAuth.AutoLinkVerifiedEmail {
+		warn(LintInfo, "external_autolink_trusts_active_status",
+			"ExternalAuth.AutoLinkVerifiedEmail treats an Active account as one whose email was verified; accounts created before EmailVerification was enabled, imported, or created Active by an admin were never verified - mark them PendingVerification (or leave auto-linking off) so a provider email cannot be linked to an account someone else registered")
 	}
 	if c.ExternalAuth.KeyMaxStale > externalKeyStaleLintAt {
 		warn(LintWarn, "external_key_max_stale_long",

@@ -460,6 +460,15 @@ func TestNewVerifierValidates(t *testing.T) {
 	if _, err := NewVerifier([]ProviderConfig{good}, Options{Replay: opts.Replay}); err == nil {
 		t.Fatal("NewVerifier accepted a missing http client")
 	}
+	short := opts
+	short.KeyRefreshMin, short.KeyMaxStale = time.Minute, time.Second
+	if _, err := NewVerifier([]ProviderConfig{good}, short); err == nil {
+		t.Fatal("NewVerifier accepted KeyMaxStale below KeyRefreshMin")
+	}
+	short.KeyMaxStale = 0 // the default (24h) is above the minimum
+	if _, err := NewVerifier([]ProviderConfig{good}, short); err != nil {
+		t.Fatalf("NewVerifier with a default KeyMaxStale: %v", err)
+	}
 	if _, err := NewVerifier([]ProviderConfig{good}, opts); err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}

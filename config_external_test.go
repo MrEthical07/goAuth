@@ -95,6 +95,12 @@ func TestConfigValidateExternalAuth(t *testing.T) {
 			c.ExternalAuth.KeyRefreshMin = time.Hour
 			c.ExternalAuth.KeyMaxStale = time.Minute
 		}, "KeyMaxStale"},
+		{"two providers accepting the same token", func(c *Config) {
+			c.ExternalAuth.Providers["google-ios"] = ExternalProviderConfig{Kind: "google", ClientIDs: []string{"web.apps.googleusercontent.com", "ios"}}
+		}, "accept the same issuer and client ID"},
+		{"max stale below the default refresh minimum", func(c *Config) {
+			c.ExternalAuth.KeyMaxStale = time.Second
+		}, "KeyMaxStale must be >= KeyRefreshMin"},
 		{"signup without accounts", func(c *Config) {
 			c.Account.Enabled = false
 			c.ExternalAuth.AllowSignup = true
@@ -141,12 +147,22 @@ func TestConfigValidateExternalAuthAccepts(t *testing.T) {
 		{"several providers", func(c *Config) {
 			c.ExternalAuth.Providers["apple"] = ExternalProviderConfig{Kind: "apple", ClientIDs: []string{"a"}}
 		}},
+		{"providers of one kind with disjoint client IDs", func(c *Config) {
+			c.ExternalAuth.Providers["google-ios"] = ExternalProviderConfig{Kind: "google", ClientIDs: []string{"ios"}}
+		}},
+		{"providers sharing a client ID under different issuers", func(c *Config) {
+			c.ExternalAuth.Providers["apple"] = ExternalProviderConfig{Kind: "apple", ClientIDs: []string{"web.apps.googleusercontent.com"}}
+		}},
 		{"all durations at their bounds", func(c *Config) {
 			c.ExternalAuth.ClockLeeway = 5 * time.Minute
 			c.ExternalAuth.KeyRefreshMin = 24 * time.Hour
 			c.ExternalAuth.KeyMaxStale = 30 * 24 * time.Hour
 			c.ExternalAuth.MaxAttempts = 1
 			c.ExternalAuth.Cooldown = time.Second
+		}},
+		{"max stale equal to an explicit refresh minimum", func(c *Config) {
+			c.ExternalAuth.KeyRefreshMin = time.Second
+			c.ExternalAuth.KeyMaxStale = time.Second
 		}},
 		{"signup with accounts", func(c *Config) {
 			c.Account.Enabled = true
@@ -219,6 +235,16 @@ func TestLintExternalAuth(t *testing.T) {
 	cfg.ExternalAuth.AllowSignup = true
 	if sev, found := lintSeverityOf(cfg, "external_signup_passwordless"); !found || sev != LintInfo {
 		t.Fatalf("external_signup_passwordless = %v, %v; want INFO", sev, found)
+	}
+
+	cfg = externalEnabledConfig()
+	if _, found := lintSeverityOf(cfg, "external_autolink_trusts_active_status"); found {
+		t.Fatal("auto-link warned while off")
+	}
+	cfg.EmailVerification.Enabled = true
+	cfg.ExternalAuth.AutoLinkVerifiedEmail = true
+	if sev, found := lintSeverityOf(cfg, "external_autolink_trusts_active_status"); !found || sev != LintInfo {
+		t.Fatalf("external_autolink_trusts_active_status = %v, %v; want INFO", sev, found)
 	}
 
 	cfg = externalEnabledConfig()
