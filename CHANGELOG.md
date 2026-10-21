@@ -375,9 +375,35 @@ v0.8.0 is a valid semantic version for this release.
 - Applications must handle what goAuth cannot: Apple token revocation on account
   deletion and Apple server-to-server notifications (see the checklist in
   `docs/external_identity.md`), and a step-up before link and unlink.
-- Parts 1 and 2 of 3: the change-email, atomic `DeleteAllForUser`, opt-in
-  fail-closed limiter and role-switch MFA-proof cleanup work are the third pull
-  request. The release tag follows it.
+- Parts 1 and 2 of 3. Part 3 (change-email, atomic `DeleteAllForUser`, opt-in
+  fail-closed limiters, role-switch MFA-proof cleanup) follows below. The release
+  tag follows it.
+
+### Part 3 of 3: change-email, atomic logout-all and hardening
+
+#### Changed
+
+- **`session.Store.DeleteAllForUser` is atomic.** It was several round trips
+  (read the user's session set, read the tenant counter, check which sessions
+  exist, then delete): a session created in between survived "logout everywhere"
+  and the counter could drift. It is now one Lua script that deletes every
+  session of the user that exists (and its `asa:` MFA-proof key), lowers the
+  tenant counter by the number it actually deleted (never below zero, key removed
+  at zero) and clears the user's session set. The exported signature is
+  unchanged, `Engine.LogoutAll`, `LogoutAllInTenant`, `ChangePassword`, password
+  reset and the account-status methods all use it, and
+  `session.Store.DeleteAllForUserExcept` is new for callers that must keep one
+  session. Like the existing rotation and swap scripts it touches keys in more
+  than one hash slot (single-node or non-sharded Redis). The only change to the
+  unchanged-when-unused baselines is their "logout all" block: the old
+  SMEMBERS/GET/EXISTS/MULTI/DEL sequence is now one script call.
+
+#### Fixed
+
+- `TestSessionProfilesUnusedMatchesV070` flaked about once in 55 runs: its
+  argument printer read a random 32-byte refresh hash that started with the byte 2
+  as an MFA challenge record. A test-only change; 36 of 2000 runs failed before
+  it and none after.
 
 ---
 

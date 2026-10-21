@@ -15,7 +15,8 @@ The `session` package provides Redis-backed session persistence and compact bina
 | `Get` | `(ctx, tenantID, sessionID string, ttl) (*Session, error)` | Read + optional sliding expiry extension |
 | `GetReadOnly` | `(ctx, tenantID, sessionID string) (*Session, error)` | Read without extending TTL |
 | `Delete` | `(ctx, tenantID, sessionID string) error` | Idempotent session deletion |
-| `DeleteAllForUser` | `(ctx, tenantID, userID string) error` | Remove all sessions for a user |
+| `DeleteAllForUser` | `(ctx, tenantID, userID string) error` | Remove all sessions for a user (and their MFA-proof keys) in one atomic Lua script |
+| `DeleteAllForUserExcept` | `(ctx, tenantID, userID, keepSessionID string) (int, error)` | `DeleteAllForUser` that leaves one session stored, indexed and counted; reports how many it removed |
 | `RotateRefreshHash` | `(ctx, tenantID, sessionID string, old, new [32]byte) (*Session, error)` | Atomic Lua rotation |
 | `SwapSession` | `(ctx, tenantID, oldSessionID string, presented [32]byte, next *Session, assurance *Assurance) error` | Atomic Lua swap of one session for another (role switch); same checks and failure side effects as rotation |
 | `WithProfiles` | `(profiles map[string]ProfilePolicy) *Store` | Install the session profile table (call before the store is shared); the engine does this at Build |
@@ -329,7 +330,7 @@ rotated, err := store.RotateRefreshHash(ctx, "tenant-0", "sid-abc", oldHash, new
 
 ## Edge Cases & Gotchas
 
-- **`DeleteAllForUser` is not fully atomic.** It reads the user's session set, checks existence via pipeline, then deletes via `TxPipelined`. A session created between the read and delete phases will not be captured. The race window is extremely narrow and the stray session will expire naturally or be caught by a subsequent call. For stronger guarantees, call `DeleteAllForUser` twice or follow up with a counter reconciliation.
+- **`DeleteAllForUser` is atomic** (since v0.8.0). One Lua script reads the user's session set, deletes every session key that exists together with its `asa:` MFA-proof key, lowers the tenant counter by the number it actually deleted (never below zero; the counter key is removed at zero) and clears the set. A session saved before the script runs is deleted, one saved after it is untouched, and the counter always equals the sessions left. Earlier versions did this in several round trips, so a session created in between could survive and the counter could drift. Like the rotation and swap scripts it builds session keys from the IDs in the set, so it needs a single-node or non-sharded deployment.
 - First Lua call may use 2 commands (EVALSHA miss + EVAL fallback); subsequent calls are 1.
 - `Delete` is idempotent — deleting a non-existent session succeeds silently.
 - Counter can never go negative (Lua script clamps at 0).

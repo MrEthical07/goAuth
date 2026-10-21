@@ -28,7 +28,6 @@ Planned improvements and future work for goAuth, organized by category and prior
 
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
-| `DeleteAllForUser` atomicity improvement | P1 | maintainer | planned | Perf/Correctness: single Lua script for atomic session wipe |
 | Fuzz corpus caching in CI | P2 | maintainer | planned | Perf: faster fuzz runs, better coverage over time |
 | Connection pool auto-tuning guidance | P2 | maintainer | planned | Perf: documentation for Redis pool sizing under load |
 
@@ -90,6 +89,7 @@ Items previously on the roadmap that have been resolved:
 |------|----------|-------------|--------|
 | SSO phase 1: OIDC ID-token sign-in (Google, Apple, generic OIDC) with tenant-scoped identity linking | P1 | v0.8.0 | API |
 | Per-client session profiles | P1 | v0.8.0 | API |
+| `DeleteAllForUser` atomicity: one Lua script for the session wipe, with MFA-proof key cleanup on every session-deleting path | P1 | v0.8.0 | Correctness |
 | Remember-me logins + configurable absolute session ceiling (`MaxSessionDuration`) | P1 | v0.4.0 | Security/API |
 | Hybrid mode aligned with per-route selection design (`RequireHybrid`, explicit-override fix) | P1 | v0.4.0 | Correctness |
 | Graceful logout with expired access tokens | P2 | v0.4.0 | Correctness/DX |
