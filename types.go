@@ -383,6 +383,60 @@ type ExternalIdentityProvider interface {
 	ListExternalIdentities(ctx context.Context, tenantID, userID string) ([]ExternalIdentity, error)
 }
 
+// EmailChangeProvider is the optional user-provider capability that
+// [Config.EmailChange] needs, detected by type assertion at [Builder.Build].
+// Every method is tenant-scoped.
+//
+//	Docs: docs/email_change.md
+type EmailChangeProvider interface {
+	// UpdateIdentifier sets the user's identifier to newIdentifier only if it
+	// is currently oldIdentifier (compare-and-set), atomically, and bumps the
+	// account's AccountVersion in the same step. It must return
+	// [ErrProviderDuplicateIdentifier] when newIdentifier is taken in the
+	// tenant, [ErrEmailChangeStale] when the current identifier is not
+	// oldIdentifier, and [ErrUserNotFound] when the user does not exist in the
+	// tenant. It does not touch external identity links, which are keyed by
+	// (provider, subject) and not by email.
+	UpdateIdentifier(ctx context.Context, tenantID, userID, oldIdentifier, newIdentifier string) error
+}
+
+// EmailChangeRequest is what [Engine.RequestEmailChange] returns. The
+// application sends Code to the NEW address and keeps VerificationID for the
+// confirm step (it may also hand it to the browser). VerificationID is safe to
+// log; Code is a secret and must not be.
+//
+//	Docs: docs/email_change.md
+type EmailChangeRequest struct {
+	VerificationID string
+	Code           string
+}
+
+// ConfirmEmailChangeOptions carries the optional inputs of
+// [Engine.ConfirmEmailChange].
+//
+//	Docs: docs/email_change.md
+type ConfirmEmailChangeOptions struct {
+	// KeepSessionID is the caller's current session, when it confirms while
+	// signed in. Unless Config.EmailChange.KeepOtherSessions is set, every
+	// other session of the user is revoked and this one is kept. It is ignored
+	// (and everything is revoked) unless it belongs to the same user and
+	// tenant.
+	KeepSessionID string
+}
+
+// EmailChangeResult is the outcome of a confirmed email change.
+//
+//	Docs: docs/email_change.md
+type EmailChangeResult struct {
+	UserID string
+	// OldEmail is the address that was replaced. The application SHOULD notify
+	// it: it is the only way the previous owner learns the account moved.
+	OldEmail string
+	NewEmail string
+	// SessionsRevoked reports whether the user's other sessions were revoked.
+	SessionsRevoked bool
+}
+
 // ExternalLoginOptions carries the per-sign-in inputs of
 // [Engine.LoginWithExternalIdentity].
 //

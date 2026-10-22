@@ -108,6 +108,12 @@ type LoginErrors struct {
 	// incompatible ways. They are only used while profiles are configured.
 	UnknownSessionProfile  error
 	SessionProfileConflict error
+
+	// SystemUnavailable is what the login limiter hooks return when the
+	// limiter backend is down and Security.LimiterFailClosed is on. Any other
+	// error from a hook means "rate limited". Nil keeps that meaning for every
+	// error.
+	SystemUnavailable error
 }
 
 // LoginDeps captures login+mfa dependencies.
@@ -306,6 +312,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 
 	if deps.CheckLoginRate != nil {
 		if err := deps.CheckLoginRate(ctx, username); err != nil {
+			if isLoginLimiterOutage(err, deps) {
+				return nil, deps.Errors.SystemUnavailable
+			}
 			deps.MetricInc(deps.Metrics.LoginRateLimited)
 			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 				return map[string]string{
@@ -330,6 +339,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		}
 		if deps.IncrementLoginRate != nil {
 			if err := deps.IncrementLoginRate(ctx, username); err != nil {
+				if isLoginLimiterOutage(err, deps) {
+					return nil, deps.Errors.SystemUnavailable
+				}
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -374,6 +386,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		}
 		if deps.IncrementLoginRate != nil {
 			if err := deps.IncrementLoginRate(ctx, username); err != nil {
+				if isLoginLimiterOutage(err, deps) {
+					return nil, deps.Errors.SystemUnavailable
+				}
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -435,6 +450,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 
 		if deps.IncrementLoginRate != nil {
 			if err := deps.IncrementLoginRate(ctx, username); err != nil {
+				if isLoginLimiterOutage(err, deps) {
+					return nil, deps.Errors.SystemUnavailable
+				}
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -1037,6 +1055,9 @@ func RunIssueLoginSessionTokens(
 	if !ok {
 		if deps.IncrementLoginRate != nil {
 			if err := deps.IncrementLoginRate(ctx, username); err != nil {
+				if isLoginLimiterOutage(err, deps) {
+					return "", "", deps.Errors.SystemUnavailable
+				}
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
@@ -1192,4 +1213,11 @@ func RunIssueLoginSessionTokens(
 	})
 
 	return access, refresh, nil
+}
+
+// isLoginLimiterOutage reports whether a login limiter hook failed because the
+// limiter backend is down and the engine is configured to fail closed, as
+// opposed to the user being rate limited.
+func isLoginLimiterOutage(err error, deps LoginDeps) bool {
+	return deps.Errors.SystemUnavailable != nil && errors.Is(err, deps.Errors.SystemUnavailable)
 }

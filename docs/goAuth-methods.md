@@ -128,6 +128,16 @@ See [external_identity.md](external_identity.md). All return `ErrExternalAuthDis
 | `ListExternalIdentities` | `engine.ListExternalIdentities(ctx, userID)` | `ctx`, `userID string` | `([]ExternalIdentity, error)` |
 | `WarmExternalKeys` | `engine.WarmExternalKeys(ctx)` | `ctx` | `error`; optional startup fetch of provider keys (`ErrExternalProviderUnavailable` on failure) |
 
+### 5.2b Email Change (opt-in: `Config.EmailChange`)
+
+See [email_change.md](email_change.md). All return `ErrEmailChangeDisabled` unless `EmailChange.Enabled`.
+
+| Method | Invocation | Parameters | Returns / Purpose |
+|---|---|---|---|
+| `RequestEmailChange` | `engine.RequestEmailChange(ctx, userID, newEmail)` | `ctx`, `userID string` (from the session), `newEmail string` | `(*EmailChangeRequest, error)`; the app sends `Code` to the NEW address; the account must be Active; does not reveal whether the address is taken |
+| `ConfirmEmailChange` | `engine.ConfirmEmailChange(ctx, verificationID, code, opts)` | `ctx`, `verificationID`, `code string`, `opts ConfirmEmailChangeOptions` (`KeepSessionID`) | `(*EmailChangeResult, error)`; installs the address (`ErrEmailInUse`, `ErrEmailChangeStale`), revokes other sessions unless `KeepOtherSessions`; notify `OldEmail` |
+| `CancelEmailChange` | `engine.CancelEmailChange(ctx, userID)` | `ctx`, `userID string` | `error`; deletes the pending challenge; idempotent |
+
 ### 5.3 Token Validation and Permissions
 
 | Method | Invocation | Parameters | Returns / Purpose |

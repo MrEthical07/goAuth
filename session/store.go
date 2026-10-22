@@ -38,9 +38,14 @@ const (
 	rotateStatusInvalidBlob int64 = 4
 )
 
+// deleteSessionScript ends one session: key, user-index entry, counter and
+// the session's role-switch MFA-proof key ("asa:<tenant>:<id>"). The proof key
+// is not passed in: its tenant is the middle of the counter key
+// ("ast:<tenant>:count"), so the script's keys and arguments stay as they were.
 const deleteSessionScript = `
 local existed = redis.call("EXISTS", KEYS[1])
 redis.call("SREM", KEYS[2], ARGV[1])
+redis.call("DEL", "asa:" .. string.sub(KEYS[3], 5, -7) .. ":" .. ARGV[1])
 if existed == 1 then
   redis.call("DEL", KEYS[1])
   local count = tonumber(redis.call("GET", KEYS[3]) or "0")
@@ -54,6 +59,53 @@ return existed
 `
 
 var deleteSessionLua = redis.NewScript(deleteSessionScript)
+
+// deleteAllForUserScript ends every session of one user in one atomic step.
+//
+// KEYS: the user's session set, the tenant counter.
+// ARGV: the session key prefix ("<prefix>:<tenant>:"), the MFA-proof key prefix
+// ("asa:<tenant>:") and the ID of one session to keep ("" keeps none).
+//
+// It reads the set, deletes every session key that still exists together with
+// its proof key, lowers the counter by the number of keys it actually deleted
+// (never below zero; the counter key is removed at zero) and clears the set. A
+// kept session stays in the set and in the count. It returns the number of
+// sessions deleted. Because a script runs without interleaving, a session saved
+// before it started is deleted and one saved after it finished is untouched,
+// and the counter always equals the sessions left.
+//
+// The session and proof keys are built here from the IDs in the set, so, like
+// the rotation and swap scripts, it touches keys in more than one hash slot.
+const deleteAllForUserScript = `
+local keep = ARGV[3]
+local members = redis.call("SMEMBERS", KEYS[1])
+local deleted = 0
+for _, sid in ipairs(members) do
+  if sid ~= keep then
+    if redis.call("DEL", ARGV[1] .. sid) == 1 then
+      deleted = deleted + 1
+    end
+    redis.call("DEL", ARGV[2] .. sid)
+    if keep ~= "" then
+      redis.call("SREM", KEYS[1], sid)
+    end
+  end
+end
+if keep == "" then
+  redis.call("DEL", KEYS[1])
+end
+if deleted > 0 then
+  local count = tonumber(redis.call("GET", KEYS[2]) or "0")
+  if count <= deleted then
+    redis.call("DEL", KEYS[2])
+  else
+    redis.call("DECRBY", KEYS[2], deleted)
+  end
+end
+return deleted
+`
+
+var deleteAllForUserLua = redis.NewScript(deleteAllForUserScript)
 
 const rotateRefreshScript = `
 local function read_be64(s, i)
@@ -207,6 +259,13 @@ local function decrement_count(count_key)
   end
 end
 
+-- A session that ends takes its role-switch MFA-proof key with it. The key
+-- ("asa:<tenant>:<id>") is derived from the counter key ("ast:<tenant>:count")
+-- so the script's keys and arguments are unchanged.
+local function drop_assurance(count_key, session_id)
+  redis.call("DEL", "asa:" .. string.sub(count_key, 5, -7) .. ":" .. session_id)
+end
+
 local session_key = KEYS[1]
 local count_key = KEYS[2]
 local session_id = ARGV[1]
@@ -239,6 +298,7 @@ if parsed.expires_at <= now_unix then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  drop_assurance(count_key, session_id)
   return {1}
 end
 
@@ -248,6 +308,7 @@ if not parsed.refresh_hash or parsed.refresh_hash ~= provided_hash then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  drop_assurance(count_key, session_id)
   return {2}
 end
 
@@ -258,6 +319,7 @@ if ttl <= 0 then
   if deleted == 1 then
     decrement_count(count_key)
   end
+  drop_assurance(count_key, session_id)
   return {1}
 end
 
@@ -279,6 +341,7 @@ if parsed.profile then
     if deleted == 1 then
       decrement_count(count_key)
     end
+    drop_assurance(count_key, session_id)
     return {1, "profile_unknown", parsed.profile}
   end
 
@@ -298,6 +361,7 @@ if parsed.profile then
     if deleted == 1 then
       decrement_count(count_key)
     end
+    drop_assurance(count_key, session_id)
     return {1}
   end
 
@@ -501,83 +565,45 @@ func (s *Store) Delete(ctx context.Context, tenantID, sessionID string) error {
 	return s.deleteSessionAndIndex(ctx, sess.TenantID, sess.UserID, sessionID)
 }
 
-// DeleteAllForUser removes all sessions for a user within a tenant.
+// DeleteAllForUser removes all sessions for a user within a tenant, together
+// with their role-switch MFA-proof keys, and lowers the tenant session counter
+// by the number of sessions removed.
 //
-// ATOMICITY NOTE: This operation is NOT fully atomic. It reads the user's
-// session set (SMembers), checks which sessions still exist (pipeline EXISTS),
-// then deletes them (TxPipelined DEL). A session created between the read
-// and delete phases will not be captured by this call. In practice this race
-// is extremely narrow and only affects logout-all semantics — the stray
-// session will expire naturally or be caught by the next DeleteAllForUser call.
-// Callers requiring stronger guarantees can follow up with a counter
-// reconciliation or a second DeleteAllForUser invocation.
+// The whole operation is one Lua script, so it is atomic: a session created
+// before the call starts is removed, one created after it returns is not, and
+// the counter never drifts from the sessions that actually exist.
 //
-// DeleteAllForUser may return an error when input validation, dependency calls, or security checks fail.
-// DeleteAllForUser does not mutate shared global state and can be used concurrently when the receiver and dependencies are concurrently safe.
+//	Performance: 1 Lua EVALSHA, O(sessions of the user).
+//	Docs: docs/session.md
 func (s *Store) DeleteAllForUser(ctx context.Context, tenantID, userID string) error {
-	userKey := s.userKey(tenantID, userID)
-	countKey := s.tenantCountKey(tenantID)
+	_, err := s.deleteAllForUser(ctx, tenantID, userID, "")
+	return err
+}
 
-	sessionIDs, err := s.redis.SMembers(ctx, userKey).Result()
+// DeleteAllForUserExcept is [Store.DeleteAllForUser] that leaves one session
+// alone: keepSessionID stays stored, stays in the user's session set and stays
+// counted. An empty keepSessionID, or one that is not the user's, removes
+// everything. It reports how many sessions it removed.
+//
+//	Performance: 1 Lua EVALSHA, O(sessions of the user).
+//	Docs: docs/session.md
+func (s *Store) DeleteAllForUserExcept(ctx context.Context, tenantID, userID, keepSessionID string) (int, error) {
+	return s.deleteAllForUser(ctx, tenantID, userID, keepSessionID)
+}
+
+func (s *Store) deleteAllForUser(ctx context.Context, tenantID, userID, keepSessionID string) (int, error) {
+	res, err := deleteAllForUserLua.Run(
+		ctx,
+		s.redis,
+		[]string{s.userKey(tenantID, userID), s.tenantCountKey(tenantID)},
+		s.key(tenantID, ""),
+		s.assuranceKey(tenantID, ""),
+		keepSessionID,
+	).Int()
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil
-		}
-		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+		return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
-
-	sessionKeys := make([]string, 0, len(sessionIDs))
-	for _, sessionID := range sessionIDs {
-		sessionKeys = append(sessionKeys, s.key(tenantID, sessionID))
-	}
-
-	currentCount, err := s.TenantSessionCount(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-
-	var existing int
-	if len(sessionKeys) > 0 {
-		pipe := s.redis.Pipeline()
-		existsCmds := make([]*redis.IntCmd, len(sessionKeys))
-		for i, sessionKey := range sessionKeys {
-			existsCmds[i] = pipe.Exists(ctx, sessionKey)
-		}
-		if _, err := pipe.Exec(ctx); err != nil {
-			return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-		}
-		for _, cmd := range existsCmds {
-			v, cmdErr := cmd.Result()
-			if cmdErr != nil {
-				return fmt.Errorf("%w: %v", ErrRedisUnavailable, cmdErr)
-			}
-			existing += int(v)
-		}
-	}
-
-	decrement := existing
-	if decrement > currentCount {
-		decrement = currentCount
-	}
-
-	_, err = s.redis.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		if len(sessionKeys) > 0 {
-			pipe.Del(ctx, sessionKeys...)
-		}
-		pipe.Del(ctx, userKey)
-		if decrement > 0 {
-			pipe.DecrBy(ctx, countKey, int64(decrement))
-		}
-		if decrement == currentCount && currentCount > 0 {
-			pipe.Del(ctx, countKey)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-	}
-
-	return nil
+	return res, nil
 }
 
 // TenantSessionCount returns the tracked tenant-wide session counter.

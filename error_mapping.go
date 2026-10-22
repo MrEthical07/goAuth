@@ -97,6 +97,11 @@ var publicAuthSentinels = []*AuthError{
 	ErrLastLoginMethod,
 	ErrPasswordNotSet,
 	ErrExternalLoginRateLimited,
+	ErrEmailChangeDisabled,
+	ErrEmailChangeInvalid,
+	ErrEmailChangeStale,
+	ErrEmailInUse,
+	ErrEmailChangeRateLimited,
 	ErrPermissionDenied,
 	ErrEngineNotReady,
 	ErrProviderDuplicateIdentifier,
@@ -152,6 +157,10 @@ func mapToAuthError(err error) *AuthError {
 	case errors.Is(err, limiters.ErrExternalRateLimited):
 		return WrapAuthError(ErrExternalLoginRateLimited, err)
 	case errors.Is(err, limiters.ErrExternalUnavailable):
+		return WrapAuthError(ErrSystemUnavailable, err)
+	case errors.Is(err, limiters.ErrEmailChangeRateLimited):
+		return WrapAuthError(ErrEmailChangeRateLimited, err)
+	case errors.Is(err, limiters.ErrEmailChangeUnavailable), errors.Is(err, stores.ErrEmailChangeUnavailable):
 		return WrapAuthError(ErrSystemUnavailable, err)
 	case errors.Is(err, oidc.ErrInvalid):
 		return WrapAuthError(ErrExternalTokenInvalid, err)

@@ -69,6 +69,9 @@ type Engine struct {
 	externalProvider      ExternalIdentityProvider
 	externalVerifier      *oidc.Verifier
 	externalLimiter       *limiters.ExternalLimiter
+	emailChangeProvider   EmailChangeProvider
+	emailChangeStore      *stores.EmailChangeStore
+	emailChangeLimiter    *limiters.EmailChangeLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
 }
@@ -773,8 +776,24 @@ func (e *Engine) reservePasswordVerifyAttempt(ctx context.Context, tenantID, use
 	if err == nil || errors.Is(err, limiters.ErrPasswordVerifyRateLimited) {
 		return err
 	}
-	e.emitLimiterFailOpen(ctx, "password_verify", tenantID, err)
-	return nil
+	return e.limiterOutage(ctx, "password_verify", tenantID, err)
+}
+
+// passwordVerifyRefused records the failure audit for a refused
+// password-verification reservation and returns its cause: a system
+// error when the limiter backend was down and Security.LimiterFailClosed is on,
+// otherwise the rate-limit denial.
+func (e *Engine) passwordVerifyRefused(ctx context.Context, event string, userID, tenantID string, reserveErr error) error {
+	cause, reason := ErrPasswordVerifyRateLimited, "rate_limited"
+	if errors.Is(reserveErr, ErrSystemUnavailable) {
+		cause, reason = ErrSystemUnavailable, "limiter_unavailable"
+	}
+	e.emitAudit(ctx, event, false, userID, tenantID, "", cause, func() map[string]string {
+		return map[string]string{
+			"reason": reason,
+		}
+	})
+	return cause
 }
 
 func (e *Engine) resetPasswordVerifyLimiter(ctx context.Context, tenantID, userID string) {
@@ -782,7 +801,7 @@ func (e *Engine) resetPasswordVerifyLimiter(ctx context.Context, tenantID, userI
 		return
 	}
 	if err := e.passwordVerifyLimiter.Reset(ctx, tenantID, userID); err != nil {
-		e.emitLimiterFailOpen(ctx, "password_verify", tenantID, err)
+		e.limiterCleanupFailed(ctx, "password_verify", tenantID, err)
 	}
 }
 
@@ -820,12 +839,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 	// guess the account password) -- including a burst of concurrent
 	// callers -- costs no CPU and no extra Redis round trip per attempt.
 	if err := e.reservePasswordVerifyAttempt(ctx, limiterTenant, userID); err != nil {
-		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, limiterTenant, "", ErrPasswordVerifyRateLimited, func() map[string]string {
-			return map[string]string{
-				"reason": "rate_limited",
-			}
-		})
-		return mapToAuthError(ErrPasswordVerifyRateLimited)
+		return mapToAuthError(e.passwordVerifyRefused(ctx, auditEventPasswordChangeFailure, userID, limiterTenant, err))
 	}
 
 	user, err := e.lookupUserByID(ctx, userID)
@@ -951,12 +965,7 @@ func (e *Engine) VerifyPassword(ctx context.Context, userID, password string) er
 
 	limiterTenant := tenantIDFromContext(ctx)
 	if err := e.reservePasswordVerifyAttempt(ctx, limiterTenant, userID); err != nil {
-		e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, limiterTenant, "", ErrPasswordVerifyRateLimited, func() map[string]string {
-			return map[string]string{
-				"reason": "rate_limited",
-			}
-		})
-		return mapToAuthError(ErrPasswordVerifyRateLimited)
+		return mapToAuthError(e.passwordVerifyRefused(ctx, auditEventPasswordVerifyFailure, userID, limiterTenant, err))
 	}
 
 	user, err := e.lookupUserByID(ctx, userID)
@@ -1325,8 +1334,7 @@ func (e *Engine) configureAccountLimiterDeps(deps *internalflows.AccountDeps, cf
 		if err == nil || errors.Is(err, limiters.ErrAccountRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "account_creation", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "account_creation", tenantID, err)
 	}
 }
 
@@ -1751,18 +1759,59 @@ func (e *Engine) emitRateLimit(
 	})
 }
 
+// emitLimiterFailOpen records a limiter backend failure that did not stop the
+// request. Call sites do not use it directly: [Engine.limiterOutage] decides
+// what an outage means, and [Engine.limiterCleanupFailed] covers the resets
+// that follow a success.
 func (e *Engine) emitLimiterFailOpen(ctx context.Context, scope, tenantID string, limiterErr error) {
+	e.emitLimiterEvent(ctx, scope, tenantID, limiterErr, false)
+}
+
+func (e *Engine) emitLimiterEvent(ctx context.Context, scope, tenantID string, limiterErr error, closed bool) {
 	e.metricInc(MetricLimiterFailOpen)
 	e.emitAudit(ctx, auditEventLimiterFailOpen, true, "", tenantID, "", nil, func() map[string]string {
 		meta := map[string]string{
 			"scope":  scope,
 			"policy": "fail_open",
 		}
+		if closed {
+			meta["policy"] = "fail_closed"
+			meta["fail_closed"] = "true"
+		}
 		if limiterErr != nil {
 			meta["reason"] = limiterErr.Error()
 		}
 		return meta
 	})
+}
+
+// limiterOutage is the one place that decides what a limiter backend error
+// (one that is not a rate-limit denial) means for the request that hit it.
+// Every call site that gates a request on a limiter returns its result.
+//
+// By default it fails open: the outage is recorded and nil is returned, so the
+// caller proceeds. With Security.LimiterFailClosed it records the same event
+// (with fail_closed=true) and returns a system error, so the caller refuses
+// the request instead of letting it through unthrottled. The error is
+// [ErrSystemUnavailable]; the flows that map any non-denial limiter error to
+// their own "unavailable" sentinel (account creation, email verification,
+// password reset, TOTP, backup codes) report that domain's system error, which
+// is the same category (503).
+func (e *Engine) limiterOutage(ctx context.Context, scope, tenantID string, limiterErr error) error {
+	if e == nil || !e.config.Security.LimiterFailClosed {
+		e.emitLimiterFailOpen(ctx, scope, tenantID, limiterErr)
+		return nil
+	}
+	e.emitLimiterEvent(ctx, scope, tenantID, limiterErr, true)
+	return WrapAuthError(ErrSystemUnavailable, limiterErr)
+}
+
+// limiterCleanupFailed records a failed limiter reset. A reset runs after the
+// request already succeeded and only ever removes counts, so a failure leaves
+// a stricter limiter behind and can neither weaken a check nor justify undoing
+// the success; it never blocks, whatever LimiterFailClosed says.
+func (e *Engine) limiterCleanupFailed(ctx context.Context, scope, tenantID string, limiterErr error) {
+	e.emitLimiterFailOpen(ctx, scope, tenantID, limiterErr)
 }
 
 func auditErrorCode(err error) AuditErrorCode {
@@ -1784,6 +1833,16 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrRateLimited
 	case errors.Is(err, ErrRefreshReuse):
 		return auditErrRefreshReuse
+	case errors.Is(err, ErrEmailChangeDisabled):
+		return auditErrEmailChangeDisabled
+	case errors.Is(err, ErrEmailChangeInvalid):
+		return auditErrEmailChangeInvalid
+	case errors.Is(err, ErrEmailChangeStale):
+		return auditErrEmailChangeStale
+	case errors.Is(err, ErrEmailInUse):
+		return auditErrEmailInUse
+	case errors.Is(err, ErrEmailChangeRateLimited):
+		return auditErrEmailChangeRateLimited
 	case errors.Is(err, ErrRoleSwitchDisabled):
 		return auditErrRoleSwitchDisabled
 	case errors.Is(err, ErrRoleNotAllowed):
@@ -2036,8 +2095,7 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
 				return err
 			}
-			e.emitLimiterFailOpen(ctx, "backup_code", tenantID, err)
-			return nil
+			return e.limiterOutage(ctx, "backup_code", tenantID, err)
 		}
 		deps.RecordLimiterFailure = func(ctx context.Context, tenantID, userID string) error {
 			e.metricInc(MetricLimiterCheck)
@@ -2048,12 +2106,11 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
 				return err
 			}
-			e.emitLimiterFailOpen(ctx, "backup_code", tenantID, err)
-			return nil
+			return e.limiterOutage(ctx, "backup_code", tenantID, err)
 		}
 		deps.ResetLimiter = func(ctx context.Context, tenantID, userID string) error {
 			if err := e.backupLimiter.Reset(ctx, tenantID, userID); err != nil {
-				e.emitLimiterFailOpen(ctx, "backup_code", tenantID, err)
+				e.limiterCleanupFailed(ctx, "backup_code", tenantID, err)
 			}
 			return nil
 		}
@@ -2281,8 +2338,7 @@ func (e *Engine) configureEmailVerificationLimiterDeps(deps *internalflows.Email
 		if err == nil || errors.Is(err, limiters.ErrVerificationRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "email_verification_request", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "email_verification_request", tenantID, err)
 	}
 	deps.CheckConfirmLimiter = func(ctx context.Context, tenantID, verificationID string) error {
 		if !cfg.EmailVerification.EnableConfirmFailureLimiter {
@@ -2293,8 +2349,7 @@ func (e *Engine) configureEmailVerificationLimiterDeps(deps *internalflows.Email
 		if err == nil || errors.Is(err, limiters.ErrVerificationRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "email_verification_confirm", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "email_verification_confirm", tenantID, err)
 	}
 }
 
@@ -2341,19 +2396,53 @@ func (e *Engine) configureEmailVerificationStoreDeps(deps *internalflows.EmailVe
 			Strategy:   record.Strategy,
 		}, ttl)
 	}
-	deps.ConsumeVerificationRecord = func(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
-		record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
-		if err != nil {
-			return internalflows.EmailVerificationStoreRecord{}, err
-		}
-		return internalflows.EmailVerificationStoreRecord{
-			UserID:     record.UserID,
-			SecretHash: record.SecretHash,
-			ExpiresAt:  record.ExpiresAt,
-			Attempts:   record.Attempts,
-			Strategy:   record.Strategy,
-		}, nil
+	deps.ConsumeVerificationRecord = e.consumeVerificationRecord
+}
+
+// consumeResetRecord consumes a password-reset challenge and refuses one issued
+// before the user's last email change: it was mailed to the old address. The
+// marker is read only while EmailChange is enabled.
+func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.PasswordResetStoreRecord, error) {
+	record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
+	if err != nil {
+		return internalflows.PasswordResetStoreRecord{}, err
 	}
+	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
+	if markerErr != nil {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
+	}
+	if stale {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
+	}
+	return internalflows.PasswordResetStoreRecord{
+		UserID:     record.UserID,
+		SecretHash: record.SecretHash,
+		ExpiresAt:  record.ExpiresAt,
+		Attempts:   record.Attempts,
+		Strategy:   record.Strategy,
+	}, nil
+}
+
+// consumeVerificationRecord is consumeResetRecord for email verification.
+func (e *Engine) consumeVerificationRecord(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
+	record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
+	if err != nil {
+		return internalflows.EmailVerificationStoreRecord{}, err
+	}
+	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.EmailVerification.VerificationTTL)
+	if markerErr != nil {
+		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationRedisUnavailable
+	}
+	if stale {
+		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationNotFound
+	}
+	return internalflows.EmailVerificationStoreRecord{
+		UserID:     record.UserID,
+		SecretHash: record.SecretHash,
+		ExpiresAt:  record.ExpiresAt,
+		Attempts:   record.Attempts,
+		Strategy:   record.Strategy,
+	}, nil
 }
 
 func generateEmailVerificationChallenge(
@@ -2765,6 +2854,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			EngineNotReady:           ErrEngineNotReady,
 			InvalidCredentials:       ErrInvalidCredentials,
 			LoginRateLimited:         ErrLoginRateLimited,
+			SystemUnavailable:        ErrSystemUnavailable,
 			AccountUnverified:        ErrAccountUnverified,
 			AccountLocked:            ErrAccountLocked,
 			DeviceBindingRejected:    ErrDeviceBindingRejected,
@@ -2959,8 +3049,7 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		if err == nil || errors.Is(err, rate.ErrRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "login", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "login", tenantID, err)
 	}
 	deps.IncrementLoginRate = func(ctx context.Context, identifier string) error {
 		tenantID := tenantIDFromContext(ctx)
@@ -2969,8 +3058,7 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		if err == nil || errors.Is(err, rate.ErrRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "login", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "login", tenantID, err)
 	}
 	deps.ResetLoginRate = func(ctx context.Context, identifier string) error {
 		tenantID := tenantIDFromContext(ctx)
@@ -2978,7 +3066,7 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		if err == nil {
 			return nil
 		}
-		e.emitLimiterFailOpen(ctx, "login", tenantID, err)
+		e.limiterCleanupFailed(ctx, "login", tenantID, err)
 		return nil
 	}
 }
@@ -3215,19 +3303,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 				Strategy:   record.Strategy,
 			}, nil
 		}
-		deps.ConsumeResetRecord = func(ctx context.Context, tenantID, resetID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.PasswordResetStoreRecord, error) {
-			record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
-			if err != nil {
-				return internalflows.PasswordResetStoreRecord{}, err
-			}
-			return internalflows.PasswordResetStoreRecord{
-				UserID:     record.UserID,
-				SecretHash: record.SecretHash,
-				ExpiresAt:  record.ExpiresAt,
-				Attempts:   record.Attempts,
-				Strategy:   record.Strategy,
-			}, nil
-		}
+		deps.ConsumeResetRecord = e.consumeResetRecord
 	}
 	if e != nil {
 		deps.LogoutAllInTenant = e.LogoutAllInTenant
@@ -3413,8 +3489,7 @@ func (e *Engine) configurePasswordResetLimiterDeps(deps *internalflows.PasswordR
 		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "password_reset_request", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "password_reset_request", tenantID, err)
 	}
 	deps.CheckConfirmLimiter = func(ctx context.Context, tenantID, resetID string) error {
 		if !cfg.PasswordReset.EnableConfirmFailureLimiter {
@@ -3425,8 +3500,7 @@ func (e *Engine) configurePasswordResetLimiterDeps(deps *internalflows.PasswordR
 		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "password_reset_confirm", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "password_reset_confirm", tenantID, err)
 	}
 }
 
@@ -3600,8 +3674,7 @@ func (e *Engine) configureTOTPLimiterDeps(deps *internalflows.TOTPDeps) {
 		if err == nil || errors.Is(err, limiters.ErrTOTPRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "totp", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "totp", tenantID, err)
 	}
 	deps.RecordTOTPLimiterFailure = func(ctx context.Context, userID string) error {
 		tenantID := tenantIDFromContext(ctx)
@@ -3610,13 +3683,12 @@ func (e *Engine) configureTOTPLimiterDeps(deps *internalflows.TOTPDeps) {
 		if err == nil || errors.Is(err, limiters.ErrTOTPRateLimited) {
 			return err
 		}
-		e.emitLimiterFailOpen(ctx, "totp", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "totp", tenantID, err)
 	}
 	deps.ResetTOTPLimiter = func(ctx context.Context, userID string) error {
 		tenantID := tenantIDFromContext(ctx)
 		if err := e.totpLimiter.Reset(ctx, tenantID, userID); err != nil {
-			e.emitLimiterFailOpen(ctx, "totp", tenantID, err)
+			e.limiterCleanupFailed(ctx, "totp", tenantID, err)
 		}
 		return nil
 	}

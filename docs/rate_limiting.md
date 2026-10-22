@@ -98,7 +98,46 @@ the counters live in `{<key>}:s:<bucket>` sub-keys of the same namespaces.
 
 - Each domain limiter uses separate `Unavailable` errors so callers can distinguish Redis failures from policy rejections.
 - Disabling login-failure limiting triggers a HIGH-severity config lint warning (`login_failure_limiter_disabled`).
-- Engine runtime wrappers apply **fail-open** behavior for limiter backend failures, while still honoring explicit rate-limit denials.
+- Engine runtime wrappers apply **fail-open** behavior for limiter backend failures by default, while still honoring explicit rate-limit denials. `Security.LimiterFailClosed` turns that around; see [Failing closed](#failing-closed).
+
+### Failing closed
+
+By default a limiter backend error (Redis down, a script error, a timeout) never
+blocks a request: it is recorded as a `limiter_fail_open` audit event (and the
+`MetricLimiterFailOpen` counter) and the request proceeds unthrottled. Set
+`Security.LimiterFailClosed = true` to refuse instead. An explicit rate-limit
+denial blocks either way; only the meaning of an outage changes.
+
+With the flag on, every limiter *check or count* that gates a request returns a
+system error (category `SYSTEM`, HTTP 503), and the request is not processed:
+
+| Path | Error returned on a limiter outage |
+|------|------------------------------------|
+| `Login` family (failure check and counting), role-switch, `VerifyPassword`, `ChangePassword`, external sign-in (both buckets) | `ErrSystemUnavailable` (`SYSTEM_UNAVAILABLE`) |
+| `CreateAccount`, external sign-up | `ErrAccountCreationUnavailable` |
+| Email verification request and confirm | `ErrEmailVerificationUnavailable` |
+| Password reset request and confirm | `ErrPasswordResetUnavailable` |
+| TOTP checks and failure counting | `ErrTOTPUnavailable` |
+| Backup-code checks and failure counting | `ErrBackupCodeUnavailable` |
+| `RequestEmailChange` | `ErrSystemUnavailable` |
+
+The domain-specific codes are the ones those flows already return when their
+store or limiter is unavailable; they are the same category, so a client that
+maps `CategorySystem` to 503 needs nothing extra. The `limiter_fail_open` event
+keeps its name and gains `fail_closed=true` (and `policy=fail_closed`) metadata;
+with the flag off the event is unchanged. `Config.Lint` reports
+`limiter_fail_closed_outage_blocks_signin` (INFO) while it is on.
+
+What it does not cover: a limiter *reset* after a request already succeeded only
+removes counts, so a failed reset never blocks; the auto-lockout counter
+(`Security.AutoLockoutEnabled`) is a separate mechanism that also tolerates a
+Redis error; WebAuthn assertions have no limiter of their own. A static test
+(`TestLimiterCallSitesAreClassifiedAndRouteThroughTheCentralHelper`) lists every
+limiter call site and fails when a new one is not routed through the single
+helper that applies this flag.
+
+Turn it on when throttling matters more than availability: with it on, a Redis
+outage blocks sign-in (it already blocks anything that needs a session store).
 
 ### Fixed-Window Boundary Burst
 

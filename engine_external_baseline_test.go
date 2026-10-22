@@ -220,15 +220,7 @@ const extbBaseTranscript = `
   err nil
   cmd script keys=[rl:pwdverify:fail:0:u1] argv=[60000]
   cmd del rl:pwdverify:fail:0:u1
-  cmd smembers au:0:u1
-  cmd get ast:0:count
-  cmd exists as:0:<id1>
-  cmd multi
-  cmd del as:0:<id1>
-  cmd del au:0:u1
-  cmd decrby ast:0:count 1
-  cmd del ast:0:count
-  cmd exec
+  cmd script keys=[au:0:u1 ast:0:count] argv=[as:0: asa:0: ]
   cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
 == validate strict after change
   err AUTH_SESSION_EXPIRED/AUTH_STATE
@@ -260,11 +252,7 @@ const extbBaseTranscript = `
   cmd script keys=[as:0:<id2> au:0:u1 ast:0:count] argv=[<id2>]
 == logout all
   err nil
-  cmd smembers au:0:u1
-  cmd get ast:0:count
-  cmd multi
-  cmd del au:0:u1
-  cmd exec
+  cmd script keys=[au:0:u1 ast:0:count] argv=[as:0: asa:0: ]
 audit login_success success=true user=u1 session=<id1> err= meta=[identifier=teacher@example.com]
 audit refresh_success success=true user=u1 session=<id1> err= meta=[]
 audit password_verify_failure success=false user=u1 session= err=invalid_credentials meta=[]

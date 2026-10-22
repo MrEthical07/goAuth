@@ -100,6 +100,11 @@ const (
 	CodeAuthLastLoginMethod                AuthCode = "AUTH_LAST_LOGIN_METHOD"
 	CodeAuthPasswordNotSet                 AuthCode = "AUTH_PASSWORD_NOT_SET"
 	CodeAuthExternalLoginRateLimited       AuthCode = "AUTH_EXTERNAL_LOGIN_RATE_LIMITED"
+	CodeAuthEmailChangeDisabled            AuthCode = "AUTH_EMAIL_CHANGE_DISABLED"
+	CodeAuthEmailChangeInvalid             AuthCode = "AUTH_EMAIL_CHANGE_INVALID"
+	CodeAuthEmailChangeStale               AuthCode = "AUTH_EMAIL_CHANGE_STALE"
+	CodeAuthEmailInUse                     AuthCode = "AUTH_EMAIL_IN_USE"
+	CodeAuthEmailChangeRateLimited         AuthCode = "AUTH_EMAIL_CHANGE_RATE_LIMITED"
 	CodeAuthRefreshReuseDetected           AuthCode = "AUTH_REFRESH_REUSE_DETECTED"
 	CodeAuthPermissionDenied               AuthCode = "AUTH_PERMISSION_DENIED"
 	CodeSystemEngineNotReady               AuthCode = "SYSTEM_ENGINE_NOT_READY"
@@ -326,6 +331,16 @@ var (
 	ErrPasswordNotSet = NewAuthError(CategoryAuthState, string(CodeAuthPasswordNotSet), "account has no password")
 	// ErrExternalLoginRateLimited is returned when external sign-in attempts exceeded ExternalAuth.MaxAttempts within Cooldown.
 	ErrExternalLoginRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthExternalLoginRateLimited), "external sign-in attempts rate limited")
+	// ErrEmailChangeDisabled is returned by the email-change methods when Config.EmailChange.Enabled is false (suggested HTTP status: 403).
+	ErrEmailChangeDisabled = NewAuthError(CategoryAuthState, string(CodeAuthEmailChangeDisabled), "email change disabled")
+	// ErrEmailChangeInvalid is returned when the new address is not acceptable (malformed, or the same as the current one) or the challenge is unknown, expired, used up or the code is wrong (suggested HTTP status: 400).
+	ErrEmailChangeInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthEmailChangeInvalid), "email change request invalid")
+	// ErrEmailChangeStale is returned at confirm when the account changed after the request (its version moved or its email is no longer the one the request replaced): the user must start again (suggested HTTP status: 409).
+	ErrEmailChangeStale = NewAuthError(CategoryAuthState, string(CodeAuthEmailChangeStale), "email change request is out of date")
+	// ErrEmailInUse is returned at confirm when another account in the tenant already uses the new address. It is safe to report: the caller has just proved they own it (suggested HTTP status: 409).
+	ErrEmailInUse = NewAuthError(CategoryAuthState, string(CodeAuthEmailInUse), "email already in use")
+	// ErrEmailChangeRateLimited is returned when a user exceeded EmailChange.RequestMaxAttempts requests within RequestCooldown (suggested HTTP status: 429).
+	ErrEmailChangeRateLimited = NewAuthError(CategoryAuthAbuse, string(CodeAuthEmailChangeRateLimited), "email change requests rate limited")
 	// ErrPermissionDenied is an exported constant or variable used by the authentication engine.
 	ErrPermissionDenied = NewAuthError(CategoryAuthState, string(CodeAuthPermissionDenied), "permission denied")
 	// ErrEngineNotReady is an exported constant or variable used by the authentication engine.

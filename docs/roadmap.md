@@ -21,6 +21,7 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | Session binding to TLS channel (channel binding) | P2 | maintainer | planned | Security: prevents session export across TLS sessions |
+| Per-account email-verified marker (`UserRecord.EmailVerified`, set by email verification and by a confirmed email change, read by external auto-link) so auto-link need not treat "Active" as "verified" | P1 | maintainer | planned | Security: closes the legacy/imported-account gap behind lint `external_autolink_trusts_active_status` |
 
 ---
 
@@ -28,7 +29,6 @@ Planned improvements and future work for goAuth, organized by category and prior
 
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
-| `DeleteAllForUser` atomicity improvement | P1 | maintainer | planned | Perf/Correctness: single Lua script for atomic session wipe |
 | Fuzz corpus caching in CI | P2 | maintainer | planned | Perf: faster fuzz runs, better coverage over time |
 | Connection pool auto-tuning guidance | P2 | maintainer | planned | Perf: documentation for Redis pool sizing under load |
 
@@ -90,6 +90,9 @@ Items previously on the roadmap that have been resolved:
 |------|----------|-------------|--------|
 | SSO phase 1: OIDC ID-token sign-in (Google, Apple, generic OIDC) with tenant-scoped identity linking | P1 | v0.8.0 | API |
 | Per-client session profiles | P1 | v0.8.0 | API |
+| Change email (`RequestEmailChange` / `ConfirmEmailChange` / `CancelEmailChange`) | P1 | v0.8.0 | API |
+| Opt-in fail-closed limiters (`Security.LimiterFailClosed`) | P2 | v0.8.0 | Security |
+| `DeleteAllForUser` atomicity: one Lua script for the session wipe, with MFA-proof key cleanup on every session-deleting path | P1 | v0.8.0 | Correctness |
 | Remember-me logins + configurable absolute session ceiling (`MaxSessionDuration`) | P1 | v0.4.0 | Security/API |
 | Hybrid mode aligned with per-route selection design (`RequireHybrid`, explicit-override fix) | P1 | v0.4.0 | Correctness |
 | Graceful logout with expired access tokens | P2 | v0.4.0 | Correctness/DX |

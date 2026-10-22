@@ -451,11 +451,7 @@ err := engine.LogoutByAccessToken(ctx, accessToken)
 
 ### Redis Op Budget
 
-~2N+3 commands where N = active sessions (SMEMBERS + N×EXISTS pipeline + N×DEL pipeline + counter).
-
-### Known Limitation
-
-`DeleteAllForUser` is not fully atomic. See [session.md](session.md#edge-cases--gotchas).
+One Lua script (EVALSHA), O(N) inside Redis for N active sessions. It deletes every session and its MFA-proof key and fixes the counter atomically, so no session can slip past it and the counter cannot drift. See [session.md](session.md#edge-cases--gotchas).
 
 ### Caller Usage
 

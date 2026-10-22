@@ -22,6 +22,7 @@ Low-latency authentication engine for Go: JWT access tokens + Redis-backed sessi
 - **Device binding** — IP/UA fingerprint enforcement or anomaly detection
 - **Audit + Metrics** — 44 counters, latency histogram, Prometheus + OpenTelemetry exporters
 - **Multi-tenancy** — tenant-scoped sessions, counters, and rate limits
+- **Email change** — opt-in change of an account's email with proof of the new address (`Engine.RequestEmailChange` / `ConfirmEmailChange`), a compare-and-set provider contract, atomic revocation of other sessions, and no account enumeration ([docs/email_change.md](docs/email_change.md))
 - **External sign-in** — opt-in verification of Google, Sign in with Apple and generic OIDC ID tokens you already hold (`Engine.LoginWithExternalIdentity`), with tenant-scoped identity linking, password-less accounts, a hardened key cache and no new dependencies ([docs/external_identity.md](docs/external_identity.md))
 - **Role switching** — opt-in in-session role changes (`Engine.SwitchRole`) with provider-checked roles, optional MFA/recent-authentication step-up, atomic session swap, and a documented per-mode revocation guarantee ([docs/role_switching.md](docs/role_switching.md))
 

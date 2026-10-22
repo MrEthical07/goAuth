@@ -15,6 +15,7 @@ This directory contains the authoritative documentation for the goAuth authentic
 | **Ops & scaling** | [ops.md](ops.md) → [performance.md](performance.md) → [capacity.md](capacity.md) |
 | **Security review** | [security.md](security.md) → [security-model.md](security-model.md) |
 | **Run multiple tenants** | [multi_tenancy.md](multi_tenancy.md) → [config.md § MultiTenant](config.md) |
+| **Change an account's email address** | [email_change.md](email_change.md) → [config.md § Email Change](config.md#email-change-configemailchange) |
 | **Sign in with Google / Apple / OIDC** | [external_identity.md](external_identity.md) → [config.md § External Auth](config.md#external-auth-configexternalauth) |
 | **Let one session switch roles** | [role_switching.md](role_switching.md) → [config.md § Role Switch](config.md#role-switch-configroleswitch) |
 | **Full API surface** | [api-reference.md](api-reference.md) |
@@ -42,6 +43,7 @@ Per-module guides covering primitives, usage examples, configuration, strategies
 | [introspection.md](introspection.md) | Session introspection: active sessions, health checks |
 | [device_binding.md](device_binding.md) | Device binding: IP/UA fingerprint enforcement |
 | [multi_tenancy.md](multi_tenancy.md) | Multi-tenancy: tenant-scoped user lookup, TenantAwareUserProvider, isolation guarantees |
+| [email_change.md](email_change.md) | Email change: request/confirm/cancel, provider contract, interactions with external identities and old challenges, step-up |
 | [external_identity.md](external_identity.md) | External identity: verify Google/Apple/OIDC ID tokens, account resolution and linking, password-less accounts, key cache, Apple checklist |
 | [role_switching.md](role_switching.md) | Role switching: SwitchRole, RoleSwitchProvider, step-up, per-mode revocation table, race semantics |
 | [config.md](config.md) | Full configuration reference (all fields, defaults, types) |

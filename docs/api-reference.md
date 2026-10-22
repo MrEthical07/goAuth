@@ -81,6 +81,20 @@ Sign in with a Google, Sign in with Apple or OIDC ID token the application alrea
 | `ErrExternalAuthDisabled`, `ErrExternalProviderUnknown`, `ErrExternalTokenInvalid`, `ErrExternalTokenReplayed`, `ErrExternalProviderUnavailable`, `ErrExternalEmailUnverified`, `ErrExternalAccountNotFound`, `ErrExternalAccountLinkRequired`, `ErrExternalLinkRequiresVerification`, `ErrExternalIdentityInUse`, `ErrLastLoginMethod`, `ErrExternalLoginRateLimited` | var | External sign-in sentinels (see [error-model.md](error-model.md)). |
 | `ErrPasswordNotSet` | var | `ChangePassword` / `VerifyPassword` on an account that has no password. |
 
+### Email Change
+
+Opt-in change of an account's email address with proof of the new one. Off by default; see [email_change.md](email_change.md).
+
+| Symbol | Kind | Description |
+|--------|------|-------------|
+| `RequestEmailChange` | method | `(ctx, userID, newEmail string) (*EmailChangeRequest, error)`. Stores a challenge bound to the user, the old and new identifiers and the account version; the app sends `Code` to the NEW address. Does not reveal whether the address is taken. |
+| `ConfirmEmailChange` | method | `(ctx, verificationID, code string, opts ConfirmEmailChangeOptions) (*EmailChangeResult, error)`. Verifies the code, installs the address through `EmailChangeProvider`, revokes other sessions unless `KeepOtherSessions`. |
+| `CancelEmailChange` | method | `(ctx, userID string) error`. Idempotent. |
+| `EmailChangeRequest`, `ConfirmEmailChangeOptions`, `EmailChangeResult` | struct | `{VerificationID, Code}`, `{KeepSessionID}`, `{UserID, OldEmail, NewEmail, SessionsRevoked}`. |
+| `EmailChangeProvider` | interface | Optional `UserProvider` capability (required when `EmailChange.Enabled`): `UpdateIdentifier(ctx, tenantID, userID, oldIdentifier, newIdentifier)` is a tenant-scoped compare-and-set that bumps `AccountVersion`. |
+| `EmailChangeConfig` | type | `Config.EmailChange`. |
+| `ErrEmailChangeDisabled`, `ErrEmailChangeInvalid`, `ErrEmailChangeStale`, `ErrEmailInUse`, `ErrEmailChangeRateLimited` | var | Email-change sentinels (403, 400, 409, 409, 429). |
+
 ### WebAuthn / FIDO2
 
 | Symbol | Kind | Description |

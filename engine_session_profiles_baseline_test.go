@@ -104,10 +104,14 @@ func spbArg(arg interface{}) string {
 	switch {
 	case len(raw) > 100 && raw[0] == 5:
 		return "blob:" + spbBlob(raw)
-	case len(raw) >= 13 && len(raw) < 100 && raw[0] == 2 && !spbPrintable(raw):
-		return "challenge:" + spbChallenge(raw)
+	// A random 32-byte hash must be recognized before the challenge case:
+	// about one in 256 of them starts with the byte 2 and would otherwise be
+	// rendered as an MFA challenge record, whose unmasked bytes differ per
+	// run. No challenge in this scenario is exactly 32 bytes long.
 	case len(raw) == 32 && !spbPrintable(raw):
 		return "<bin32>"
+	case len(raw) >= 13 && len(raw) < 100 && raw[0] == 2 && !spbPrintable(raw):
+		return "challenge:" + spbChallenge(raw)
 	case len(raw) > 200 && strings.Contains(string(raw), "redis.call"):
 		return "<lua>"
 	}
@@ -540,15 +544,7 @@ const spbV070Transcript = `
   cmd script keys=[as:0:<id4> au:0:u1 ast:0:count] argv=[<id4>]
 == logout all
   err nil
-  cmd smembers au:0:u1
-  cmd get ast:0:count
-  cmd exists as:0:<id2>
-  cmd multi
-  cmd del as:0:<id2>
-  cmd del au:0:u1
-  cmd decrby ast:0:count 1
-  cmd del ast:0:count
-  cmd exec
+  cmd script keys=[au:0:u1 ast:0:count] argv=[as:0: asa:0: ]
 == login wrong password
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
   cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053

@@ -129,6 +129,11 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `CodeAuthLastLoginMethod` | `AUTH_LAST_LOGIN_METHOD` |
 | `CodeAuthPasswordNotSet` | `AUTH_PASSWORD_NOT_SET` |
 | `CodeAuthExternalLoginRateLimited` | `AUTH_EXTERNAL_LOGIN_RATE_LIMITED` |
+| `CodeAuthEmailChangeDisabled` | `AUTH_EMAIL_CHANGE_DISABLED` |
+| `CodeAuthEmailChangeInvalid` | `AUTH_EMAIL_CHANGE_INVALID` |
+| `CodeAuthEmailChangeStale` | `AUTH_EMAIL_CHANGE_STALE` |
+| `CodeAuthEmailInUse` | `AUTH_EMAIL_IN_USE` |
+| `CodeAuthEmailChangeRateLimited` | `AUTH_EMAIL_CHANGE_RATE_LIMITED` |
 | `CodeAuthPermissionDenied` | `AUTH_PERMISSION_DENIED` |
 | `CodeSystemEngineNotReady` | `SYSTEM_ENGINE_NOT_READY` |
 | `CodeSystemProviderDuplicateIdentifier` | `SYSTEM_PROVIDER_DUPLICATE_IDENTIFIER` |
@@ -217,6 +222,11 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `ErrLastLoginMethod` | `CategoryAuthState` | `CodeAuthLastLoginMethod` | `cannot remove the last sign-in method` |
 | `ErrPasswordNotSet` | `CategoryAuthState` | `CodeAuthPasswordNotSet` | `account has no password` |
 | `ErrExternalLoginRateLimited` | `CategoryAuthAbuse` | `CodeAuthExternalLoginRateLimited` | `external sign-in attempts rate limited` |
+| `ErrEmailChangeDisabled` | `CategoryAuthState` | `CodeAuthEmailChangeDisabled` | `email change disabled` |
+| `ErrEmailChangeInvalid` | `CategoryAuthValidation` | `CodeAuthEmailChangeInvalid` | `email change request invalid` |
+| `ErrEmailChangeStale` | `CategoryAuthState` | `CodeAuthEmailChangeStale` | `email change request is out of date` |
+| `ErrEmailInUse` | `CategoryAuthState` | `CodeAuthEmailInUse` | `email already in use` |
+| `ErrEmailChangeRateLimited` | `CategoryAuthAbuse` | `CodeAuthEmailChangeRateLimited` | `email change requests rate limited` |
 | `ErrPermissionDenied` | `CategoryAuthState` | `CodeAuthPermissionDenied` | `permission denied` |
 | `ErrEngineNotReady` | `CategorySystem` | `CodeSystemEngineNotReady` | `engine not initialized` |
 | `ErrProviderDuplicateIdentifier` | `CategorySystem` | `CodeSystemProviderDuplicateIdentifier` | `provider duplicate identifier` |
@@ -263,6 +273,10 @@ These status mappings are recommended for API adapters wrapping goAuth.
 | `AUTH_EXTERNAL_ACCOUNT_NOT_FOUND` | `404 Not Found` (the caller proved the identity, so nothing about anyone else is revealed, and a 401 would send clients into a re-login loop) |
 | `AUTH_EXTERNAL_LINK_REQUIRED`, `AUTH_EXTERNAL_LINK_REQUIRES_VERIFICATION`, `AUTH_EXTERNAL_IDENTITY_IN_USE`, `AUTH_LAST_LOGIN_METHOD`, `AUTH_PASSWORD_NOT_SET` | `409 Conflict` |
 | `AUTH_EXTERNAL_LOGIN_RATE_LIMITED` | `429 Too Many Requests` |
+| `AUTH_EMAIL_CHANGE_DISABLED` | `403 Forbidden` (see [email_change.md](email_change.md#errors)) |
+| `AUTH_EMAIL_CHANGE_INVALID` | `400 Bad Request` |
+| `AUTH_EMAIL_CHANGE_STALE`, `AUTH_EMAIL_IN_USE` | `409 Conflict` |
+| `AUTH_EMAIL_CHANGE_RATE_LIMITED` | `429 Too Many Requests` |
 | Abuse and attempt limits (`AUTH_*_LIMITED`, `AUTH_*_ATTEMPTS_*`, `AUTH_REFRESH_REUSE_DETECTED`) | `429 Too Many Requests` (`AUTH_ROLE_SWITCH_RATE_LIMITED` included; for the role-switch endpoint `AUTH_REFRESH_REUSE_DETECTED` is better served as `401`, since the session no longer exists) |
 | Unavailable dependency codes (`SYSTEM_UNAVAILABLE*`) | `503 Service Unavailable` |
 | `SYSTEM_INTERNAL_ERROR` | `500 Internal Server Error` |

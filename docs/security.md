@@ -110,7 +110,7 @@ What goAuth does **not** do: run the OAuth2 code exchange, store provider tokens
 |---|-----------|------------|---------------|
 | I1 | Validate must not allocate beyond Claims in JWT-only mode | `flows.RunValidate` | `auth_bench_test.go` |
 | I2 | Refresh replay deletes session family | `session.Store.RotateRefreshHash` (Lua) | `refresh_concurrency_test.go` |
-| I3 | Rate limiters fail open on Redis error (non-blocking) | `internal/rate`, `internal/limiters` | `engine_auto_lockout_test.go` |
+| I3 | Rate limiters fail open on Redis error (non-blocking) unless `Security.LimiterFailClosed`, which refuses with a 503 | `Engine.limiterOutage` | `engine_limiter_fail_closed_test.go`, `engine_limiter_callsites_static_test.go` |
 | I4 | Strict mode fails closed on Redis unavailability | `flows.RunValidate` | `engine_session_hardening_test.go` |
 | I5 | Permission registry frozen at Build time | `permission.Registry.Freeze` | `security_invariants_test.go` |
 | I6 | Constant-time comparison on all secrets | All verify paths | `totp_rfc_test.go`, `engine_*_test.go` |

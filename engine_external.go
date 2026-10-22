@@ -17,11 +17,12 @@ import (
 )
 
 const (
-	auditEventExternalLoginSuccess = "external_login_success"
-	auditEventExternalLoginFailure = "external_login_failure"
-	auditEventExternalLinked       = "external_identity_linked"
-	auditEventExternalUnlinked     = "external_identity_unlinked"
-	auditEventExternalLinkFailure  = "external_identity_link_failure"
+	auditEventExternalLoginSuccess  = "external_login_success"
+	auditEventExternalLoginFailure  = "external_login_failure"
+	auditEventExternalLinked        = "external_identity_linked"
+	auditEventExternalUnlinked      = "external_identity_unlinked"
+	auditEventExternalLinkFailure   = "external_identity_link_failure"
+	auditEventExternalUnlinkFailure = "external_identity_unlink_failure"
 )
 
 // external_login_failure and external_identity_link_failure metadata.reason
@@ -36,6 +37,7 @@ const (
 	externalReasonProviderUnavailable      = "provider_unavailable"
 	externalReasonStoreUnavailable         = "store_unavailable"
 	externalReasonRateLimited              = "rate_limited"
+	externalReasonLimiterUnavailable       = "limiter_unavailable"
 	externalReasonEmailUnverified          = "email_unverified"
 	externalReasonLinkRequired             = "link_required"
 	externalReasonLinkRequiresVerification = "link_requires_verification"
@@ -47,6 +49,8 @@ const (
 	externalReasonAccountExists            = "account_exists"
 	externalReasonIdentityInUse            = "identity_in_use"
 	externalReasonLookupFailed             = "lookup_failed"
+	externalReasonUnavailable              = "unavailable"
+	externalReasonLastLoginMethod          = "last_login_method"
 	externalReasonUserNotFound             = "user_not_found"
 )
 
@@ -238,23 +242,25 @@ type externalAttempt struct {
 	subject  string
 }
 
-// reserve claims one attempt in key. It fails open on limiter backend errors,
-// like every other limiter: an explicit denial always blocks, an outage never
-// does. It reports whether the attempt may proceed.
-func (e *Engine) reserveExternal(ctx context.Context, tenantID, key string) bool {
+// reserveExternal claims one attempt in key. An explicit denial reports false.
+// A limiter backend error is decided by limiterOutage: it fails open unless
+// Security.LimiterFailClosed, in which case the error is returned.
+func (e *Engine) reserveExternal(ctx context.Context, tenantID, key string) (bool, error) {
 	if key == "" || e.externalLimiter == nil {
-		return true
+		return true, nil
 	}
 	e.metricInc(MetricLimiterCheck)
 	err := e.externalLimiter.Reserve(ctx, key)
 	if err == nil {
-		return true
+		return true, nil
 	}
 	if errors.Is(err, limiters.ErrExternalRateLimited) {
-		return false
+		return false, nil
 	}
-	e.emitLimiterFailOpen(ctx, "external_login", tenantID, err)
-	return true
+	if outage := e.limiterOutage(ctx, "external_login", tenantID, err); outage != nil {
+		return false, outage
+	}
+	return true, nil
 }
 
 func (e *Engine) resetExternal(ctx context.Context, tenantID string, keys ...string) {
@@ -266,7 +272,7 @@ func (e *Engine) resetExternal(ctx context.Context, tenantID string, keys ...str
 			continue
 		}
 		if err := e.externalLimiter.Reset(ctx, key); err != nil {
-			e.emitLimiterFailOpen(ctx, "external_login", tenantID, err)
+			e.limiterCleanupFailed(ctx, "external_login", tenantID, err)
 		}
 	}
 }
@@ -303,7 +309,9 @@ func (e *Engine) verifyExternalToken(ctx context.Context, tenantID, provider, id
 	if e.externalLimiter != nil {
 		att.sources = e.externalLimiter.SourceKey(tenantID, clientIPFromContext(ctx))
 	}
-	if !e.reserveExternal(ctx, tenantID, att.sources) {
+	if allowed, err := e.reserveExternal(ctx, tenantID, att.sources); err != nil {
+		return nil, att, externalReasonLimiterUnavailable, err
+	} else if !allowed {
 		e.limitedExternal(ctx, tenantID, provider)
 		return nil, att, externalReasonRateLimited, ErrExternalLoginRateLimited
 	}
@@ -320,7 +328,9 @@ func (e *Engine) verifyExternalToken(ctx context.Context, tenantID, provider, id
 	if e.externalLimiter != nil {
 		att.subject = e.externalLimiter.SubjectKey(tenantID, provider, claims.Subject)
 	}
-	if !e.reserveExternal(ctx, tenantID, att.subject) {
+	if allowed, err := e.reserveExternal(ctx, tenantID, att.subject); err != nil {
+		return nil, att, externalReasonLimiterUnavailable, err
+	} else if !allowed {
 		e.limitedExternal(ctx, tenantID, provider)
 		return nil, att, externalReasonRateLimited, ErrExternalLoginRateLimited
 	}
@@ -598,7 +608,11 @@ func (e *Engine) createExternalAccount(ctx context.Context, tenantID string, cla
 		}
 	}
 	if err := e.enforceExternalSignupLimit(ctx, tenantID, claims.Email); err != nil {
-		return externalResolution{}, externalReasonSignupRateLimited, err, false
+		reason := externalReasonSignupRateLimited
+		if errors.Is(err, ErrSystemUnavailable) {
+			reason = externalReasonLimiterUnavailable
+		}
+		return externalResolution{}, reason, err, false
 	}
 
 	created, err := e.externalProvider.CreateUserWithExternalIdentity(ctx, CreateUserInput{
@@ -672,8 +686,7 @@ func (e *Engine) enforceExternalSignupLimit(ctx context.Context, tenantID, ident
 		return nil
 	}
 	if !errors.Is(err, limiters.ErrAccountRateLimited) {
-		e.emitLimiterFailOpen(ctx, "account_creation", tenantID, err)
-		return nil
+		return e.limiterOutage(ctx, "account_creation", tenantID, err)
 	}
 	e.metricInc(MetricAccountCreationRateLimited)
 	e.emitAudit(ctx, auditEventAccountCreationRateLimited, false, "", tenantID, "", ErrAccountCreationRateLimited, func() map[string]string {
@@ -701,16 +714,29 @@ func (e *Engine) externalLinkFail(ctx context.Context, tenantID, provider, userI
 
 // lookupExternalManagedUser resolves the authenticated user of a link, unlink
 // or list call through the tenant-scoped lookup, so an ID from another tenant
-// is not found.
+// is not found. Only [ErrUserNotFound] (from the provider, or from the
+// tenant-mismatch backstop) means the user is gone; any other provider error is
+// an outage and is reported as one, never as a missing account.
 func (e *Engine) lookupExternalManagedUser(ctx context.Context, userID string) (UserRecord, error) {
 	if userID == "" {
 		return UserRecord{}, ErrUserNotFound
 	}
 	user, err := e.lookupUserByID(ctx, userID)
 	if err != nil {
-		return UserRecord{}, ErrUserNotFound
+		if errors.Is(err, ErrUserNotFound) {
+			return UserRecord{}, ErrUserNotFound
+		}
+		return UserRecord{}, externalUnavailable(err)
 	}
 	return user, nil
+}
+
+// externalLookupReason is the audit reason for a failed lookupExternalManagedUser.
+func externalLookupReason(err error) string {
+	if errors.Is(err, ErrSystemUnavailable) {
+		return externalReasonLookupFailed
+	}
+	return externalReasonUserNotFound
 }
 
 // LinkExternalIdentity links the external identity proved by idToken to the
@@ -757,7 +783,7 @@ func (e *Engine) linkExternalIdentity(ctx context.Context, userID, provider, idT
 
 	user, err := e.lookupExternalManagedUser(ctx, userID)
 	if err != nil {
-		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonUserNotFound, err)
+		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalLookupReason(err), err)
 	}
 	if statusErr := accountStatusToError(user.Status); statusErr != nil {
 		return nil, e.externalLinkFail(ctx, tenantID, provider, userID, externalReasonAccountStatus, statusErr)
@@ -819,19 +845,23 @@ func (e *Engine) UnlinkExternalIdentity(ctx context.Context, userID, provider, s
 func (e *Engine) unlinkExternalIdentity(ctx context.Context, userID, provider, subject string) error {
 	tenantID := tenantIDFromContext(ctx)
 	if !e.externalEnabled() {
-		return ErrExternalAuthDisabled
+		return e.externalUnlinkFail(ctx, tenantID, provider, userID, externalReasonDisabled, ErrExternalAuthDisabled)
 	}
 	user, err := e.lookupExternalManagedUser(ctx, userID)
 	if err != nil {
-		return err
+		reason := externalReasonUserNotFound
+		if errors.Is(err, ErrSystemUnavailable) {
+			reason = externalReasonUnavailable
+		}
+		return e.externalUnlinkFail(ctx, tenantID, provider, userID, reason, err)
 	}
 	if statusErr := accountStatusToError(user.Status); statusErr != nil {
-		return statusErr
+		return e.externalUnlinkFail(ctx, tenantID, provider, userID, externalReasonAccountStatus, statusErr)
 	}
 
 	identities, err := e.externalProvider.ListExternalIdentities(ctx, tenantID, user.UserID)
 	if err != nil {
-		return externalUnavailable(err)
+		return e.externalUnlinkFail(ctx, tenantID, provider, userID, externalReasonUnavailable, externalUnavailable(err))
 	}
 	linked := false
 	for _, id := range identities {
@@ -843,16 +873,26 @@ func (e *Engine) unlinkExternalIdentity(ctx context.Context, userID, provider, s
 		return nil
 	}
 	if user.PasswordHash == "" && len(identities) <= 1 {
-		return ErrLastLoginMethod
+		return e.externalUnlinkFail(ctx, tenantID, provider, userID, externalReasonLastLoginMethod, ErrLastLoginMethod)
 	}
 
 	if err := e.externalProvider.UnlinkExternalIdentity(ctx, tenantID, user.UserID, provider, subject); err != nil {
-		return externalUnavailable(err)
+		return e.externalUnlinkFail(ctx, tenantID, provider, userID, externalReasonUnavailable, externalUnavailable(err))
 	}
 	e.emitAudit(ctx, auditEventExternalUnlinked, true, user.UserID, tenantID, "", nil, func() map[string]string {
 		return map[string]string{"provider": externalAuditProvider(provider)}
 	})
 	return nil
+}
+
+func (e *Engine) externalUnlinkFail(ctx context.Context, tenantID, provider, userID, reason string, err error) error {
+	e.emitAudit(ctx, auditEventExternalUnlinkFailure, false, userID, tenantID, "", err, func() map[string]string {
+		return map[string]string{
+			"provider": externalAuditProvider(provider),
+			"reason":   reason,
+		}
+	})
+	return err
 }
 
 // ListExternalIdentities returns the external identities linked to userID,

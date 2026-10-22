@@ -7,10 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.0] - Unreleased
+## [0.8.0] - 2026-10-22
 
-Minor release (SemVer), delivered as three pull requests; this section is
-filled in as they land. **Part 1 (per-client session profiles) is additive; part 2 (external identity) follows it below.**
+Minor release (SemVer), delivered as three pull requests. **Part 1 (per-client session profiles) is additive; part 2 (external identity) follows it below.**
 Nothing is removed and no exported signature changed: `Config` gained one
 field, `SessionProfiles`, and `SessionConfig` is byte-for-byte what it was (it
 stays comparable with `==`; the profile table lives in its own top-level field
@@ -375,9 +374,126 @@ v0.8.0 is a valid semantic version for this release.
 - Applications must handle what goAuth cannot: Apple token revocation on account
   deletion and Apple server-to-server notifications (see the checklist in
   `docs/external_identity.md`), and a step-up before link and unlink.
-- Parts 1 and 2 of 3: the change-email, atomic `DeleteAllForUser`, opt-in
-  fail-closed limiter and role-switch MFA-proof cleanup work are the third pull
-  request. The release tag follows it.
+- Parts 1 and 2 of 3. Part 3 (change-email, atomic `DeleteAllForUser`, opt-in
+  fail-closed limiters, role-switch MFA-proof cleanup) follows below. The release
+  tag follows it.
+
+### Part 3 of 3: change-email, atomic logout-all and hardening
+
+Additive, with two documented improvements to existing behavior (the atomic
+logout-all and the MFA-proof key cleanup below). No exported signature changed
+and no module dependency was added: `Config` gained `EmailChange`,
+`SecurityConfig` one bool, the user provider one **optional** capability, and
+`session.Store` one method. **With every new feature off (the default), behavior
+is what it was before this part**, apart from those two improvements:
+`TestSessionProfilesUnusedMatchesV070` and `TestExternalAuthUnusedMatchesMain`
+still pin the Redis commands, bytes, errors, audit events and metrics of login,
+refresh, validation, password verification and change, and both logouts, with
+only their "logout all" block updated for the script, and the golden-bytes tests
+pass unmodified. `gorelease -base=v0.7.0` reports only compatible changes.
+
+#### Changed
+
+- **`session.Store.DeleteAllForUser` is atomic.** It was several round trips
+  (read the user's session set, read the tenant counter, check which sessions
+  exist, then delete): a session created in between survived "logout everywhere"
+  and the counter could drift. It is now one Lua script that deletes every
+  session of the user that exists (and its `asa:` MFA-proof key), lowers the
+  tenant counter by the number it actually deleted (never below zero, key removed
+  at zero) and clears the user's session set. The exported signature is
+  unchanged, `Engine.LogoutAll`, `LogoutAllInTenant`, `ChangePassword`, password
+  reset and the account-status methods all use it, and
+  `session.Store.DeleteAllForUserExcept` is new for callers that must keep one
+  session. Like the existing rotation and swap scripts it touches keys in more
+  than one hash slot (single-node or non-sharded Redis). The only change to the
+  unchanged-when-unused baselines is their "logout all" block: the old
+  SMEMBERS/GET/EXISTS/MULTI/DEL sequence is now one script call.
+
+- **Role-switch MFA-proof keys (`asa:<tenant>:<sessionID>`) are removed with
+  their session.** Logout, logout-all, refresh-token reuse, session expiry and a
+  removed or expired session profile used to leave the key to age out by its TTL.
+  Every path that deletes a session now deletes the key in the same script
+  (`deleteSessionScript`, the rotation script's five delete branches, the swap
+  script's failure branches, `DeleteAllForUser`). The scripts' keys and arguments
+  are unchanged; the key is derived from the tenant counter key inside the
+  script, so the baselines are unaffected.
+
+#### Added
+
+- **Change email.** `Engine.RequestEmailChange`, `ConfirmEmailChange` and
+  `CancelEmailChange`, behind `Config.EmailChange` (zero value = disabled; with
+  it off nothing changes and no key is created). The user provider gains an
+  **optional** capability, `EmailChangeProvider.UpdateIdentifier`, a
+  tenant-scoped compare-and-set on the old identifier that bumps
+  `AccountVersion`; it is detected at `Build` and required when the feature is
+  on. A request stores a challenge bound to the user, the old and new
+  identifiers and the account version, rate limited per user, with a code (token,
+  UUID or OTP) the application mails to the NEW address. It does not check
+  whether the new address is taken, so it cannot be used to find out which
+  addresses have accounts; confirm enforces uniqueness (`ErrEmailInUse`), a
+  changed account (`ErrEmailChangeStale`), the status and the code (constant
+  time, attempts counted, one use). Unless `KeepOtherSessions`, every session of
+  the user is revoked except the one named in `ConfirmEmailChangeOptions`. The
+  result carries the old address: notify it. External identity links are not
+  touched. Five sentinels: `ErrEmailChangeDisabled` (403),
+  `ErrEmailChangeInvalid` (400), `ErrEmailChangeStale` (409), `ErrEmailInUse`
+  (409), `ErrEmailChangeRateLimited` (429); audit events `email_change_requested`,
+  `email_change_confirmed`, `email_change_failure` (addresses masked, never the
+  code). Lint: `email_change_keeps_other_sessions` (INFO). See
+  `docs/email_change.md`. `.github/workflows/go-race.yml`'s root-source
+  whitelist gained `engine_emailchange.go`.
+- **A confirmed email change refuses every password-reset and
+  email-verification challenge issued before it.** Those records hold no
+  identifier and no account version, so the `AccountVersion` bump alone did not
+  stop an old reset code from working after the address moved. With `EmailChange`
+  enabled a per-user marker is written before the provider call and again once it
+  commits, and read (one `GET`) on the two confirm paths; with it off nothing is
+  read or written.
+- **`Security.LimiterFailClosed`** (default `false`). A limiter backend error
+  is still recorded as a `limiter_fail_open` audit event and the request still
+  proceeds unthrottled by default. With the flag on, every limiter check or
+  count that gates a request (login, password verification, TOTP, backup codes,
+  role switch, account creation, email verification, password reset, external
+  sign-in and sign-up) refuses it with a system error (503) instead. One helper,
+  `Engine.limiterOutage`, makes the decision for every call site; a static test
+  lists them all. The event keeps its name and gains `fail_closed=true`
+  metadata when the flag is on. Lint: `limiter_fail_closed_outage_blocks_signin`
+  (INFO). With the flag off, behavior is unchanged. Limiter resets after a
+  success never block, and the auto-lockout counter is not covered.
+
+#### Fixed
+
+- `LinkExternalIdentity`, `UnlinkExternalIdentity` and `ListExternalIdentities`
+  read every error from the signed-in user's lookup as "account not found". Only
+  `ErrUserNotFound` (from the provider or the tenant-mismatch backstop) means
+  that now; any other provider error is reported as `ErrSystemUnavailable`
+  (503), so a database blip no longer tells a client to sign the user out.
+  The link-failure audit reason for it is `lookup_failed`.
+- `UnlinkExternalIdentity` audits its failures as
+  `external_identity_unlink_failure` with the reason `disabled`,
+  `user_not_found`, `account_status`, `last_login_method` or `unavailable`, as
+  link failures already were. Nothing is added to the success path.
+- `TestSessionProfilesUnusedMatchesV070` flaked about once in 55 runs: its
+  argument printer read a random 32-byte refresh hash that started with the byte 2
+  as an MFA challenge record. A test-only change; 36 of 2000 runs failed before
+  it and none after.
+
+#### Notes
+
+- Rolling deploys: nothing is migrated. The new Lua scripts load on first use, a
+  v0.8.0 instance and an earlier one can share a Redis (the old
+  `DeleteAllForUser` is simply not atomic), and the email-change keys (`aec:*`,
+  `aecp:*`, `aeci:*`, `rl:emailchange:*`) appear only while the feature is on and
+  expire by TTL, so rolling it back is `EmailChange.Enabled = false`.
+- Like the rotation and swap scripts, the atomic `DeleteAllForUser` touches keys
+  in more than one hash slot, so it needs a single-node or non-sharded Redis.
+- `Security.LimiterFailClosed` does not cover limiter *resets*, the auto-lockout
+  counter or WebAuthn assertions (which have no limiter of their own).
+- The application must step the current user up before `RequestEmailChange` and
+  should notify `EmailChangeResult.OldEmail`; see `docs/email_change.md`.
+- `Engine.ConfirmEmailChange` can return its result together with
+  `ErrSessionInvalidationFailed` when the address changed but the other sessions
+  could not be revoked.
 
 ---
 

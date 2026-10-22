@@ -166,7 +166,8 @@ All failures leave the old session untouched unless stated.
    and unknown sessions consume slots too. Limited → `ErrRoleSwitchRateLimited`
    and the provider is never called. The limiter honors
    `Security.LimiterWindowMode` and fails open on Redis errors, like the
-   other limiters.
+   other limiters (`Security.LimiterFailClosed` makes it refuse with
+   `ErrSystemUnavailable`).
 4. Load the session read-only from the **request** tenant.
    - Missing → `ErrSessionNotFound`. Expired → the same handling as `Refresh`
      (the session is deleted, `ErrSessionNotFound`).
@@ -265,8 +266,10 @@ absolute lifetime. It is written **only** when `StepUp` is non-empty:
   `LoginWithTOTP` and `LoginWithBackupCode`;
 - on a successful inline step-up.
 
-The swap script moves it to the new session ID. An assurance left behind by a
-logout simply expires by its TTL. With no `StepUp` configured no `asa:` key is
+The swap script moves it to the new session ID. Since v0.8.0 every path
+that deletes a session (logout, logout-all, refresh-token reuse, expiry, a removed
+session profile) deletes its assurance key in the same script; before that, a
+key left behind by a logout simply expired by its TTL. With no `StepUp` configured no `asa:` key is
 ever written.
 
 **Sessions created before step-up was configured have no assurance.** A
@@ -373,7 +376,7 @@ Switch attempts are limited per (tenant, session) with `MaxAttempts` per
 any provider, Argon2 or session work, so a burst cannot exceed the limit.
 Every attempt that reaches the limiter counts, including wrong-tenant and
 unknown sessions. A successful switch resets the counter. Redis errors fail
-open (`limiter_fail_open` audit event).
+open (`limiter_fail_open` audit event) unless `Security.LimiterFailClosed` is on.
 
 ## Audit events
 

@@ -29,6 +29,13 @@ type mockUserProvider struct {
 	allowDuplicateAcrossTenants bool
 	skipStatusVersionBump       bool
 
+	// UpdateIdentifier (see engine_emailchange_env_test.go): an injected
+	// error, a hook run just before the compare-and-set to stage a concurrent
+	// change, and a call counter.
+	updateIdentifierErr    error
+	beforeUpdateIdentifier func()
+	updateIdentifierCalls  int
+
 	getByIdentifierCalls    int
 	getByIDCalls            int
 	updatePasswordCalls     int

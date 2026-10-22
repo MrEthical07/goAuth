@@ -305,8 +305,23 @@ err = engine.UnlinkExternalIdentity(ctx, userID, "google", subject)
   identities can each see the other still present; if that matters, enforce it
   in your provider's transaction.
 - **Step-up.** goAuth does not enforce one, but your application should require
-  one before link and unlink: `VerifyPassword`, or a recent MFA. A stolen
-  session should not be able to attach an attacker's Google account.
+  one before link and unlink (and before [changing the account
+  email](email_change.md)). A stolen session should not be able to attach an
+  attacker's Google account. What to ask for depends on what the user has:
+
+  | The user has | Ask for |
+  |--------------|---------|
+  | A password | `Engine.VerifyPassword(ctx, userID, password)` (rate limited, never locks the account) |
+  | No password, but TOTP or backup codes | `Engine.VerifyTOTP(ctx, userID, code)` or `Engine.VerifyBackupCode(ctx, userID, code)`: a fresh, rate-limited proof of a second factor |
+  | No password and no second factor | A **fresh external sign-in**: have the client obtain a new ID token with a new nonce and call `LoginWithExternalIdentity`; then call `ValidateAccess` on the access token it returns and require `AuthResult.UserID` to equal the current user, and `Logout` the session it created (its ID is in the refresh token) if you do not want it |
+
+  Notes. goAuth has no public "recent MFA" accessor: the assurance it records
+  for a session serves role-switch step-up only, and a WebAuthn assertion exists
+  only inside the MFA login ceremony, so neither can gate link or unlink
+  directly; keep your own timestamp when you verify a factor. Whatever you
+  choose, take `userID` from the session, never from the request, and require
+  the proof for the CURRENT user in the same request that calls `Link…`,
+  `Unlink…` or `RequestEmailChange`.
 
 ## Apple compliance checklist
 
@@ -377,7 +392,8 @@ Two stages, both with the atomic reserve pattern and the same budget
 
 Both reset on a successful sign-in. Over the limit, the call fails with
 `ErrExternalLoginRateLimited`. The limiters fail open on a Redis error (a
-`limiter_fail_open` audit event), like the others. Sign-up additionally goes
+`limiter_fail_open` audit event), like the others, unless
+`Security.LimiterFailClosed` is on (a 503, audit reason `limiter_unavailable`). Sign-up additionally goes
 through the account-creation limiter when `Account.EnableCreationLimiter` is on.
 
 ## Audit

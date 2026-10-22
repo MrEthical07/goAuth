@@ -58,6 +58,8 @@ func (c *Config) Lint() LintResult
 | `jwtonly_single_session` | HIGH | JWT-only mode + single-session enforcement |
 | `jwtonly_perm_version` | WARN | JWT-only mode + permission version check |
 | `hybrid_enforcement_strict_routes_only` | INFO | Hybrid mode + enforced device binding (enforcement runs only on Strict-resolved routes) |
+| `email_change_keeps_other_sessions` | INFO | `EmailChange.KeepOtherSessions` is on (other sessions stay signed in after a confirmed change) |
+| `limiter_fail_closed_outage_blocks_signin` | INFO | `Security.LimiterFailClosed` is on (a limiter backend outage blocks sign-in, MFA, password and account flows with a 503) |
 | `role_switch_stateless_validation` | INFO | `RoleSwitch.Enabled` with JWT-only or Hybrid mode (a pre-switch access token stays valid on stateless routes until it expires; see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode)) |
 | `login_failure_limiter_disabled` | HIGH | `Security.EnableLoginFailureLimiter == false` |
 | `session_lifetime_long` | WARN | Absolute session lifetime > 30 days |

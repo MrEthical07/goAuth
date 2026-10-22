@@ -1,107 +1,111 @@
 # Release Readiness Assessment
 
-Date: 2026-07-14
-Branch: feature/v0.4.0-auth-suite
-Release Target: v0.4.0
-Status: Ready for release
+Date: 2026-10-22
+Release Target: v0.8.0
+Status: Ready for release once the pull request for part 3 is merged and CI is green on `main`
 
 ---
 
 ## Summary
 
-v0.4.0 is a backward-compatible minor release: every public API change is
-additive, and the only behavior changes are deliberate, documented fixes
-(expired-token logout now succeeds; explicit `ModeHybrid` route overrides no
-longer error). It ships remember-me durable sessions, the hybrid per-route
-validation model, graceful expired-token logout, an opt-in sliding-window rate
-limiter, Ed25519 key-rotation tooling, WebAuthn/FIDO2 second-factor support,
-and no-op-config lint warnings.
+v0.8.0 is a backward-compatible minor release delivered as three pull requests:
+
+1. **Per-client session profiles** (#26): named session lifetimes and
+   access-token policies (a fixed web session, a renewing mobile one), a session
+   blob schema v6 and an MFA challenge record v3 that exist only while profiles
+   are used.
+2. **External identity** (#27): `LoginWithExternalIdentity` and link, unlink and
+   list for Google, Sign in with Apple and generic OIDC ID tokens, behind the
+   optional `ExternalIdentityProvider` capability, with password-less account
+   hardening.
+3. **Change-email, atomic logout-all and hardening** (this release's last
+   pull request): `RequestEmailChange` / `ConfirmEmailChange` /
+   `CancelEmailChange` behind the optional `EmailChangeProvider` capability; an
+   atomic `DeleteAllForUser` (and `DeleteAllForUserExcept`); role-switch
+   MFA-proof keys deleted with their session; opt-in `Security.LimiterFailClosed`;
+   and small fixes from the part 2 review.
+
+Every public API change is additive. With every new feature off (the default),
+behavior is what it was in v0.7.0, apart from two documented improvements in
+part 3 (the atomic logout-all and the MFA-proof key cleanup).
 
 ---
 
-## Scope (v0.4.0)
+## Scope (v0.8.0)
 
-1. Remember-me + configurable durable sessions — `Session.MaxSessionDuration`,
-   `LoginOptions`/`LoginWithOptions`, `CreateAccountRequest.RememberMe`;
-   existing signatures and session lifetimes unchanged.
-2. Hybrid mode aligned with its per-route design — explicit `ModeHybrid`
-   overrides valid, `middleware.RequireHybrid`, stateless resolved-Hybrid
-   semantics documented as the contract.
-3. Logout with expired-but-authentic access tokens succeeds (was
-   `ErrTokenInvalid`); forged/invalid tokens still rejected.
-4. Sliding-window rate limiting (opt-in via `Security.LimiterWindowMode`),
-   all seven limiter domains, shared atomic window primitive.
-5. Ed25519 key rotation — `JWT.VerifyKeys` on the engine config, build-time
-   guardrails, `jwt.GenerateEd25519Key`/`Ed25519KeyFingerprint`,
-   `cmd/goauth-keygen`, documented rotation runbook.
-6. WebAuthn/FIDO2 second factor — registration + login ceremonies,
-   `WebAuthnCredentialProvider` capability interface, single-use TTL'd
-   ceremony sessions, clone detection.
-7. Login timing-oracle fix (unknown identifiers), atomic limiter increments,
-   and `*_noop` lint warnings for config knobs the engine never reads.
-
-Deferred: SSO/OIDC + OAuth2 social login (see docs/roadmap.md — moved to its
-own cycle).
+- Session profiles, `WithSessionProfile`, per-profile ceilings and idle
+  windows, `SessionInfo.Profile` / `IdleExpiresAt`.
+- External sign-in, `ExternalAuth` config, key cache, replay protection,
+  identity linking and auto-link, `ErrPasswordNotSet` for password-less accounts,
+  `external_identity_unlink_failure`.
+- Change email with proof of the new address, five sentinels, three audit events,
+  and refusal of password-reset and email-verification codes issued before the
+  change.
+- `session.Store.DeleteAllForUser` as one Lua script, `DeleteAllForUserExcept`,
+  and the `asa:` proof key removed on every session-deleting path.
+- `Security.LimiterFailClosed` with one deciding helper and a static call-site
+  audit.
+- The `TestSessionProfilesUnusedMatchesV070` flake fixed (test-only).
 
 ---
 
 ## Compatibility & migration notes
 
-- No public signature changes; all additions are new methods, fields, or
-  config. Existing configs resolve to identical session lifetimes (the
-  `MaxSessionDuration` default is raised to the effective current lifetime).
-- Behavior changes callers may observe:
-  - `LogoutByAccessToken` on an expired-but-authentic token now returns nil
-    (was `ErrTokenInvalid`).
-  - `Validate`/`Guard` with an explicit `ModeHybrid` route mode now validates
-    statelessly (previously always `ErrInvalidRouteMode`/401). An explicit
-    route mode always wins over the engine mode — a route override can
-    downgrade a Strict engine; review route wiring (see docs/security.md).
-- Mixed-version rollout caveat: MFA login challenges written by v0.4.0 use
-  record v2; older binaries cannot decode them during the ≤ 3 minute
-  challenge TTL window of a rolling deploy.
+- `gorelease -base=v0.7.0` reports only compatible changes (new methods,
+  fields, types, sentinels and codes; no signature changed).
+- No new module dependencies.
+- Behavior changes callers may observe, both in part 3:
+  - `DeleteAllForUser` is atomic. Its Redis commands changed from a multi-command
+    sequence to one script call; the result is the same, without the race.
+  - A session's `asa:<tenant>:<id>` key is deleted with the session (it used to
+    age out by TTL).
+- Rolling deploys: profiles create v6 sessions and v3 challenges that v0.7.0
+  cannot read; finish the deploy before enabling profiles. Part 3 migrates
+  nothing; its keys appear only while a feature is on.
+- The session scripts (rotation, swap, atomic logout-all) touch keys in more than
+  one hash slot and need a single-node or non-sharded Redis, as before.
+- `LimiterFailClosed` does not cover limiter resets, the auto-lockout counter or
+  WebAuthn (which has no limiter).
+- Applications must step the current user up before `RequestEmailChange`, link
+  and unlink, and should notify `EmailChangeResult.OldEmail`
+  (`docs/email_change.md`, `docs/external_identity.md`).
 
 ---
 
 ## Verification Gates
 
-### Full test suite (local, Windows)
+Run on the part 3 branch (Windows, Go 1.27):
 
-```bash
-go test ./...
-```
+| Gate | Result |
+|------|--------|
+| `gofmt -l .`, `goimports -l .` | no output |
+| `go build ./...`, `go vet ./...`, `go vet -tags=integration ./...` | pass |
+| `go test ./... -count=1` | pass |
+| `go test -tags=integration ./test/...` (miniredis, and Redis 7.0.15 through `REDIS_ADDR`) | pass |
+| staticcheck (`-checks=all,-ST1000,-ST1003,-ST1005,-U1000`) | no findings |
+| `security/run_scanners.sh` (Go 1.27.3) | baseline passed (gosec=3, govulncheck=1) |
+| `gorelease -base=v0.7.0` | only compatible changes |
+| `security/run_perf_sanity.sh` | fails on `ns/op` locally exactly as it does on `main` on the same machine (baseline recorded on other hardware); a same-machine A/B of Login, Refresh and Validate shows no significant difference |
 
-Result: PASS — all 12 packages (engine root, internal, flows, stores, window,
-jwt, otel/prometheus exporters, password, permission, session, test).
+`go test -race ./...` is enforced by the `go-race` CI workflow (Ubuntu and
+macOS); local race builds are unavailable on the release machine. It runs for
+pull requests and for pushes to `main`.
 
-### Race detector
+### Boundary and unchanged-when-unused guardrails
 
-`go test -race ./...` is enforced by the `go-race` CI workflow (Linux); local
-race builds are unavailable on the release machine. CI must be green before
-tagging.
-
-### Boundary guardrails
-
-```bash
-go test ./... -run "TestEngineErrorBoundaryStatic|TestEngineErrorBoundaryRuntime"
-```
-
-Result: PASS (included in the full-suite run).
-
-### Dependency audit
-
-New in v0.4.0: `github.com/go-webauthn/webauthn` (+ transitives) and
-test-only `github.com/descope/virtualwebauthn`. No OIDC/OAuth2 dependencies.
+`TestEngineErrorBoundaryStatic*`, `TestSessionProfilesUnusedMatchesV070` and
+`TestExternalAuthUnusedMatchesMain` (only their "logout all" block changed, for
+the script), `TestLimiterCallSitesAreClassifiedAndRouteThroughTheCentralHelper`,
+and the golden-bytes tests (unmodified).
 
 ---
 
 ## Release Checklist
 
-- [x] All v0.4.0 features implemented with tests and docs
-- [x] CHANGELOG moved from [Unreleased] to [0.4.0] with migration notes
+- [x] Parts 1 and 2 merged (#26, #27)
+- [x] Part 3 implemented with tests and docs
+- [x] CHANGELOG `[0.8.0]` dated, with migration notes
 - [x] Behavior changes and rollout caveats documented
-- [x] Docs reconciled against the v0.4.0 code (config, flows, middleware,
-      jwt, ops, security, webauthn, rate limiting, api-reference, examples)
-- [x] Full local test suite passes
-- [ ] `go-race` and all other CI workflows green on the release branch
-- [ ] Annotated tag `v0.4.0` created after merge to `main`
+- [x] Local gate passes
+- [ ] Part 3 pull request merged to `main`, `go-race` and CodeQL green on `main`
+- [ ] Annotated tag `v0.8.0` created after merge (maintainer)
