@@ -182,8 +182,15 @@ type LoginDeps struct {
 	GetMFAChallenge    func(context.Context, string) (*MFALoginChallengeRecord, error)
 	SaveMFAChallenge   func(context.Context, string, *MFALoginChallengeRecord, time.Duration) error
 	DeleteMFAChallenge func(context.Context, string) (bool, error)
-	RecordMFAFailure   func(context.Context, string, int) (bool, error)
-	MapMFAStoreError   func(error) error
+	// ReserveMFAAttempt claims one attempt of the challenge before a factor
+	// is evaluated and returns how many have been used including this one; a
+	// claim past limit deletes the challenge and returns a store error that
+	// MapMFAStoreError maps to Errors.MFALoginAttemptsExceeded.
+	ReserveMFAAttempt func(ctx context.Context, challengeID string, limit int) (int, error)
+	// ReleaseMFAAttempt gives a claim back for a request that evaluated no
+	// factor. Optional.
+	ReleaseMFAAttempt func(ctx context.Context, challengeID string)
+	MapMFAStoreError  func(error) error
 
 	// RecordAssurance, when set, records that the session just issued after
 	// a successful second factor holds an MFA assurance. It receives the
@@ -616,7 +623,7 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	}
 	if deps.GetMFAChallenge == nil ||
 		deps.DeleteMFAChallenge == nil ||
-		deps.RecordMFAFailure == nil ||
+		deps.ReserveMFAAttempt == nil ||
 		deps.GetUserByID == nil ||
 		deps.GetTOTPSecret == nil ||
 		deps.VerifyTOTPCode == nil ||
@@ -713,28 +720,46 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, deps.Errors.AccountUnverified
 	}
 
+	// Every factor evaluation is preceded by a claim on the challenge's
+	// attempts, made in one atomic step, so concurrent confirmations cannot
+	// evaluate more codes than MFALoginMaxAttempts allows.
+	var attempt int
+	claim := func() error {
+		var claimErr error
+		attempt, claimErr = claimLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps)
+		return claimErr
+	}
+	fail := func(cause error) (*LoginResult, error) {
+		return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, attempt, cause, deps)
+	}
+
 	switch strings.ToLower(strings.TrimSpace(mfaType)) {
 	case "", "totp":
 		totpRecord, terr := loadLoginTOTPRecord(ctx, challengeID, user.UserID, record.TenantID, deps)
 		if terr != nil {
 			return nil, terr
 		}
+		if err := claim(); err != nil {
+			return nil, err
+		}
 		if code == "" {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 		ok, counter, verr := deps.VerifyTOTPCode(totpRecord.Secret, code, deps.Now())
 		if verr != nil || !ok {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 
 		if deps.EnforceReplayProtection {
 			if counter <= totpRecord.LastUsedCounter {
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
 				deps.MetricInc(deps.Metrics.MFAReplayAttempt)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginReplay, nil)
 				return nil, deps.Errors.MFALoginReplay
 			}
 			if err := deps.UpdateTOTPLastUsedCounter(ctx, user.UserID, counter); err != nil {
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
 				return nil, deps.Errors.MFALoginUnavailable
@@ -744,25 +769,31 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		if _, terr := loadLoginTOTPRecord(ctx, challengeID, user.UserID, record.TenantID, deps); terr != nil {
 			return nil, terr
 		}
+		if err := claim(); err != nil {
+			return nil, err
+		}
 		if code == "" {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 		if berr := deps.VerifyBackupCodeInTenant(ctx, record.TenantID, user.UserID, code); berr != nil {
 			switch {
 			case errors.Is(berr, deps.Errors.BackupCodeRateLimited):
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginAttemptsExceeded, deps)
+				return fail(deps.Errors.MFALoginAttemptsExceeded)
 			case errors.Is(berr, deps.Errors.BackupCodeInvalid), errors.Is(berr, deps.Errors.BackupCodesNotConfigured):
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+				return fail(deps.Errors.MFALoginInvalid)
 			default:
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginUnavailable, deps)
+				return fail(deps.Errors.MFALoginUnavailable)
 			}
 		}
 	case "webauthn":
+		if err := claim(); err != nil {
+			return nil, err
+		}
 		if !webauthnConfigured || deps.ConfirmWebAuthnAssertion == nil {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 		if code == "" {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 		if werr := deps.ConfirmWebAuthnAssertion(ctx, challengeID, user.UserID, []byte(code)); werr != nil {
 			switch {
@@ -781,6 +812,7 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 			case errors.Is(werr, deps.Errors.WebAuthnCeremonyExpired):
 				// No verification happened; surface "call BeginWebAuthnLogin
 				// (again)" without consuming a challenge attempt.
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", werr, func() map[string]string {
 					return map[string]string{
@@ -789,15 +821,19 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 				})
 				return nil, werr
 			case errors.Is(werr, deps.Errors.WebAuthnUnavailable):
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
 				return nil, deps.Errors.MFALoginUnavailable
 			default:
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+				return fail(deps.Errors.MFALoginInvalid)
 			}
 		}
 	default:
-		return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+		if err := claim(); err != nil {
+			return nil, err
+		}
+		return fail(deps.Errors.MFALoginInvalid)
 	}
 
 	deleted, err := deps.DeleteMFAChallenge(ctx, challengeID)
@@ -883,22 +919,55 @@ func loadLoginTOTPRecord(
 	return totpRecord, nil
 }
 
+// mfaAttemptLimit is the number of factor evaluations one challenge allows.
+func (d LoginDeps) mfaAttemptLimit() int {
+	if d.MFALoginMaxAttempts < 1 {
+		return 1
+	}
+	return d.MFALoginMaxAttempts
+}
+
+// claimLoginMFAAttempt claims one attempt of the challenge before a factor is
+// evaluated. A refusal (the challenge is gone, expired, or this claim is past
+// the limit and deleted it) is returned as the error the confirmation ends
+// with.
+func claimLoginMFAAttempt(ctx context.Context, challengeID, userID, tenantID string, deps LoginDeps) (int, error) {
+	attempt, err := deps.ReserveMFAAttempt(ctx, challengeID, deps.mfaAttemptLimit())
+	if err == nil {
+		return attempt, nil
+	}
+	deps.MetricInc(deps.Metrics.MFALoginFailure)
+	mapped := deps.MapMFAStoreError(err)
+	event := deps.Events.MFAFailure
+	if errors.Is(mapped, deps.Errors.MFALoginAttemptsExceeded) {
+		event = deps.Events.MFAAttemptsExceeded
+	}
+	deps.EmitAudit(ctx, event, false, userID, tenantID, "", mapped, nil)
+	return 0, mapped
+}
+
+// releaseLoginMFAAttempt gives back a claim for a request that evaluated no
+// factor.
+func releaseLoginMFAAttempt(ctx context.Context, challengeID string, deps LoginDeps) {
+	if deps.ReleaseMFAAttempt != nil {
+		deps.ReleaseMFAAttempt(ctx, challengeID)
+	}
+}
+
+// runFailLoginMFAAttempt ends a confirmation whose factor was wrong. attempt
+// is the claim it made; when that claim took the last attempt the challenge is
+// destroyed and the caller learns the attempts are exhausted.
 func runFailLoginMFAAttempt(
 	ctx context.Context,
 	challengeID string,
 	userID string,
 	tenantID string,
+	attempt int,
 	cause error,
 	deps LoginDeps,
 ) (*LoginResult, error) {
-	exceeded, recErr := deps.RecordMFAFailure(ctx, challengeID, deps.MFALoginMaxAttempts)
-	if recErr != nil {
-		deps.MetricInc(deps.Metrics.MFALoginFailure)
-		mapped := deps.MapMFAStoreError(recErr)
-		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", mapped, nil)
-		return nil, mapped
-	}
-	if exceeded {
+	if attempt >= deps.mfaAttemptLimit() {
+		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
 		deps.MetricInc(deps.Metrics.MFALoginFailure)
 		deps.EmitAudit(ctx, deps.Events.MFAAttemptsExceeded, false, userID, tenantID, "", deps.Errors.MFALoginAttemptsExceeded, nil)
 		return nil, deps.Errors.MFALoginAttemptsExceeded

@@ -5,11 +5,13 @@ package test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/internal/window"
 )
 
@@ -91,6 +93,107 @@ func TestRedisCompatWindowReserveConcurrentBurst(t *testing.T) {
 
 			if got := claimed.Load(); got != limit {
 				t.Fatalf("expected exactly %d claims out of %d concurrent callers, got %d", limit, callers, got)
+			}
+		})
+	}
+}
+
+func TestRedisCompatMFAChallengeAttemptScripts(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			ctx := context.Background()
+			store := stores.NewMFALoginChallengeStore(rdb, "itest-amc")
+
+			save := func(id string, profile string) {
+				t.Helper()
+				rec := &stores.MFALoginChallenge{
+					UserID:     "u1",
+					TenantID:   "t1",
+					ExpiresAt:  time.Now().Add(time.Minute).Unix(),
+					RememberMe: true,
+					Profile:    profile,
+				}
+				if err := store.Save(ctx, id, rec, time.Minute); err != nil {
+					t.Fatalf("save: %v", err)
+				}
+			}
+
+			// Counting keeps the rest of the record and its TTL, for the
+			// plain and the profile-carrying layout.
+			for _, profile := range []string{"", "mobile"} {
+				id := "count-" + profile
+				save(id, profile)
+				for want := 1; want <= 3; want++ {
+					got, err := store.ReserveAttempt(ctx, id, 3)
+					if err != nil || got != want {
+						t.Fatalf("%s claim %d: got %d, %v", id, want, got, err)
+					}
+				}
+				rec, err := store.Get(ctx, id)
+				if err != nil || rec.Attempts != 3 || rec.UserID != "u1" || rec.TenantID != "t1" || !rec.RememberMe || rec.Profile != profile {
+					t.Fatalf("%s: record after claims = %+v, %v", id, rec, err)
+				}
+				if ttl := rdb.TTL(ctx, "itest-amc:"+id).Val(); ttl <= 0 || ttl > time.Minute {
+					t.Fatalf("%s: TTL after claims = %v", id, ttl)
+				}
+				if _, err := store.ReserveAttempt(ctx, id, 3); !errors.Is(err, stores.ErrMFALoginChallengeExceeded) {
+					t.Fatalf("%s: claim past the limit: %v", id, err)
+				}
+				if rdb.Exists(ctx, "itest-amc:"+id).Val() != 0 {
+					t.Fatalf("%s: a claim past the limit must delete the challenge", id)
+				}
+			}
+
+			// Release gives one back and floors at zero.
+			save("rel", "")
+			if err := store.ReleaseAttempt(ctx, "rel"); err != nil {
+				t.Fatalf("release on a fresh challenge: %v", err)
+			}
+			for i := 0; i < 2; i++ {
+				if _, err := store.ReserveAttempt(ctx, "rel", 2); err != nil {
+					t.Fatalf("claim: %v", err)
+				}
+			}
+			if err := store.ReleaseAttempt(ctx, "rel"); err != nil {
+				t.Fatalf("release: %v", err)
+			}
+			if got, err := store.ReserveAttempt(ctx, "rel", 2); err != nil || got != 2 {
+				t.Fatalf("claim after release: %d, %v", got, err)
+			}
+
+			// Missing and expired.
+			if _, err := store.ReserveAttempt(ctx, "missing", 2); !errors.Is(err, stores.ErrMFALoginChallengeNotFound) {
+				t.Fatalf("missing: %v", err)
+			}
+			old := &stores.MFALoginChallenge{UserID: "u1", ExpiresAt: time.Now().Add(-time.Minute).Unix()}
+			if err := store.Save(ctx, "old", old, time.Minute); err != nil {
+				t.Fatalf("save: %v", err)
+			}
+			if _, err := store.ReserveAttempt(ctx, "old", 2); !errors.Is(err, stores.ErrMFALoginChallengeExpired) {
+				t.Fatalf("expired: %v", err)
+			}
+
+			// A concurrent burst is bounded by the limit.
+			save("burst", "")
+			var granted atomic.Int64
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			for i := 0; i < 64; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					if _, err := store.ReserveAttempt(ctx, "burst", 5); err == nil {
+						granted.Add(1)
+					}
+				}()
+			}
+			close(start)
+			wg.Wait()
+			if got := granted.Load(); got != 5 {
+				t.Fatalf("%d concurrent claims granted, want exactly 5", got)
 			}
 		})
 	}

@@ -28,7 +28,7 @@ func assuranceTestDeps(calls *[]assuranceCall) LoginDeps {
 			return &MFALoginChallengeRecord{UserID: "u1", TenantID: "t1", RememberMe: true}, nil
 		},
 		DeleteMFAChallenge: func(context.Context, string) (bool, error) { return true, nil },
-		RecordMFAFailure:   func(context.Context, string, int) (bool, error) { return false, nil },
+		ReserveMFAAttempt:  func(context.Context, string, int) (int, error) { return 1, nil },
 		GetUserByID: func(context.Context, string) (LoginUserRecord, error) {
 			return LoginUserRecord{UserID: "u1", TenantID: "t1"}, nil
 		},

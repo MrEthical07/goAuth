@@ -366,3 +366,91 @@ func TestVerifyTOTPSuccessResetsTheClaim(t *testing.T) {
 		}
 	}
 }
+
+// mfaChallenge logs in with the password and returns the MFA challenge.
+func mfaChallenge(t *testing.T, engine *Engine) string {
+	t.Helper()
+	res, err := engine.LoginWithResult(context.Background(), "alice", "correct-password-123")
+	if err != nil || !res.MFARequired || res.MFASession == "" {
+		t.Fatalf("expected an MFA challenge, got %+v, %v", res, err)
+	}
+	return res.MFASession
+}
+
+func mfaLoginConfig() Config {
+	cfg := totpTestConfig()
+	cfg.TOTP.RequireForLogin = true
+	cfg.TOTP.EnforceReplayProtection = false
+	return cfg
+}
+
+// FAILED-BEFORE (R2-24): the per-challenge attempt cap was charged after the
+// factor had been evaluated, so parallel confirmations all got their code
+// checked before the cap-th failure committed.
+func TestConfirmLoginMFAConcurrentBurstBoundedByMFALoginMaxAttempts(t *testing.T) {
+	cfg := mfaLoginConfig()
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	enableUserTOTP(t, engine, "u1", cfg)
+	challenge := mfaChallenge(t, engine)
+
+	gate := make(chan struct{})
+	evals := gateTOTPEvaluations(engine, gate)
+	const n = 40
+	max := cfg.TOTP.MFALoginMaxAttempts
+	errs := burst(t, n, n-max, gate, func(i int) error {
+		_, err := engine.ConfirmLoginMFA(context.Background(), challenge, fmt.Sprintf("%06d", i))
+		return err
+	})
+
+	if got := evals.Load(); got != int64(max) {
+		t.Fatalf("%d of %d concurrent confirmations had their code evaluated, want exactly MFALoginMaxAttempts (%d)", got, n, max)
+	}
+	for i, err := range errs {
+		if !errors.Is(err, ErrMFALoginInvalid) && !errors.Is(err, ErrMFALoginAttemptsExceeded) {
+			t.Fatalf("confirmation %d: %v", i, err)
+		}
+	}
+}
+
+// Sequentially the cap behaves as it always did: failures one to four are
+// "invalid", the fifth exhausts the challenge, and the challenge is gone.
+func TestConfirmLoginMFASequentialAttemptCapIsUnchanged(t *testing.T) {
+	cfg := mfaLoginConfig()
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	secret := enableUserTOTP(t, engine, "u1", cfg)
+	ctx := context.Background()
+
+	// A correct code after four wrong ones still completes the login.
+	challenge := mfaChallenge(t, engine)
+	for i := 1; i < cfg.TOTP.MFALoginMaxAttempts; i++ {
+		if _, err := engine.ConfirmLoginMFA(ctx, challenge, "000000"); !errors.Is(err, ErrMFALoginInvalid) {
+			t.Fatalf("wrong code %d: %v, want ErrMFALoginInvalid", i, err)
+		}
+	}
+	if _, err := engine.ConfirmLoginMFA(ctx, challenge, codeForNow(t, secret, cfg.TOTP)); err != nil {
+		t.Fatalf("the correct code after %d wrong ones: %v", cfg.TOTP.MFALoginMaxAttempts-1, err)
+	}
+
+	// The fifth wrong code exhausts the challenge.
+	up2 := newHardeningUserProvider(t)
+	engine2, rdb2, done2 := newCreateAccountEngine(t, cfg, up2)
+	defer done2()
+	enableUserTOTP(t, engine2, "u1", cfg)
+	challenge = mfaChallenge(t, engine2)
+	for i := 1; i < cfg.TOTP.MFALoginMaxAttempts; i++ {
+		_, _ = engine2.ConfirmLoginMFA(ctx, challenge, "000000")
+	}
+	if _, err := engine2.ConfirmLoginMFA(ctx, challenge, "000000"); !errors.Is(err, ErrMFALoginAttemptsExceeded) {
+		t.Fatalf("wrong code %d: %v, want ErrMFALoginAttemptsExceeded", cfg.TOTP.MFALoginMaxAttempts, err)
+	}
+	if rdb2.Exists(ctx, "amc:"+challenge).Val() != 0 {
+		t.Fatal("the exhausted challenge must be deleted")
+	}
+	if _, err := engine2.ConfirmLoginMFA(ctx, challenge, "000000"); !errors.Is(err, ErrMFALoginInvalid) {
+		t.Fatalf("a deleted challenge: %v, want ErrMFALoginInvalid", err)
+	}
+}

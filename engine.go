@@ -2987,7 +2987,10 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			}, ttl)
 		}
 		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete
-		deps.RecordMFAFailure = e.mfaLoginStore.RecordFailure
+		deps.ReserveMFAAttempt = e.mfaLoginStore.ReserveAttempt
+		deps.ReleaseMFAAttempt = func(ctx context.Context, challengeID string) {
+			_ = e.mfaLoginStore.ReleaseAttempt(ctx, challengeID)
+		}
 	}
 	deps.MapMFAStoreError = mapMFALoginStoreError
 	if e != nil && e.roleManager != nil {
