@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.0] - 2026-10-22
+## [0.8.0] - 2026-10-25
 
 Minor release (SemVer), delivered as three pull requests. **Part 1 (per-client session profiles) is additive; part 2 (external identity) follows it below.**
 Nothing is removed and no exported signature changed: `Config` gained one
