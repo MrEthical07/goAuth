@@ -120,6 +120,13 @@ func (a *Argon2) Hash(password string) (string, error) {
 	), nil
 }
 
+// MaxPasswordBytes returns the longest password, in bytes, that Hash and Verify
+// accept. A caller can compare a password against it before doing any other
+// work, instead of learning it from a failed Verify.
+func (a *Argon2) MaxPasswordBytes() int {
+	return a.maxPasswordBytes
+}
+
 // Verify checks a plaintext password against an Argon2id hash string.
 // Returns (true, nil) on match.
 //

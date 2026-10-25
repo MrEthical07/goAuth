@@ -190,6 +190,15 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 		})
 		return nil, deps.Errors.AccountCreationInvalid
 	}
+	if identifierTooLong(req.Identifier) {
+		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", deps.Errors.AccountCreationInvalid, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(req.Identifier),
+				"reason":     "identifier_too_long",
+			}
+		})
+		return nil, deps.Errors.AccountCreationInvalid
+	}
 	if req.Password == "" {
 		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", deps.Errors.PasswordPolicy, func() map[string]string {
 			return map[string]string{

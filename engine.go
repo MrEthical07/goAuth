@@ -2902,6 +2902,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	}
 	if e != nil {
 		deps.DummyHash = e.dummyHash
+		if e.passwordHash != nil {
+			deps.MaxPasswordBytes = e.passwordHash.MaxPasswordBytes()
+		}
 	}
 	e.configureLoginRateLimiterDeps(&deps)
 	e.configureLoginTOTPLimiterDeps(&deps)

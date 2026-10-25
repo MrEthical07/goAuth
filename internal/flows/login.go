@@ -187,6 +187,10 @@ type LoginDeps struct {
 	ResetTOTPLimiter   func(ctx context.Context, tenantID, userID string)
 	IsTOTPRateLimited  func(error) bool
 
+	// MaxPasswordBytes is the longest password the hasher accepts; 0 disables
+	// the up-front length check.
+	MaxPasswordBytes int
+
 	// DummyHash is verified in place of a real hash on every path that has
 	// none to verify. Empty means DummyTimingHash.
 	DummyHash string
@@ -344,13 +348,27 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		if rejected := deps.profileRejection(status); rejected != nil {
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", rejected, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "session_profile",
 				}
 			})
 			return nil, rejected
 		}
 		ctx = withResolvedSessionProfile(ctx, name)
+	}
+
+	// An identifier or password that cannot be real is refused before the
+	// limiter is read, a user is looked up or a hash is verified, on one path
+	// that does the same work whether or not the account exists.
+	if identifierTooLong(username) || (deps.MaxPasswordBytes > 0 && len(password) > deps.MaxPasswordBytes) {
+		deps.MetricInc(deps.Metrics.LoginFailure)
+		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(username),
+				"reason":     "input_too_long",
+			}
+		})
+		return nil, deps.Errors.InvalidCredentials
 	}
 
 	if deps.ReserveLoginRate != nil {

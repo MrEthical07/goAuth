@@ -119,6 +119,16 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		return "", deps.Errors.EmailVerificationInvalid
 	}
 
+	if identifierTooLong(identifier) {
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationInvalid, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(identifier),
+				"reason":     "identifier_too_long",
+			}
+		})
+		return "", deps.Errors.EmailVerificationInvalid
+	}
+
 	tenantID := deps.TenantIDFromContext(ctx)
 	if err := deps.CheckRequestLimiter(ctx, tenantID, identifier); err != nil {
 		mapped := deps.MapLimiterError(err)

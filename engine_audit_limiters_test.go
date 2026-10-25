@@ -643,3 +643,92 @@ func TestDummyVerificationCostsWhatTheConfiguredHasherCosts(t *testing.T) {
 		}
 	}
 }
+
+// FAILED-BEFORE (R2-23): an over-length password was rejected by the hasher
+// before any hashing for an account that has a password, while an unknown
+// identifier paid a full dummy verification, so the response time told the two
+// apart. Inputs that cannot be real now take one cheap path whatever the
+// account is.
+func TestOverLengthInputsAreRefusedOnOneCheapPath(t *testing.T) {
+	env := newRSEnv(t, limiterFailClosedConfig(false))
+	var verifications atomic.Int64
+	env.engine.verifyHashFn = func(password, encodedHash string) (bool, error) {
+		verifications.Add(1)
+		return env.engine.passwordHash.Verify(password, encodedHash)
+	}
+
+	long := strings.Repeat("p", 1025)
+	for _, tc := range []struct{ name, identifier, password string }{
+		{"existing account, long password", rsIdentifier, long},
+		{"unknown identifier, long password", "nobody@example.com", long},
+		{"long identifier, right password", strings.Repeat("a", 321), rsPassword},
+		{"long identifier, long password", strings.Repeat("a", 321), long},
+	} {
+		before := verifications.Load()
+		if _, _, err := env.engine.Login(env.ctx(), tc.identifier, tc.password); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("%s: %v, want ErrInvalidCredentials", tc.name, err)
+		}
+		if got := verifications.Load() - before; got != 0 {
+			t.Fatalf("%s: %d password verifications, want 0 (the same cheap path for every account)", tc.name, got)
+		}
+	}
+	if keys := env.mr.Keys(); len(keys) != 0 {
+		t.Fatalf("a refused input must leave no limiter state, found %v", keys)
+	}
+}
+
+// The cap is inclusive: an identifier of exactly 320 bytes is an ordinary
+// failed login.
+func TestIdentifierAtTheCapIsProcessedNormally(t *testing.T) {
+	env := newRSEnv(t, limiterFailClosedConfig(false))
+	var verifications atomic.Int64
+	env.engine.verifyHashFn = func(password, encodedHash string) (bool, error) {
+		verifications.Add(1)
+		return env.engine.passwordHash.Verify(password, encodedHash)
+	}
+	if _, _, err := env.engine.Login(env.ctx(), strings.Repeat("a", 320), rsPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("got %v, want ErrInvalidCredentials", err)
+	}
+	if verifications.Load() != 1 {
+		t.Fatalf("an identifier at the cap must reach the dummy verification, got %d", verifications.Load())
+	}
+}
+
+// FAILED-BEFORE (R2-23 and the needs-validation record): identifiers of any
+// size went to the user lookup, into limiter keys and into audit events, so a
+// queued event held as many bytes as the caller sent.
+func TestUnauthenticatedEntryPointsRefuseAndTruncateHugeIdentifiers(t *testing.T) {
+	env := newRSEnv(t, limiterFailClosedConfig(false))
+	ctx := env.ctx()
+	huge := strings.Repeat("x", 1<<16)
+
+	if _, _, err := env.engine.Login(ctx, huge, rsPassword); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("Login: %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := env.engine.RequestPasswordReset(ctx, huge); !errors.Is(err, ErrPasswordResetInvalid) {
+		t.Fatalf("RequestPasswordReset: %v, want ErrPasswordResetInvalid", err)
+	}
+	if _, err := env.engine.RequestEmailVerification(ctx, huge); !errors.Is(err, ErrEmailVerificationInvalid) {
+		t.Fatalf("RequestEmailVerification: %v, want ErrEmailVerificationInvalid", err)
+	}
+	if _, err := env.engine.CreateAccount(ctx, CreateAccountRequest{Identifier: huge, Password: "brand-new-password-1"}); !errors.Is(err, ErrAccountCreationInvalid) {
+		t.Fatalf("CreateAccount: %v, want ErrAccountCreationInvalid", err)
+	}
+
+	env.engine.Close() // flush the asynchronous dispatcher
+	env.sink.mu.Lock()
+	defer env.sink.mu.Unlock()
+	if len(env.sink.events) < 4 {
+		t.Fatalf("expected an audit event per refused request, got %d", len(env.sink.events))
+	}
+	for _, ev := range env.sink.events {
+		for k, v := range ev.Metadata {
+			if len(v) > 320 {
+				t.Fatalf("%s: audit metadata %q holds %d bytes of caller input", ev.EventType, k, len(v))
+			}
+		}
+	}
+	if keys := env.mr.Keys(); len(keys) != 0 {
+		t.Fatalf("a refused identifier must leave no limiter state, found %v", keys)
+	}
+}

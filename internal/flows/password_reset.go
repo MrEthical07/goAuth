@@ -122,6 +122,16 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		return "", deps.Errors.PasswordResetInvalid
 	}
 
+	if identifierTooLong(identifier) {
+		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.PasswordResetInvalid, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(identifier),
+				"reason":     "identifier_too_long",
+			}
+		})
+		return "", deps.Errors.PasswordResetInvalid
+	}
+
 	tenantID := deps.TenantIDFromContext(ctx)
 	if err := deps.CheckRequestLimiter(ctx, tenantID, identifier); err != nil {
 		mapped := deps.MapLimiterError(err)
