@@ -330,7 +330,15 @@ type SecurityConfig struct {
 	EnableAccountVersionCheck    bool
 	AutoLockoutEnabled           bool
 	AutoLockoutThreshold         int
-	AutoLockoutDuration          time.Duration // 0 = manual unlock only
+
+	// AutoLockoutDuration is the rolling window in which failures are counted
+	// towards AutoLockoutThreshold; 0 means they are counted until the account
+	// is unlocked. It does NOT unlock the account: an account locked by
+	// auto-lockout stays Locked until UnlockAccount or EnableAccount is
+	// called, whatever this is set to. Setting it produces the
+	// auto_lockout_duration_noop lint warning. Automatic unlocking is on the
+	// roadmap.
+	AutoLockoutDuration time.Duration
 
 	// LimiterWindowMode selects the rate-limiter counting algorithm for all
 	// limiter domains: "fixed" (or empty, the default) keeps classic
@@ -2279,6 +2287,11 @@ func (c *Config) Lint() LintResult {
 	if !c.Security.EnableLoginFailureLimiter {
 		warn(LintHigh, "login_failure_limiter_disabled",
 			"EnableLoginFailureLimiter is false; login abuse protection is disabled")
+	}
+
+	if c.Security.AutoLockoutEnabled && c.Security.AutoLockoutDuration > 0 {
+		warn(LintWarn, "auto_lockout_duration_noop",
+			"Security.AutoLockoutDuration does not unlock an auto-locked account; it only sets the window in which failures are counted, and the account stays Locked until UnlockAccount or EnableAccount is called")
 	}
 
 	if !c.Security.LoginIPLimiter.Enabled {

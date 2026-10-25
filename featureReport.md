@@ -632,7 +632,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 
 **What works:**
 - After `AutoLockoutThreshold` consecutive failed password attempts, `LockAccount()` is called automatically
-- `AutoLockoutDuration = 0` means manual unlock only; `> 0` means Redis key TTL auto-expires
+- `AutoLockoutDuration` is the window failures are counted in (`0` = until unlocked); it does not unlock the account. An auto-locked account stays `Locked` until `UnlockAccount`/`EnableAccount`
 - Successful login resets the lockout counter
 - `UnlockAccount()` / `EnableAccount()` clear the counter and re-enable the account
 - Login/refresh/validate (strict) all reject locked accounts
@@ -651,7 +651,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 - `TestAutoLockout_LockedAccountStrictValidateFails` — strict-mode validate rejects locked
 - `TestAutoLockout_LockedAccountRefreshFails` — refresh rejects locked
 
-**Config knobs:** `SecurityConfig{AutoLockoutEnabled, AutoLockoutThreshold, AutoLockoutDuration}` (0 duration = manual unlock only)
+**Config knobs:** `SecurityConfig{AutoLockoutEnabled, AutoLockoutThreshold, AutoLockoutDuration}` (the duration sizes the failure-counting window; it does not unlock the account)
 
 ---
 
@@ -991,7 +991,7 @@ Additive public API additions:
 
 - `SecurityConfig.AutoLockoutEnabled` (bool) — enable automatic account lockout
 - `SecurityConfig.AutoLockoutThreshold` (int) — failure count before lockout (default: 10)
-- `SecurityConfig.AutoLockoutDuration` (time.Duration) — lockout duration; 0 = manual unlock (default: 30m)
+- `SecurityConfig.AutoLockoutDuration` (time.Duration) — failure-counting window, not a lock duration (default: 30m)
 - `TOTPConfig.MaxVerifyAttempts` (int) — configurable TOTP rate limit threshold (default: 5)
 - `TOTPConfig.VerifyAttemptCooldown` (time.Duration) — TOTP rate limit window (default: 1m)
 - `JWTConfig.RequireIAT` (bool) — reject tokens without `iat` claim

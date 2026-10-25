@@ -742,7 +742,7 @@ codes, err := engine.RegenerateBackupCodes(ctx, "user-123", "123456")
 
 ```
 Active ──→ Disabled     (DisableAccount)
-Active ──→ Locked       (LockAccount / auto-lockout)
+Active ──→ Locked       (LockAccount / auto-lockout; only an Active account is counted or locked by auto-lockout)
 Active ──→ Deleted      (DeleteAccount)
 Disabled → Active       (EnableAccount)
 Locked ──→ Active       (EnableAccount / UnlockAccount)
