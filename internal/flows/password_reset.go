@@ -90,9 +90,13 @@ type PasswordResetDeps struct {
 	GetResetRecord     func(context.Context, string, string) (PasswordResetStoreRecord, error)
 	ConsumeResetRecord func(context.Context, string, string, [32]byte, int, int) (PasswordResetStoreRecord, error)
 
-	GenerateChallenge     func(int, int) (string, string, [32]byte, error)
-	ParseChallenge        func(int, string, int) (string, [32]byte, error)
-	SleepEnumerationDelay func(context.Context) error
+	GenerateChallenge func(int, int) (string, string, [32]byte, error)
+	ParseChallenge    func(int, string, int) (string, [32]byte, error)
+	// EnumerationFloor draws the minimum time a request that answers with a
+	// challenge takes, whether the identifier is registered or not; nil means
+	// no floor. SleepFor waits for a duration (nil: a context-aware sleep).
+	EnumerationFloor func() time.Duration
+	SleepFor         func(context.Context, time.Duration) error
 
 	VerifyTOTPForUser        func(context.Context, PasswordResetUser, string) error
 	VerifyBackupCodeInTenant func(context.Context, string, string, string) error
@@ -108,6 +112,7 @@ type PasswordResetDeps struct {
 
 func RunRequestPasswordReset(ctx context.Context, identifier string, deps PasswordResetDeps) (string, error) {
 	normalizePasswordResetDeps(&deps)
+	floor := startEnumerationFloor(deps.Now, deps.EnumerationFloor, deps.SleepFor)
 
 	if !deps.Enabled {
 		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.PasswordResetDisabled, nil)
@@ -174,9 +179,6 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", err
 		}
-		if sleepErr := deps.SleepEnumerationDelay(ctx); sleepErr != nil {
-			return "", sleepErr
-		}
 		_, challenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits)
 		if genErr != nil {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", tenantID, "", deps.Errors.PasswordResetUnavailable, func() map[string]string {
@@ -194,7 +196,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 			}
 		})
 		deps.MetricInc(deps.Metrics.PasswordResetRequest)
-		return challenge, nil
+		return floor.finish(ctx, challenge)
 	}
 
 	// The account's own budget (shared by every spelling of its identifier).
@@ -266,7 +268,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		}
 	})
 	deps.MetricInc(deps.Metrics.PasswordResetRequest)
-	return challenge, nil
+	return floor.finish(ctx, challenge)
 }
 
 func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword, mfaType, mfaCode string, deps PasswordResetDeps) error {
@@ -471,8 +473,8 @@ func normalizePasswordResetDeps(deps *PasswordResetDeps) {
 	if deps.TenantIDFromContext == nil {
 		deps.TenantIDFromContext = func(context.Context) string { return "" }
 	}
-	if deps.SleepEnumerationDelay == nil {
-		deps.SleepEnumerationDelay = func(context.Context) error { return nil }
+	if deps.SleepFor == nil {
+		deps.SleepFor = sleepContext
 	}
 	if deps.Warn == nil {
 		deps.Warn = func(string, ...any) {}

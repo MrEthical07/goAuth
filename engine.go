@@ -2298,7 +2298,7 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		ParseChallengeCode: func(strategy int, verificationID, code string, otpDigits int) ([32]byte, error) {
 			return parseEmailVerificationChallengeCode(VerificationStrategyType(strategy), verificationID, code, otpDigits)
 		},
-		SleepEnumerationDelay: sleepPasswordResetEnumerationDelay,
+		EnumerationFloor: enumerationFloorDuration,
 		MetricInc: func(id int) {
 			e.metricInc(MetricID(id))
 		},
@@ -3313,7 +3313,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 		ParseChallenge: func(strategy int, challenge string, otpDigits int) (string, [32]byte, error) {
 			return parsePasswordResetChallenge(ResetStrategyType(strategy), challenge, otpDigits)
 		},
-		SleepEnumerationDelay: sleepPasswordResetEnumerationDelay,
+		EnumerationFloor: enumerationFloorDuration,
 		MetricInc: func(id int) {
 			e.metricInc(MetricID(id))
 		},
@@ -3539,26 +3539,21 @@ func mapPasswordResetStoreError(err error) error {
 	}
 }
 
-func sleepPasswordResetEnumerationDelay(ctx context.Context) error {
+// enumerationFloorDuration draws the minimum time, 20 to 40 ms, that a
+// password-reset or email-verification request which answers with a challenge
+// takes whatever the identifier turns out to be.
+func enumerationFloorDuration() time.Duration {
 	minMs := int64(20)
 	maxMs := int64(40)
 	span := maxMs - minMs + 1
 
 	n, err := rand.Int(rand.Reader, big.NewInt(span))
 	if err != nil {
-		return err
+		// Without randomness fall back to the top of the range: still a
+		// floor, just not a random one.
+		return time.Duration(maxMs) * time.Millisecond
 	}
-
-	delay := time.Duration(minMs+n.Int64()) * time.Millisecond
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return time.Duration(minMs+n.Int64()) * time.Millisecond
 }
 
 func isNumericString(v string) bool {
