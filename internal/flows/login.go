@@ -937,6 +937,12 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		deps.RecordAssurance(ctx, record.TenantID, refresh, loginAssuranceMethod(mfaType), record.RememberMe)
 	}
 
+	// Matches the password-only login: a completed login clears the failures
+	// counted against the account.
+	if deps.AutoLockoutEnabled && deps.ResetLockoutCounter != nil {
+		_ = deps.ResetLockoutCounter(ctx, user.UserID)
+	}
+
 	deps.MetricInc(deps.Metrics.MFALoginSuccess)
 	var successMeta func() map[string]string
 	if profile := ResolvedSessionProfile(ctx); profile != "" {

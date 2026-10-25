@@ -783,3 +783,31 @@ func TestAutoLockoutNeverRewritesAnAdministratorSetStatus(t *testing.T) {
 		done()
 	}
 }
+
+// FAILED-BEFORE (R2-22): a login completed through MFA did not clear the
+// failure counter, unlike a password-only login.
+func TestMFALoginClearsTheLockoutCounter(t *testing.T) {
+	cfg := mfaLoginConfig()
+	cfg.Security.AutoLockoutEnabled = true
+	cfg.Security.AutoLockoutThreshold = 5
+	cfg.Security.AutoLockoutDuration = 0
+	cfg.Security.EnableLoginFailureLimiter = false
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	secret := enableUserTOTP(t, engine, "u1", cfg)
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		_, _, _ = engine.Login(ctx, "alice", "wrong-password-1")
+	}
+	if n, err := engine.lockoutLimiter.GetFailureCount(ctx, "0", "u1"); err != nil || n != 2 {
+		t.Fatalf("failure count = %d, %v; want 2", n, err)
+	}
+	if _, err := engine.ConfirmLoginMFA(ctx, mfaChallenge(t, engine), codeForNow(t, secret, cfg.TOTP)); err != nil {
+		t.Fatalf("MFA login: %v", err)
+	}
+	if n, err := engine.lockoutLimiter.GetFailureCount(ctx, "0", "u1"); err != nil || n != 0 {
+		t.Fatalf("failure count after an MFA login = %d, %v; want 0", n, err)
+	}
+}
