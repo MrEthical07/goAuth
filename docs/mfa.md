@@ -133,7 +133,9 @@ stores the flag with the MFA challenge, so the session issued by
 - Code verification uses `crypto/subtle.ConstantTimeCompare`.
 - Skew > 1 is warned by `Config.Lint()` (widens acceptance window).
 - Backup code regeneration requires TOTP proof to prevent hijack.
-- MFA challenges have TTL and attempt limits.
+- MFA challenges have TTL and attempt limits. The per-challenge cap (`TOTP.MFALoginMaxAttempts`) is claimed with one script *before* the factor is evaluated, so parallel confirmations cannot evaluate more codes than the cap allows.
+- TOTP guesses at MFA login also draw on the **per-account TOTP budget** that `VerifyTOTP` uses (`TOTP.MFALoginMaxAttempts` per `TOTP.VerifyAttemptCooldown`), so minting a new challenge for every five guesses does not reset the limit. When the budget is spent the challenge is destroyed and `ErrTOTPRateLimited` is returned, and a right code is refused too until the window passes; a right code clears the budget.
+- Every code check (TOTP, backup code, step-up) claims its attempt before the code is evaluated; see [rate_limiting.md](rate_limiting.md#reserve-before-you-verify).
 
 ## Performance Notes
 

@@ -59,12 +59,13 @@ ceiling instead of the shorter default lifetime
 
 ### Steps
 
+0. **Input cap** — an identifier over `MaxIdentifierBytes` (320) or a password over the hasher's limit (1024 bytes) is refused with `ErrInvalidCredentials` before the limiter, the lookup or any hashing, on one cheap path whatever the account is.
 1. Extract client IP via `WithClientIP(ctx)`.
 2. **Rate-limit reservation** — the attempt claims a slot of the identifier's budget (`rate.Limiter.ReserveLogin`) in one atomic step before anything is verified; when `Security.LoginIPLimiter` is enabled and the context carries a client IP (`WithClientIP`), a slot of the address's budget is claimed first (`ReserveLoginIP`). Per-IP throttling is **opt-in** and off by default.
-3. **User lookup** — `UserProvider.GetUserByIdentifier(ctx, identifier)`. On "not found", perform dummy Argon2 verify to equalize timing, then return `ErrInvalidCredentials`.
+3. **User lookup** — `UserProvider.GetUserByIdentifier(ctx, identifier)`. On "not found", perform dummy Argon2 verify (against a hash made with the engine's own hasher at `Build`, so it costs what a real verification costs) to equalize timing, then return `ErrInvalidCredentials`. The account's own budget (`rate.Limiter.ReserveLoginUser`) is claimed here, before the password is verified.
 4. **Account status check** — reject `Disabled` / `Locked` / `Deleted` accounts with appropriate sentinel errors.
 5. **Email verification check** — if `RequireForLogin`, reject `PendingVerification` with `ErrAccountUnverified`.
-6. **Password verify** — `password.Argon2.Verify(password, storedHash)`. On mismatch, increment login counter (`rate.Limiter.IncrementLogin`) and auto-lockout counter (`LockoutLimiter.Record`), return `ErrInvalidCredentials`.
+6. **Password verify** — `password.Argon2.Verify(password, storedHash)`. On mismatch the attempt stays counted against the budgets claimed in steps 2-3, the auto-lockout counter is incremented for an **Active** account (`LockoutLimiter`; the attempt that reaches the threshold locks the account but is answered `ErrInvalidCredentials` like any other wrong password), and `ErrInvalidCredentials` is returned. On a match the budgets are cleared.
 7. **MFA check** — if a required second factor applies to the user (TOTP enabled for the user, and/or `WebAuthn.RequireForLogin` with registered credentials) and no inline MFA code was provided, return `ErrMFALoginRequired` (or `LoginResult.MFARequired=true` with `MFATypes` listing the available factors, webauthn preferred).
 8. **Role/mask resolution** — `RoleStore.GetRole`, `RoleManager.GetMask`.
 9. **Session creation** — `session.Store.Save(ctx, session, ttl)` (Redis: SET+SADD+INCR pipeline = ~3 commands).

@@ -66,7 +66,8 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 ## Edge Cases & Gotchas
 
 - Challenges are single-use: confirming a challenge invalidates it.
-- `RequestPasswordReset` does not reveal whether the identifier exists (prevents enumeration).
+- `RequestPasswordReset` does not reveal whether the identifier exists (prevents enumeration): every branch that answers with a challenge — registered, unknown — takes at least the same randomized 20-40 ms from request entry, so the response times overlap. An identifier over `MaxIdentifierBytes` (320) is refused as `ErrPasswordResetInvalid`.
+- Requests are limited per identifier as typed and per resolved account (`rl:reset:req:user:*`). A provider that matches identifiers case-insensitively would otherwise give every spelling its own budget. The account budget answers `ErrPasswordResetRateLimited` (not a fake challenge) so that your application sends no mail; with a case-insensitive provider that lets a caller trying spellings see that the account exists.
 - OTP mode requires `OTPDigits ≤ 6` in production mode.
 
 ## Architecture
