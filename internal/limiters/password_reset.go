@@ -74,9 +74,9 @@ func (l *PasswordResetLimiter) enforceWindow(ctx context.Context, key string) er
 }
 
 func requestIdentifierKey(tenantID, identifier string) string {
-	return "rl:reset:req:" + tenantID + ":" + identifier
+	return "rl:reset:req:" + hashPart(tenantID) + ":" + hashPart(identifier)
 }
 
 func confirmIdentifierKey(tenantID, resetID string) string {
-	return "rl:reset:confirm:fail:" + tenantID + ":" + resetID
+	return "rl:reset:confirm:fail:" + hashPart(tenantID) + ":" + hashPart(resetID)
 }

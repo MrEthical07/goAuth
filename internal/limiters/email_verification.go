@@ -70,9 +70,9 @@ func (l *EmailVerificationLimiter) enforceWindow(ctx context.Context, key string
 }
 
 func verificationRequestIdentifierKey(tenantID, identifier string) string {
-	return "rl:verify:req:" + tenantID + ":" + identifier
+	return "rl:verify:req:" + hashPart(tenantID) + ":" + hashPart(identifier)
 }
 
 func verificationConfirmIdentifierKey(tenantID, verificationID string) string {
-	return "rl:verify:confirm:fail:" + tenantID + ":" + verificationID
+	return "rl:verify:confirm:fail:" + hashPart(tenantID) + ":" + hashPart(verificationID)
 }

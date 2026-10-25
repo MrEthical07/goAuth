@@ -564,7 +564,7 @@ const spbV070Transcript = `
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
   cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b] argv=[5 60000]
 == create account auto-login
-  cmd script keys=[rl:account:req:0:new@example.com] argv=[60000]
+  cmd script keys=[rl:account:req:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:f0030501023327437b06e5c6f87df7871b8e704ae608d1d0b7b24fdd2a06c716] argv=[60000]
   cmd multi
   cmd set as:0:<id5> blob:050275320130066d656d62657200000001000000010000000100080000000000000000eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
   cmd sadd au:0:u2 <id5>
@@ -635,5 +635,5 @@ metric 26=4
 metric 27=1
 metric 28=2
 metric 29=1
-keys arp:<id1> as:0:<id5> as:0:<id7> ast:0:count au:0:u1 au:0:u2 rl:account:req:0:new@example.com rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b
+keys arp:<id1> as:0:<id5> as:0:<id7> ast:0:count au:0:u1 au:0:u2 rl:account:req:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:f0030501023327437b06e5c6f87df7871b8e704ae608d1d0b7b24fdd2a06c716 rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b
 `
