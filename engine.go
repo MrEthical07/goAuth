@@ -3042,10 +3042,10 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		return
 	}
 
-	deps.CheckLoginRate = func(ctx context.Context, identifier string) error {
+	deps.ReserveLoginRate = func(ctx context.Context, identifier string) error {
 		tenantID := tenantIDFromContext(ctx)
 		e.metricInc(MetricLimiterCheck)
-		err := e.rateLimiter.CheckLogin(ctx, tenantID, identifier)
+		err := e.rateLimiter.ReserveLogin(ctx, tenantID, identifier)
 		if err == nil || errors.Is(err, rate.ErrRateLimited) {
 			return err
 		}

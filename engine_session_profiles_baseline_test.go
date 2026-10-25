@@ -156,8 +156,17 @@ func spbBlob(raw []byte) string {
 // into one "script" entry whose keys and arguments are listed.
 func spbCommands(l *redisCommandLog) []string {
 	l.mu.Lock()
-	cmds := make([][]interface{}, len(l.cmds))
-	copy(cmds, l.cmds)
+	cmds := make([][]interface{}, 0, len(l.cmds))
+	for _, args := range l.cmds {
+		// The handshake of a fresh connection can land between EVALSHA and
+		// its EVAL fallback when a script is the first command sent.
+		if len(args) > 0 {
+			if name := strings.ToLower(fmt.Sprint(args[0])); name == "hello" || name == "client" {
+				continue
+			}
+		}
+		cmds = append(cmds, args)
+	}
 	l.mu.Unlock()
 
 	var out []string
@@ -472,7 +481,8 @@ func TestSessionProfilesUnusedMatchesV070(t *testing.T) {
 
 const spbV070Transcript = `
 == login
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
   cmd scard au:0:u1
   cmd multi
   cmd set as:0:<id1> blob:050275310130077465616368657200000001000000010000000100080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -484,7 +494,8 @@ const spbV070Transcript = `
   session index=1 count=1
   token claims=av,exp,iat,mask,pv,rv,sid,tid,uid ttl=300s
 == login remember-me
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
   cmd scard au:0:u1
   cmd multi
   cmd set as:0:<id2> blob:050275310130077465616368657200000001000000010000000100080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -522,7 +533,8 @@ const spbV070Transcript = `
   err AUTH_SESSION_EXPIRED/AUTH_STATE
   cmd get as:0:<id1>
 == login for role switch
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
   cmd scard au:0:u1
   cmd multi
   cmd set as:0:<id3> blob:050275310130077465616368657200000001000000010000000100080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -547,12 +559,10 @@ const spbV070Transcript = `
   cmd script keys=[au:0:u1 ast:0:count] argv=[as:0: asa:0: ]
 == login wrong password
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
-  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[60000]
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
 == login unknown user
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b
-  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b] argv=[60000]
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b] argv=[5 60000]
 == create account auto-login
   cmd script keys=[rl:account:req:0:new@example.com] argv=[60000]
   cmd multi
@@ -564,7 +574,8 @@ const spbV070Transcript = `
   auto-login session index=0 count=1
   token claims=av,exp,iat,mask,pv,rv,sid,tid,uid ttl=300s
 == mfa login step 1
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
   cmd scard au:0:u1
   cmd set amc:<id6> challenge:02000000000000000000000002753100013000 ex 180
   challenge ttl=180000ms bytes=02000000000000000000000002753100013000
@@ -619,7 +630,7 @@ metric 12=1
 metric 13=1
 metric 14=1
 metric 15=1
-metric 21=11
+metric 21=9
 metric 25=5
 metric 26=4
 metric 27=1

@@ -38,7 +38,7 @@ var limiterCallSites = map[string]string{
 	"backupCodeFlowDeps|backupLimiter.Reset":                                 "cleanup",
 	"configureEmailVerificationLimiterDeps|verificationLimiter.CheckRequest": "gate",
 	"configureEmailVerificationLimiterDeps|verificationLimiter.CheckConfirm": "gate",
-	"configureLoginRateLimiterDeps|rateLimiter.CheckLogin":                   "gate",
+	"configureLoginRateLimiterDeps|rateLimiter.ReserveLogin":                 "gate",
 	"configureLoginRateLimiterDeps|rateLimiter.IncrementLogin":               "gate",
 	"configureLoginRateLimiterDeps|rateLimiter.ResetLogin":                   "cleanup",
 	"configurePasswordResetLimiterDeps|resetLimiter.CheckRequest":            "gate",

@@ -32,8 +32,33 @@ func New(redisClient redis.UniversalClient, cfg Config) *Limiter {
 	}
 }
 
+// ReserveLogin atomically claims one login attempt for the identifier before
+// the password is verified, so a burst of concurrent logins can never verify
+// more than MaxLoginAttempts passwords per window: a read-only check followed
+// by a failure counter lets every request in flight observe a count below the
+// limit before any of them records a failure. It returns ErrRateLimited once
+// the budget is spent. A successful login clears the claim with ResetLogin.
+func (l *Limiter) ReserveLogin(ctx context.Context, tenantID, identifier string) error {
+	if !l.config.EnableLoginFailureLimiter {
+		return nil
+	}
+	return l.reserve(ctx, loginUserKey(tenantID, identifier), l.config.MaxLoginAttempts)
+}
+
+func (l *Limiter) reserve(ctx context.Context, key string, limit int) error {
+	_, ok, err := l.window.Reserve(ctx, key, l.config.LoginCooldownDuration, int64(limit))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	if !ok {
+		return ErrRateLimited
+	}
+	return nil
+}
+
 // CheckLogin checks whether the identifier is within the login attempt budget.
-// Returns an error if rate-limited.
+// Returns an error if rate-limited. It only reads the counter; login itself
+// uses ReserveLogin.
 func (l *Limiter) CheckLogin(ctx context.Context, tenantID, identifier string) error {
 	if !l.config.EnableLoginFailureLimiter {
 		return nil

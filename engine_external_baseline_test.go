@@ -180,7 +180,8 @@ func TestExternalAuthUnusedMatchesMain(t *testing.T) {
 
 const extbBaseTranscript = `
 == login
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
   cmd scard au:0:u1
   cmd multi
   cmd set as:0:<id1> blob:050275310130077465616368657200000001000000010000000100080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -226,7 +227,8 @@ const extbBaseTranscript = `
   err AUTH_SESSION_EXPIRED/AUTH_STATE
   cmd get as:0:<id1>
 == login new password
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
   cmd scard au:0:u1
   cmd multi
   cmd set as:0:<id2> blob:050275310130077465616368657200000001000000010000000100080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -236,16 +238,13 @@ const extbBaseTranscript = `
   cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
 == login old password
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
-  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[60000]
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
 == login empty password
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
-  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[60000]
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
 == login unknown user
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
-  cmd get rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b
-  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b] argv=[60000]
+  cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b] argv=[5 60000]
 == logout
   err nil
   cmd get as:0:<id2>
@@ -270,7 +269,7 @@ audit logout_all success=true user=u1 session= err= meta=[]
 metric 0=2
 metric 1=3
 metric 3=1
-metric 21=13
+metric 21=10
 metric 25=2
 metric 26=3
 metric 27=1

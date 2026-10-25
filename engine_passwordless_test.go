@@ -135,7 +135,7 @@ func TestPasswordlessLoginIsLimitedLikeAWrongPassword(t *testing.T) {
 			t.Fatalf("the limiter never engaged: %v", without)
 		}
 		attempts, err := env.engine.GetLoginAttempts(env.ctx(), plIdentifier)
-		if err != nil || attempts < 4 {
+		if err != nil || attempts < 3 {
 			t.Fatalf("GetLoginAttempts = %d, %v; password-less attempts must be counted", attempts, err)
 		}
 	})

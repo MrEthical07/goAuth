@@ -138,7 +138,15 @@ type LoginDeps struct {
 	Now                  func() time.Time
 	AccountStatusError   func(status uint8) error
 
-	CheckLoginRate     func(context.Context, string) error
+	// ReserveLoginRate claims one attempt of the identifier's budget before
+	// the password is verified; any error it returns means "rate limited"
+	// unless it is Errors.SystemUnavailable (a fail-closed limiter outage).
+	// The claim is kept whatever the outcome, so concurrent requests cannot
+	// verify more passwords than the budget allows; ResetLoginRate clears it
+	// once the password is verified.
+	ReserveLoginRate func(context.Context, string) error
+	// IncrementLoginRate records a failure after the password was already
+	// verified (a role that no longer resolves).
 	IncrementLoginRate func(context.Context, string) error
 	ResetLoginRate     func(context.Context, string) error
 
@@ -310,23 +318,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		ctx = withResolvedSessionProfile(ctx, name)
 	}
 
-	if deps.CheckLoginRate != nil {
-		if err := deps.CheckLoginRate(ctx, username); err != nil {
-			if isLoginLimiterOutage(err, deps) {
-				return nil, deps.Errors.SystemUnavailable
-			}
-			deps.MetricInc(deps.Metrics.LoginRateLimited)
-			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			return nil, deps.Errors.LoginRateLimited
+	if deps.ReserveLoginRate != nil {
+		if err := deps.ReserveLoginRate(ctx, username); err != nil {
+			return nil, deps.loginRateRefusal(ctx, err, "", tenantID, username)
 		}
 	}
 
@@ -336,25 +330,6 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// from wrong-password rejections by measuring response time.
 		if deps.VerifyPassword != nil {
 			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
-		}
-		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username); err != nil {
-				if isLoginLimiterOutage(err, deps) {
-					return nil, deps.Errors.SystemUnavailable
-				}
-				deps.MetricInc(deps.Metrics.LoginRateLimited)
-				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, deps.Errors.LoginRateLimited
-			}
 		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
@@ -383,25 +358,6 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// attacker enumerate valid usernames by measuring response time.
 		if deps.VerifyPassword != nil {
 			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
-		}
-		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username); err != nil {
-				if isLoginLimiterOutage(err, deps) {
-					return nil, deps.Errors.SystemUnavailable
-				}
-				deps.MetricInc(deps.Metrics.LoginRateLimited)
-				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, deps.Errors.LoginRateLimited
-			}
 		}
 		// The audit trail distinguishes a cross-tenant attempt from an
 		// unknown identifier; the caller-facing response deliberately does
@@ -448,25 +404,6 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 			}
 		}
 
-		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username); err != nil {
-				if isLoginLimiterOutage(err, deps) {
-					return nil, deps.Errors.SystemUnavailable
-				}
-				deps.MetricInc(deps.Metrics.LoginRateLimited)
-				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, deps.Errors.LoginRateLimited
-			}
-		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
@@ -475,6 +412,12 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 			}
 		})
 		return nil, deps.Errors.InvalidCredentials
+	}
+
+	// The password is right: the claim made before verification is not a
+	// failure, whatever the account's status or second factor turns out to be.
+	if deps.ResetLoginRate != nil {
+		_ = deps.ResetLoginRate(ctx, username)
 	}
 
 	return runCompleteLogin(ctx, username, user, tenantID, opts, deps, func() {
@@ -1213,6 +1156,27 @@ func RunIssueLoginSessionTokens(
 	})
 
 	return access, refresh, nil
+}
+
+// loginRateRefusal turns a failed limiter reservation into the error the login
+// returns, recording it as a rate-limit event unless the limiter backend was
+// down and the engine fails closed.
+func (d LoginDeps) loginRateRefusal(ctx context.Context, err error, userID, tenantID, username string) error {
+	if isLoginLimiterOutage(err, d) {
+		return d.Errors.SystemUnavailable
+	}
+	d.MetricInc(d.Metrics.LoginRateLimited)
+	d.EmitAudit(ctx, d.Events.LoginRateLimited, false, userID, tenantID, "", d.Errors.LoginRateLimited, func() map[string]string {
+		return map[string]string{
+			"identifier": username,
+		}
+	})
+	d.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
+		return map[string]string{
+			"identifier": username,
+		}
+	})
+	return d.Errors.LoginRateLimited
 }
 
 // isLoginLimiterOutage reports whether a login limiter hook failed because the
