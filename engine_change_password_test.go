@@ -52,6 +52,8 @@ type mockUserProvider struct {
 }
 
 func (m *mockUserProvider) GetUserByIdentifier(identifier string) (UserRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.getByIdentifierCalls++
 
 	userID, ok := m.byIdentifier[identifier]
@@ -193,6 +195,8 @@ func (m *mockUserProvider) UpdateAccountStatus(ctx context.Context, userID strin
 }
 
 func (m *mockUserProvider) GetTOTPSecret(ctx context.Context, userID string) (*TOTPRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.getTOTPSecretCalls++
 	if m.totpRecords == nil {
 		return &TOTPRecord{}, nil
