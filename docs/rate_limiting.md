@@ -50,8 +50,9 @@ All limiters are nil-safe — calling a method on a nil receiver returns `nil`.
 
 `Security.LoginIPLimiter` (`Enabled`, `MaxAttempts`, `Cooldown`; **off by default**) adds a budget per
 (tenant, client IP) in front of the identifier and account budgets. The address is the one the host puts in the
-context with `WithClientIP`; it is hashed into the key (`rl:login:ip:{tenant}:{ip}`), and an attempt with no
-address in its context is not counted. A slot is claimed before anything else is done for the attempt, so an
+context with `WithClientIP`; it is canonicalized (port and zone dropped, an IPv4-mapped IPv6 form unmapped, an
+IPv6 address grouped by its /64, the unit one subscriber is normally given) and hashed into the key
+(`rl:login:ip:{tenant}:{ip}`), and an attempt with no address in its context is not counted. A slot is claimed before anything else is done for the attempt, so an
 address that has used up its budget cannot also burn the budgets of the identifiers it names. A login whose
 password is right gives its slot back, so the count is the failures per address within `Cooldown`, and a good
 login cannot be used to refill the budget of an address that is still guessing. It honors
