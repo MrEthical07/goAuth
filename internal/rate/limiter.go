@@ -45,6 +45,31 @@ func (l *Limiter) ReserveLogin(ctx context.Context, tenantID, identifier string)
 	return l.reserve(ctx, loginUserKey(tenantID, identifier), l.config.MaxLoginAttempts)
 }
 
+// ReserveLoginUser claims one login attempt against the resolved account,
+// after the provider has found it and before the password is verified. The
+// identifier budget (ReserveLogin) is keyed by the string the caller typed, so
+// a provider that matches identifiers case-insensitively gives every spelling
+// of one account a fresh budget; this one is shared by all of them. It returns
+// ErrRateLimited once the account's budget is spent. A successful login clears
+// it with ResetLoginUser.
+func (l *Limiter) ReserveLoginUser(ctx context.Context, tenantID, userID string) error {
+	if !l.config.EnableLoginFailureLimiter {
+		return nil
+	}
+	return l.reserve(ctx, loginAccountKey(tenantID, userID), l.config.MaxLoginAttempts)
+}
+
+// ResetLoginUser clears the account's login budget.
+func (l *Limiter) ResetLoginUser(ctx context.Context, tenantID, userID string) error {
+	if !l.config.EnableLoginFailureLimiter {
+		return nil
+	}
+	if err := l.window.Reset(ctx, loginAccountKey(tenantID, userID), l.config.LoginCooldownDuration); err != nil {
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	return nil
+}
+
 func (l *Limiter) reserve(ctx context.Context, key string, limit int) error {
 	_, ok, err := l.window.Reserve(ctx, key, l.config.LoginCooldownDuration, int64(limit))
 	if err != nil {

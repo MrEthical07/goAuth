@@ -46,6 +46,17 @@ func (l *PasswordResetLimiter) CheckRequest(ctx context.Context, tenantID, ident
 	return nil
 }
 
+// CheckRequestUser counts a reset request against the resolved account. The
+// identifier budget (CheckRequest) is keyed by the string the caller typed, so
+// a provider that matches identifiers case-insensitively gives every spelling
+// of one account its own budget; this one is shared by all of them.
+func (l *PasswordResetLimiter) CheckRequestUser(ctx context.Context, tenantID, userID string) error {
+	if !l.config.EnableRequestLimiter || userID == "" {
+		return nil
+	}
+	return l.enforceWindow(ctx, requestUserKey(tenantID, userID))
+}
+
 func (l *PasswordResetLimiter) CheckConfirm(ctx context.Context, tenantID, resetID string) error {
 	if !l.config.EnableConfirmFailureLimiter || resetID == "" {
 		return nil
@@ -75,6 +86,10 @@ func (l *PasswordResetLimiter) enforceWindow(ctx context.Context, key string) er
 
 func requestIdentifierKey(tenantID, identifier string) string {
 	return "rl:reset:req:" + hashPart(tenantID) + ":" + hashPart(identifier)
+}
+
+func requestUserKey(tenantID, userID string) string {
+	return "rl:reset:req:user:" + hashPart(tenantID) + ":" + hashPart(userID)
 }
 
 func confirmIdentifierKey(tenantID, resetID string) string {

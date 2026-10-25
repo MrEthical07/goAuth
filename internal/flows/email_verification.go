@@ -54,10 +54,13 @@ type EmailVerificationDeps struct {
 	AccountStatusError  func(uint8) error
 	Now                 func() time.Time
 
-	CheckRequestLimiter func(context.Context, string, string) error
-	CheckConfirmLimiter func(context.Context, string, string) error
-	MapLimiterError     func(error) error
-	MapStoreError       func(error) error
+	// CheckRequestUserLimiter counts a request against the resolved account,
+	// whatever spelling of its identifier was used. Optional.
+	CheckRequestUserLimiter func(ctx context.Context, tenantID, userID string) error
+	CheckRequestLimiter     func(context.Context, string, string) error
+	CheckConfirmLimiter     func(context.Context, string, string) error
+	MapLimiterError         func(error) error
+	MapStoreError           func(error) error
 
 	// EnforceTenantMatch requires a resolved user's TenantID to equal the
 	// request's tenant. Set only when multi-tenancy is enabled.
@@ -189,6 +192,28 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		})
 		deps.MetricInc(deps.Metrics.EmailVerificationRequest)
 		return fakeChallenge, nil
+	}
+
+	if deps.CheckRequestUserLimiter != nil {
+		if err := deps.CheckRequestUserLimiter(ctx, tenantID, user.UserID); err != nil {
+			mapped := deps.MapLimiterError(err)
+			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, tenantID, "", mapped, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"scope":      "account",
+				}
+			})
+			if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
+				deps.EmitRateLimit(ctx, "email_verification_request", tenantID, func() map[string]string {
+					return map[string]string{
+						"identifier": identifier,
+						"scope":      "account",
+					}
+				})
+			}
+			return "", mapped
+		}
 	}
 
 	if user.Status == deps.ActiveStatus {

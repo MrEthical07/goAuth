@@ -59,11 +59,14 @@ type PasswordResetDeps struct {
 	AccountStatusError  func(uint8) error
 	Now                 func() time.Time
 
-	CheckRequestLimiter func(context.Context, string, string) error
-	CheckConfirmLimiter func(context.Context, string, string) error
-	MapLimiterError     func(error) error
-	MapStoreError       func(error) error
-	IsStoreNotFound     func(error) bool
+	// CheckRequestUserLimiter counts a request against the resolved account,
+	// whatever spelling of its identifier was used. Optional.
+	CheckRequestUserLimiter func(ctx context.Context, tenantID, userID string) error
+	CheckRequestLimiter     func(context.Context, string, string) error
+	CheckConfirmLimiter     func(context.Context, string, string) error
+	MapLimiterError         func(error) error
+	MapStoreError           func(error) error
+	IsStoreNotFound         func(error) bool
 
 	// EnforceTenantMatch requires a resolved user's TenantID to equal the
 	// request's tenant. Set only when multi-tenancy is enabled.
@@ -192,6 +195,27 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		})
 		deps.MetricInc(deps.Metrics.PasswordResetRequest)
 		return challenge, nil
+	}
+
+	if deps.CheckRequestUserLimiter != nil {
+		if err := deps.CheckRequestUserLimiter(ctx, tenantID, user.UserID); err != nil {
+			mapped := deps.MapLimiterError(err)
+			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, tenantID, "", mapped, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"scope":      "account",
+				}
+			})
+			if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
+				deps.EmitRateLimit(ctx, "password_reset_request", tenantID, func() map[string]string {
+					return map[string]string{
+						"identifier": identifier,
+						"scope":      "account",
+					}
+				})
+			}
+			return "", mapped
+		}
 	}
 
 	// When multi-tenancy is enabled the record is always stored under the

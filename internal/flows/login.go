@@ -157,6 +157,13 @@ type LoginDeps struct {
 	IncrementLoginRate func(context.Context, string) error
 	ResetLoginRate     func(context.Context, string) error
 
+	// ReserveLoginUserRate claims one attempt of the resolved account's budget
+	// after the lookup and before the password is verified, so every spelling
+	// of one account shares it. ResetLoginUserRate clears it once the password
+	// is verified. Both are nil unless the login limiter is enabled.
+	ReserveLoginUserRate func(ctx context.Context, userID string) error
+	ResetLoginUserRate   func(ctx context.Context, userID string)
+
 	// Auto-lockout hooks: RecordLockoutFailure returns true when threshold is reached.
 	AutoLockoutEnabled   bool
 	RecordLockoutFailure func(context.Context, string) (bool, error)
@@ -432,6 +439,33 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, deps.Errors.InvalidCredentials
 	}
 
+	// The account's own budget. When it is spent the attempt is answered as a
+	// wrong password after the same dummy verification: a "rate limited" here
+	// would tell a caller trying spellings of an identifier that the account
+	// exists, since an unknown identifier never reaches this budget.
+	if deps.ReserveLoginUserRate != nil {
+		if rerr := deps.ReserveLoginUserRate(ctx, user.UserID); rerr != nil {
+			if isLoginLimiterOutage(rerr, deps) {
+				return nil, deps.Errors.SystemUnavailable
+			}
+			_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
+			deps.MetricInc(deps.Metrics.LoginRateLimited)
+			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
+				return map[string]string{
+					"identifier": username,
+					"scope":      "account",
+				}
+			})
+			deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
+				return map[string]string{
+					"identifier": username,
+					"scope":      "account",
+				}
+			})
+			return nil, deps.Errors.InvalidCredentials
+		}
+	}
+
 	var ok bool
 	mismatchReason := "password_mismatch"
 	if user.PasswordHash == "" {
@@ -480,6 +514,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 	// failure, whatever the account's status or second factor turns out to be.
 	if deps.ResetLoginRate != nil {
 		_ = deps.ResetLoginRate(ctx, username)
+	}
+	if deps.ResetLoginUserRate != nil {
+		deps.ResetLoginUserRate(ctx, user.UserID)
 	}
 
 	return runCompleteLogin(ctx, username, user, tenantID, opts, deps, func() {

@@ -811,3 +811,131 @@ func TestMFALoginClearsTheLockoutCounter(t *testing.T) {
 		t.Fatalf("failure count after an MFA login = %d, %v; want 0", n, err)
 	}
 }
+
+// spellings returns n distinct upper/lower-case spellings of "alice".
+func spellings(n int) []string {
+	out := make([]string, 0, n)
+	for mask := 0; mask < 1<<5 && len(out) < n; mask++ {
+		b := []byte("alice")
+		for i := range b {
+			if mask&(1<<i) != 0 {
+				b[i] -= 'a' - 'A'
+			}
+		}
+		out = append(out, string(b))
+	}
+	return out
+}
+
+// FAILED-BEFORE (R2-04): the login failure budget was keyed by the identifier
+// exactly as typed, so a provider that matches identifiers case-insensitively
+// gave every spelling of one account a fresh budget.
+func TestLoginSpellingVariantsShareOneBudget(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.Security.MaxLoginAttempts = 3
+	up := newGatedProvider(t, true)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	realHash := up.users["u1"].PasswordHash
+	var realVerifications atomic.Int64
+	engine.verifyHashFn = func(password, encodedHash string) (bool, error) {
+		if encodedHash == realHash {
+			realVerifications.Add(1)
+		}
+		return engine.passwordHash.Verify(password, encodedHash)
+	}
+
+	ctx := context.Background()
+	for _, name := range spellings(30) {
+		for i := 0; i < 3; i++ {
+			if _, _, err := engine.Login(ctx, name, "wrong-password-1"); err == nil {
+				t.Fatalf("%s: a wrong password logged in", name)
+			}
+		}
+	}
+	if got := realVerifications.Load(); got != int64(cfg.Security.MaxLoginAttempts) {
+		t.Fatalf("%d passwords were verified against one account through its spellings, want the budget (%d)", got, cfg.Security.MaxLoginAttempts)
+	}
+	// The right password under a spelling that has not been tried is refused too.
+	if _, _, err := engine.Login(ctx, "aLICe", "correct-password-123"); err == nil {
+		t.Fatal("the right password got in through a fresh spelling after the budget was spent")
+	}
+	// The spelling of the stored identifier is limited as ever.
+	if _, _, err := engine.Login(ctx, "alice", "wrong-password-1"); !errors.Is(err, ErrLoginRateLimited) {
+		t.Fatalf("exact spelling: %v, want ErrLoginRateLimited", err)
+	}
+}
+
+// What the caller sees from the account budget does not depend on whether the
+// account exists: a spelling that is limited only through the account is
+// answered like a wrong password, as an unknown identifier is.
+func TestLoginAccountBudgetIsNotAnExistenceOracle(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.Security.MaxLoginAttempts = 3
+	up := newGatedProvider(t, true)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	ctx := context.Background()
+
+	for i, name := range spellings(10) {
+		_, _, errExisting := engine.Login(ctx, name, "wrong-password-1")
+		_, _, errUnknown := engine.Login(ctx, "x"+name, "wrong-password-1")
+		if !errors.Is(errExisting, ErrInvalidCredentials) || !errors.Is(errUnknown, ErrInvalidCredentials) {
+			t.Fatalf("spelling %d: existing %v, unknown %v; both must be ErrInvalidCredentials", i, errExisting, errUnknown)
+		}
+	}
+}
+
+// FAILED-BEFORE (R2-04): reset requests were capped per identifier string, so
+// every spelling of one address could have its own reset records created.
+func TestPasswordResetRequestSpellingVariantsShareOneBudget(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.PasswordReset = testResetConfig(ResetOTP)
+	cfg.PasswordReset.MaxAttempts = 3
+	up := newGatedProvider(t, true)
+	engine, mr := newAuditEngine(t, cfg, up)
+	ctx := context.Background()
+
+	created := 0
+	for _, name := range spellings(30) {
+		if _, err := engine.RequestPasswordReset(ctx, name); err != nil && !errors.Is(err, ErrPasswordResetRateLimited) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for _, key := range mr.Keys() {
+		if strings.HasPrefix(key, "apr:") {
+			created++
+		}
+	}
+	if created > cfg.PasswordReset.MaxAttempts {
+		t.Fatalf("%d reset records exist for one account, want at most the budget (%d)", created, cfg.PasswordReset.MaxAttempts)
+	}
+}
+
+// FAILED-BEFORE (R2-04): the same for verification requests.
+func TestEmailVerificationRequestSpellingVariantsShareOneBudget(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.EmailVerification = testEmailVerificationConfig(VerificationOTP)
+	cfg.EmailVerification.MaxAttempts = 3
+	up := newGatedProvider(t, true)
+	user := up.users["u1"]
+	user.Status = AccountPendingVerification
+	up.users["u1"] = user
+	engine, mr := newAuditEngine(t, cfg, up)
+	ctx := context.Background()
+
+	for _, name := range spellings(30) {
+		if _, err := engine.RequestEmailVerification(ctx, name); err != nil && !errors.Is(err, ErrEmailVerificationRateLimited) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	created := 0
+	for _, key := range mr.Keys() {
+		if strings.HasPrefix(key, "apv:") {
+			created++
+		}
+	}
+	if created > cfg.EmailVerification.MaxAttempts {
+		t.Fatalf("%d verification records exist for one account, want at most the budget (%d)", created, cfg.EmailVerification.MaxAttempts)
+	}
+}

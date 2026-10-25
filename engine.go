@@ -933,6 +933,9 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		if err := e.rateLimiter.ResetLogin(ctx, tenantIDFromContext(ctx), identifier); err != nil {
 			e.warn("goAuth: login limiter reset failed after password change")
 		}
+		if err := e.rateLimiter.ResetLoginUser(ctx, tenantIDFromContext(ctx), userID); err != nil {
+			e.warn("goAuth: login limiter reset failed after password change")
+		}
 	}
 
 	oldPassword = ""
@@ -2346,6 +2349,17 @@ func (e *Engine) configureEmailVerificationLimiterDeps(deps *internalflows.Email
 		}
 		return e.limiterOutage(ctx, "email_verification_request", tenantID, err)
 	}
+	deps.CheckRequestUserLimiter = func(ctx context.Context, tenantID, userID string) error {
+		if !cfg.EmailVerification.EnableRequestLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.verificationLimiter.CheckRequestUser(ctx, tenantID, userID)
+		if err == nil || errors.Is(err, limiters.ErrVerificationRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "email_verification_request", tenantID, err)
+	}
 	deps.CheckConfirmLimiter = func(ctx context.Context, tenantID, verificationID string) error {
 		if !cfg.EmailVerification.EnableConfirmFailureLimiter {
 			return nil
@@ -3087,6 +3101,21 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		e.limiterCleanupFailed(ctx, "login", tenantID, err)
 		return nil
 	}
+	deps.ReserveLoginUserRate = func(ctx context.Context, userID string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.rateLimiter.ReserveLoginUser(ctx, tenantID, userID)
+		if err == nil || errors.Is(err, rate.ErrRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "login", tenantID, err)
+	}
+	deps.ResetLoginUserRate = func(ctx context.Context, userID string) {
+		tenantID := tenantIDFromContext(ctx)
+		if err := e.rateLimiter.ResetLoginUser(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "login", tenantID, err)
+		}
+	}
 }
 
 // configureLoginTOTPLimiterDeps lets the MFA login confirmation draw on the
@@ -3537,6 +3566,17 @@ func (e *Engine) configurePasswordResetLimiterDeps(deps *internalflows.PasswordR
 		}
 		e.metricInc(MetricLimiterCheck)
 		err := e.resetLimiter.CheckRequest(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "password_reset_request", tenantID, err)
+	}
+	deps.CheckRequestUserLimiter = func(ctx context.Context, tenantID, userID string) error {
+		if !cfg.PasswordReset.EnableRequestLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.resetLimiter.CheckRequestUser(ctx, tenantID, userID)
 		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
 			return err
 		}

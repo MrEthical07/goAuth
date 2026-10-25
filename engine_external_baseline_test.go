@@ -181,7 +181,9 @@ func TestExternalAuthUnusedMatchesMain(t *testing.T) {
 const extbBaseTranscript = `
 == login
   cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd script keys=[rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19] argv=[5 60000]
   cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd del rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19
   cmd scard au:0:u1
   cmd multi
   cmd set as:0:<id1> blob:050275310130077465616368657200000001000000010000000100080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -223,12 +225,15 @@ const extbBaseTranscript = `
   cmd del rl:pwdverify:fail:0:u1
   cmd script keys=[au:0:u1 ast:0:count] argv=[as:0: asa:0: ]
   cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd del rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19
 == validate strict after change
   err AUTH_SESSION_EXPIRED/AUTH_STATE
   cmd get as:0:<id1>
 == login new password
   cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd script keys=[rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19] argv=[5 60000]
   cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
+  cmd del rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19
   cmd scard au:0:u1
   cmd multi
   cmd set as:0:<id2> blob:050275310130077465616368657200000001000000010000000100080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -239,6 +244,7 @@ const extbBaseTranscript = `
 == login old password
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
   cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
+  cmd script keys=[rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19] argv=[5 60000]
 == login empty password
   err AUTH_INVALID_CREDENTIALS/AUTH_VALIDATION
   cmd script keys=[rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053] argv=[5 60000]
@@ -269,7 +275,7 @@ audit logout_all success=true user=u1 session= err= meta=[]
 metric 0=2
 metric 1=3
 metric 3=1
-metric 21=10
+metric 21=13
 metric 25=2
 metric 26=3
 metric 27=1
@@ -277,5 +283,5 @@ metric 28=2
 metric 32=1
 metric 33=1
 metric 34=1
-keys rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053 rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b
+keys rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053 rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19
 `
