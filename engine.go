@@ -2876,6 +2876,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			WebAuthnCloneDetected:    ErrWebAuthnCloneDetected,
 			WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
 			WebAuthnUnavailable:      ErrWebAuthnUnavailable,
+			TOTPRateLimited:          ErrTOTPRateLimited,
 		},
 		Metrics: internalflows.LoginMetrics{
 			LoginSuccess:     int(MetricLoginSuccess),
@@ -2899,6 +2900,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		},
 	}
 	e.configureLoginRateLimiterDeps(&deps)
+	e.configureLoginTOTPLimiterDeps(&deps)
 	e.configureLoginAssuranceDeps(&deps)
 	e.configureLoginProfileDeps(&deps)
 	if e != nil && e.lockoutLimiter != nil && e.config.Security.AutoLockoutEnabled {
@@ -3076,6 +3078,39 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		}
 		e.limiterCleanupFailed(ctx, "login", tenantID, err)
 		return nil
+	}
+}
+
+// configureLoginTOTPLimiterDeps lets the MFA login confirmation draw on the
+// same per-account TOTP budget as Engine.VerifyTOTP.
+func (e *Engine) configureLoginTOTPLimiterDeps(deps *internalflows.LoginDeps) {
+	if e == nil || e.totpLimiter == nil {
+		return
+	}
+
+	deps.ReserveTOTPLimiter = func(ctx context.Context, tenantID, userID string) (bool, error) {
+		e.metricInc(MetricLimiterCheck)
+		last, err := e.totpLimiter.Reserve(ctx, tenantID, userID)
+		if err == nil {
+			return last, nil
+		}
+		if errors.Is(err, limiters.ErrTOTPRateLimited) {
+			return false, err
+		}
+		return false, e.limiterOutage(ctx, "totp", tenantID, err)
+	}
+	deps.ReleaseTOTPLimiter = func(ctx context.Context, tenantID, userID string) {
+		if err := e.totpLimiter.Release(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "totp", tenantID, err)
+		}
+	}
+	deps.ResetTOTPLimiter = func(ctx context.Context, tenantID, userID string) {
+		if err := e.totpLimiter.Reset(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "totp", tenantID, err)
+		}
+	}
+	deps.IsTOTPRateLimited = func(err error) bool {
+		return errors.Is(err, limiters.ErrTOTPRateLimited)
 	}
 }
 

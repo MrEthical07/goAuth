@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
 )
 
 // Regression tests for the limiter findings of the v0.8.0 security audit
@@ -408,7 +410,8 @@ func TestConfirmLoginMFAConcurrentBurstBoundedByMFALoginMaxAttempts(t *testing.T
 		t.Fatalf("%d of %d concurrent confirmations had their code evaluated, want exactly MFALoginMaxAttempts (%d)", got, n, max)
 	}
 	for i, err := range errs {
-		if !errors.Is(err, ErrMFALoginInvalid) && !errors.Is(err, ErrMFALoginAttemptsExceeded) {
+		// The guess that fills the account's own budget answers rate limited.
+		if !errors.Is(err, ErrMFALoginInvalid) && !errors.Is(err, ErrMFALoginAttemptsExceeded) && !errors.Is(err, ErrTOTPRateLimited) {
 			t.Fatalf("confirmation %d: %v", i, err)
 		}
 	}
@@ -452,5 +455,134 @@ func TestConfirmLoginMFASequentialAttemptCapIsUnchanged(t *testing.T) {
 	}
 	if _, err := engine2.ConfirmLoginMFA(ctx, challenge, "000000"); !errors.Is(err, ErrMFALoginInvalid) {
 		t.Fatalf("a deleted challenge: %v, want ErrMFALoginInvalid", err)
+	}
+}
+
+// newAuditEngine builds an engine like newCreateAccountEngine but hands back
+// the fake Redis so a test can move its clock.
+func newAuditEngine(t *testing.T, cfg Config, up UserProvider) (*Engine, *miniredis.Miniredis) {
+	t.Helper()
+	mr, rdb := newTestRedis(t)
+	t.Cleanup(mr.Close)
+	engine, err := New().
+		WithConfig(cfg).
+		WithRedis(rdb).
+		WithPermissions([]string{"perm.read"}).
+		WithRoles(map[string][]string{"member": {}, "admin": {"perm.read"}}).
+		WithUserProvider(up).
+		Build()
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	return engine, mr
+}
+
+// FAILED-BEFORE (R2-01): the TOTP guesses made at MFA login were counted only
+// inside the disposable challenge, so a holder of the password could mint a
+// new challenge for every five guesses and never meet a per-account limit.
+func TestConfirmLoginMFAGuessesAcrossChallengesShareThePerUserBudget(t *testing.T) {
+	cfg := mfaLoginConfig()
+	up := newHardeningUserProvider(t)
+	engine, mr := newAuditEngine(t, cfg, up)
+	secret := enableUserTOTP(t, engine, "u1", cfg)
+	ctx := context.Background()
+
+	limitedAt := -1
+	for i := 0; i < 25; i++ {
+		_, err := engine.ConfirmLoginMFA(ctx, mfaChallenge(t, engine), "000000")
+		if errors.Is(err, ErrTOTPRateLimited) {
+			limitedAt = i
+			break
+		}
+		if !errors.Is(err, ErrMFALoginInvalid) {
+			t.Fatalf("guess %d: %v, want ErrMFALoginInvalid", i+1, err)
+		}
+	}
+	if want := cfg.TOTP.MFALoginMaxAttempts - 1; limitedAt != want {
+		t.Fatalf("the guess that used up the account's budget was number %d, want %d (-1: 25 guesses over 25 challenges were never limited)", limitedAt+1, want+1)
+	}
+
+	// With the budget spent, the right code is refused too, and the challenge
+	// it was presented on is destroyed.
+	challenge := mfaChallenge(t, engine)
+	if _, err := engine.ConfirmLoginMFA(ctx, challenge, codeForNow(t, secret, cfg.TOTP)); !errors.Is(err, ErrTOTPRateLimited) {
+		t.Fatalf("the right code with the budget spent: %v, want ErrTOTPRateLimited", err)
+	}
+	if _, err := engine.ConfirmLoginMFA(ctx, challenge, codeForNow(t, secret, cfg.TOTP)); !errors.Is(err, ErrMFALoginInvalid) {
+		t.Fatalf("the destroyed challenge: %v, want ErrMFALoginInvalid", err)
+	}
+
+	// The window passes and the account can log in again.
+	mr.FastForward(cfg.TOTP.VerifyAttemptCooldown + time.Second)
+	if _, err := engine.ConfirmLoginMFA(ctx, mfaChallenge(t, engine), codeForNow(t, secret, cfg.TOTP)); err != nil {
+		t.Fatalf("login after the window: %v", err)
+	}
+}
+
+// The budget is the one VerifyTOTP uses, and a right code clears it.
+func TestConfirmLoginMFAUsesAndResetsTheVerifyTOTPBudget(t *testing.T) {
+	cfg := mfaLoginConfig()
+	up := newHardeningUserProvider(t)
+	engine, _ := newAuditEngine(t, cfg, up)
+	enableUserTOTP(t, engine, "u1", cfg)
+	ctx := context.Background()
+	max := cfg.TOTP.MFALoginMaxAttempts
+
+	// Wrong codes through the step-up check leave fewer guesses for the login.
+	for i := 0; i < max-1; i++ {
+		if err := engine.VerifyTOTP(ctx, "u1", "000000"); !errors.Is(err, ErrTOTPInvalid) {
+			t.Fatalf("VerifyTOTP %d: %v", i+1, err)
+		}
+	}
+	if _, err := engine.ConfirmLoginMFA(ctx, mfaChallenge(t, engine), "000000"); !errors.Is(err, ErrTOTPRateLimited) {
+		t.Fatalf("the guess that fills the shared budget: %v, want ErrTOTPRateLimited", err)
+	}
+
+	// A right code clears the budget again.
+	engine2, _ := newAuditEngine(t, cfg, newHardeningUserProvider(t))
+	secret2 := enableUserTOTP(t, engine2, "u1", cfg)
+	for round := 0; round < 3; round++ {
+		for i := 0; i < max-2; i++ {
+			if _, err := engine2.ConfirmLoginMFA(ctx, mfaChallenge(t, engine2), "000000"); !errors.Is(err, ErrMFALoginInvalid) {
+				t.Fatalf("round %d guess %d: %v", round, i+1, err)
+			}
+		}
+		if _, err := engine2.ConfirmLoginMFA(ctx, mfaChallenge(t, engine2), codeForNow(t, secret2, cfg.TOTP)); err != nil {
+			t.Fatalf("round %d: the right code: %v", round, err)
+		}
+	}
+}
+
+// A limiter outage at the MFA login confirmation follows LimiterFailClosed
+// like every other limiter: closed refuses with a system error and leaves the
+// challenge usable, open lets the code be checked unthrottled.
+func TestLimiterFailClosedAppliesToTheMFALoginTOTPBudget(t *testing.T) {
+	for _, closed := range []bool{true, false} {
+		env := newRSEnv(t, limiterFailClosedConfig(closed), rsConfig(func(c *Config) { c.TOTP.RequireForLogin = true }))
+		br := &limiterBreaker{}
+		env.rdb.AddHook(br)
+		secret := env.enableTOTP()
+		res, err := env.engine.LoginWithResult(env.ctx(), rsIdentifier, rsPassword)
+		if err != nil || !res.MFARequired {
+			t.Fatalf("closed=%v: expected an MFA challenge, got %+v, %v", closed, res, err)
+		}
+
+		br.set(breakWrites)
+		_, err = env.engine.ConfirmLoginMFA(env.ctx(), res.MFASession, "000000")
+		if closed {
+			if !isSystemError(err) {
+				t.Fatalf("closed: got %v, want a system error", err)
+			}
+		} else if !errors.Is(err, ErrMFALoginInvalid) {
+			t.Fatalf("open: got %v, want the code checked and rejected", err)
+		}
+		waitForLimiterEvent(t, env, "totp")
+
+		if closed {
+			br.set(breakOff)
+			if _, err := env.engine.ConfirmLoginMFA(env.ctx(), res.MFASession, env.totpCode(secret)); err != nil {
+				t.Fatalf("closed: the challenge must survive an outage that refused the code: %v", err)
+			}
+		}
 	}
 }

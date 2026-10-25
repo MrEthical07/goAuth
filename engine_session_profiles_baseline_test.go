@@ -582,15 +582,14 @@ const spbV070Transcript = `
 == mfa wrong code
   err AUTH_MFA_INVALID_CODE/AUTH_VALIDATION
   cmd get amc:<id6>
-  cmd watch amc:<id6>
-  cmd get amc:<id6>
-  cmd multi
-  cmd set amc:<id6> challenge:02000100000000000000000002753100013000 px ~180000ms
-  cmd exec
-  cmd unwatch
+  cmd script keys=[amc:<id6>] argv=[5 <ts>]
+  cmd script keys=[rl:totp:fail:0:u1] argv=[5 60000]
   challenge after failure bytes=02000100000000000000000002753100013000
 == mfa login step 2
   cmd get amc:<id6>
+  cmd script keys=[amc:<id6>] argv=[5 <ts>]
+  cmd script keys=[rl:totp:fail:0:u1] argv=[5 60000]
+  cmd del rl:totp:fail:0:u1
   cmd del amc:<id6>
   cmd multi
   cmd set as:0:<id7> blob:050275310130077465616368657200000001000000010000000200080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s ex 604800
@@ -630,7 +629,7 @@ metric 12=1
 metric 13=1
 metric 14=1
 metric 15=1
-metric 21=9
+metric 21=11
 metric 25=5
 metric 26=4
 metric 27=1

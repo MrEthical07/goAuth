@@ -109,6 +109,10 @@ type LoginErrors struct {
 	UnknownSessionProfile  error
 	SessionProfileConflict error
 
+	// TOTPRateLimited is returned when the account's TOTP guess budget is
+	// spent. Nil leaves the budget unused.
+	TOTPRateLimited error
+
 	// SystemUnavailable is what the login limiter hooks return when the
 	// limiter backend is down and Security.LimiterFailClosed is on. Any other
 	// error from a hook means "rate limited". Nil keeps that meaning for every
@@ -172,6 +176,16 @@ type LoginDeps struct {
 	UpdatePasswordHashInTenant func(context.Context, string, string, string) error
 	GetTOTPSecret              func(context.Context, string) (*LoginTOTPRecord, error)
 	UpdateTOTPLastUsedCounter  func(context.Context, string, int64) error
+
+	// Per-account TOTP guess budget, shared with Engine.VerifyTOTP so that
+	// minting new challenges does not reset it. All nil unless the engine has
+	// the TOTP limiter; the confirmation then claims an attempt before it
+	// evaluates a code and clears the budget when the code is right.
+	// ReserveTOTPLimiter's last is true when the claim took the final slot.
+	ReserveTOTPLimiter func(ctx context.Context, tenantID, userID string) (last bool, err error)
+	ReleaseTOTPLimiter func(ctx context.Context, tenantID, userID string)
+	ResetTOTPLimiter   func(ctx context.Context, tenantID, userID string)
+	IsTOTPRateLimited  func(error) bool
 
 	VerifyPassword           func(string, string) (bool, error)
 	PasswordNeedsUpgrade     func(string) (bool, error)
@@ -739,20 +753,34 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		if terr != nil {
 			return nil, terr
 		}
-		if err := claim(); err != nil {
-			return nil, err
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
 		}
 		if code == "" {
 			return fail(deps.Errors.MFALoginInvalid)
 		}
+		// The account's own budget: a wrong guess counts here whichever
+		// challenge it was made against.
+		budgetLast := false
+		if deps.ReserveTOTPLimiter != nil {
+			var lerr error
+			if budgetLast, lerr = deps.ReserveTOTPLimiter(ctx, record.TenantID, user.UserID); lerr != nil {
+				return nil, refuseLoginTOTPBudget(ctx, challengeID, user.UserID, record.TenantID, lerr, deps)
+			}
+		}
 		ok, counter, verr := deps.VerifyTOTPCode(totpRecord.Secret, code, deps.Now())
 		if verr != nil || !ok {
+			if budgetLast && attempt < deps.mfaAttemptLimit() {
+				// This guess used up the account's budget.
+				return nil, spendLoginTOTPBudget(ctx, challengeID, user.UserID, record.TenantID, deps)
+			}
 			return fail(deps.Errors.MFALoginInvalid)
 		}
 
 		if deps.EnforceReplayProtection {
 			if counter <= totpRecord.LastUsedCounter {
 				releaseLoginMFAAttempt(ctx, challengeID, deps)
+				releaseLoginTOTPAttempt(ctx, user.UserID, record.TenantID, deps)
 				deps.MetricInc(deps.Metrics.MFAReplayAttempt)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginReplay, nil)
@@ -760,17 +788,21 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 			}
 			if err := deps.UpdateTOTPLastUsedCounter(ctx, user.UserID, counter); err != nil {
 				releaseLoginMFAAttempt(ctx, challengeID, deps)
+				releaseLoginTOTPAttempt(ctx, user.UserID, record.TenantID, deps)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
 				return nil, deps.Errors.MFALoginUnavailable
 			}
 		}
+		if deps.ResetTOTPLimiter != nil {
+			deps.ResetTOTPLimiter(ctx, record.TenantID, user.UserID)
+		}
 	case "backup":
 		if _, terr := loadLoginTOTPRecord(ctx, challengeID, user.UserID, record.TenantID, deps); terr != nil {
 			return nil, terr
 		}
-		if err := claim(); err != nil {
-			return nil, err
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
 		}
 		if code == "" {
 			return fail(deps.Errors.MFALoginInvalid)
@@ -786,8 +818,8 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 			}
 		}
 	case "webauthn":
-		if err := claim(); err != nil {
-			return nil, err
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
 		}
 		if !webauthnConfigured || deps.ConfirmWebAuthnAssertion == nil {
 			return fail(deps.Errors.MFALoginInvalid)
@@ -830,8 +862,8 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 			}
 		}
 	default:
-		if err := claim(); err != nil {
-			return nil, err
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
 		}
 		return fail(deps.Errors.MFALoginInvalid)
 	}
@@ -951,6 +983,46 @@ func claimLoginMFAAttempt(ctx context.Context, challengeID, userID, tenantID str
 func releaseLoginMFAAttempt(ctx context.Context, challengeID string, deps LoginDeps) {
 	if deps.ReleaseMFAAttempt != nil {
 		deps.ReleaseMFAAttempt(ctx, challengeID)
+	}
+}
+
+// refuseLoginTOTPBudget ends a confirmation whose claim on the account's TOTP
+// budget was refused. When the budget is spent the challenge is destroyed with
+// it: the account has no guesses left in this window, whichever challenge
+// holds them. Any other refusal is a fail-closed limiter outage, which leaves
+// the challenge alone.
+func refuseLoginTOTPBudget(ctx context.Context, challengeID, userID, tenantID string, err error, deps LoginDeps) error {
+	if deps.IsTOTPRateLimited != nil && deps.IsTOTPRateLimited(err) {
+		return spendLoginTOTPBudget(ctx, challengeID, userID, tenantID, deps)
+	}
+	releaseLoginMFAAttempt(ctx, challengeID, deps)
+	deps.MetricInc(deps.Metrics.MFALoginFailure)
+	unavailable := deps.Errors.SystemUnavailable
+	if unavailable == nil {
+		unavailable = deps.Errors.MFALoginUnavailable
+	}
+	deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", unavailable, nil)
+	return unavailable
+}
+
+// spendLoginTOTPBudget destroys the challenge and reports the account's TOTP
+// budget as spent.
+func spendLoginTOTPBudget(ctx context.Context, challengeID, userID, tenantID string, deps LoginDeps) error {
+	_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
+	deps.MetricInc(deps.Metrics.MFALoginFailure)
+	deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", deps.Errors.TOTPRateLimited, func() map[string]string {
+		return map[string]string{
+			"reason": "totp_rate_limited",
+		}
+	})
+	return deps.Errors.TOTPRateLimited
+}
+
+// releaseLoginTOTPAttempt gives back a claim on the account's TOTP budget for
+// a code that was right but did not complete the login.
+func releaseLoginTOTPAttempt(ctx context.Context, userID, tenantID string, deps LoginDeps) {
+	if deps.ReleaseTOTPLimiter != nil {
+		deps.ReleaseTOTPLimiter(ctx, tenantID, userID)
 	}
 }
 
