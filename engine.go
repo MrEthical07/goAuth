@@ -2871,49 +2871,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		EmitAudit:     e.emitAudit,
 		EmitRateLimit: e.emitRateLimit,
 		Warn:          e.warn,
-		Errors: internalflows.LoginErrors{
-			EngineNotReady:           ErrEngineNotReady,
-			InvalidCredentials:       ErrInvalidCredentials,
-			LoginRateLimited:         ErrLoginRateLimited,
-			SystemUnavailable:        ErrSystemUnavailable,
-			AccountUnverified:        ErrAccountUnverified,
-			AccountLocked:            ErrAccountLocked,
-			DeviceBindingRejected:    ErrDeviceBindingRejected,
-			TOTPFeatureDisabled:      ErrTOTPFeatureDisabled,
-			MFALoginInvalid:          ErrMFALoginInvalid,
-			MFALoginExpired:          ErrMFALoginExpired,
-			MFALoginAttemptsExceeded: ErrMFALoginAttemptsExceeded,
-			MFALoginReplay:           ErrMFALoginReplay,
-			MFALoginUnavailable:      ErrMFALoginUnavailable,
-			UserNotFound:             ErrUserNotFound,
-			BackupCodeRateLimited:    ErrBackupCodeRateLimited,
-			BackupCodeInvalid:        ErrBackupCodeInvalid,
-			BackupCodesNotConfigured: ErrBackupCodesNotConfigured,
-			WebAuthnCloneDetected:    ErrWebAuthnCloneDetected,
-			WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
-			WebAuthnUnavailable:      ErrWebAuthnUnavailable,
-			TOTPRateLimited:          ErrTOTPRateLimited,
-		},
-		Metrics: internalflows.LoginMetrics{
-			LoginSuccess:     int(MetricLoginSuccess),
-			LoginFailure:     int(MetricLoginFailure),
-			LoginRateLimited: int(MetricLoginRateLimited),
-			LockoutTrigger:   int(MetricLockoutTrigger),
-			SessionCreated:   int(MetricSessionCreated),
-			MFALoginRequired: int(MetricMFALoginRequired),
-			MFALoginSuccess:  int(MetricMFALoginSuccess),
-			MFALoginFailure:  int(MetricMFALoginFailure),
-			MFAReplayAttempt: int(MetricMFAReplayAttempt),
-		},
-		Events: internalflows.LoginEvents{
-			LoginSuccess:        auditEventLoginSuccess,
-			LoginFailure:        auditEventLoginFailure,
-			LoginRateLimited:    auditEventLoginRateLimited,
-			MFARequired:         auditEventMFARequired,
-			MFASuccess:          auditEventMFASuccess,
-			MFAFailure:          auditEventMFAFailure,
-			MFAAttemptsExceeded: auditEventMFAAttemptsExceeded,
-		},
+		Errors:        loginErrors(),
+		Metrics:       loginMetrics(),
+		Events:        loginEvents(),
 	}
 	if e != nil {
 		deps.DummyHash = e.dummyHash
@@ -3047,6 +3007,60 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	return deps
 }
 
+// loginErrors, loginMetrics and loginEvents are the sentinels, metric IDs and
+// audit event names the login flows report with.
+func loginErrors() internalflows.LoginErrors {
+	return internalflows.LoginErrors{
+		EngineNotReady:           ErrEngineNotReady,
+		InvalidCredentials:       ErrInvalidCredentials,
+		LoginRateLimited:         ErrLoginRateLimited,
+		SystemUnavailable:        ErrSystemUnavailable,
+		AccountUnverified:        ErrAccountUnverified,
+		AccountLocked:            ErrAccountLocked,
+		DeviceBindingRejected:    ErrDeviceBindingRejected,
+		TOTPFeatureDisabled:      ErrTOTPFeatureDisabled,
+		MFALoginInvalid:          ErrMFALoginInvalid,
+		MFALoginExpired:          ErrMFALoginExpired,
+		MFALoginAttemptsExceeded: ErrMFALoginAttemptsExceeded,
+		MFALoginReplay:           ErrMFALoginReplay,
+		MFALoginUnavailable:      ErrMFALoginUnavailable,
+		UserNotFound:             ErrUserNotFound,
+		BackupCodeRateLimited:    ErrBackupCodeRateLimited,
+		BackupCodeInvalid:        ErrBackupCodeInvalid,
+		BackupCodesNotConfigured: ErrBackupCodesNotConfigured,
+		WebAuthnCloneDetected:    ErrWebAuthnCloneDetected,
+		WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
+		WebAuthnUnavailable:      ErrWebAuthnUnavailable,
+		TOTPRateLimited:          ErrTOTPRateLimited,
+	}
+}
+
+func loginMetrics() internalflows.LoginMetrics {
+	return internalflows.LoginMetrics{
+		LoginSuccess:     int(MetricLoginSuccess),
+		LoginFailure:     int(MetricLoginFailure),
+		LoginRateLimited: int(MetricLoginRateLimited),
+		LockoutTrigger:   int(MetricLockoutTrigger),
+		SessionCreated:   int(MetricSessionCreated),
+		MFALoginRequired: int(MetricMFALoginRequired),
+		MFALoginSuccess:  int(MetricMFALoginSuccess),
+		MFALoginFailure:  int(MetricMFALoginFailure),
+		MFAReplayAttempt: int(MetricMFAReplayAttempt),
+	}
+}
+
+func loginEvents() internalflows.LoginEvents {
+	return internalflows.LoginEvents{
+		LoginSuccess:        auditEventLoginSuccess,
+		LoginFailure:        auditEventLoginFailure,
+		LoginRateLimited:    auditEventLoginRateLimited,
+		MFARequired:         auditEventMFARequired,
+		MFASuccess:          auditEventMFASuccess,
+		MFAFailure:          auditEventMFAFailure,
+		MFAAttemptsExceeded: auditEventMFAAttemptsExceeded,
+	}
+}
+
 // configureLoginUserLookupDeps wires the login flow's user lookups. Both
 // route through the engine resolvers, so they are tenant-scoped whenever
 // multi-tenancy is enabled and tenant-blind exactly as before when it is
@@ -3101,23 +3115,7 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		e.limiterCleanupFailed(ctx, "login", tenantID, err)
 		return nil
 	}
-	if e.config.Security.LoginIPLimiter.Enabled {
-		deps.ReserveLoginIPRate = func(ctx context.Context, ip string) error {
-			tenantID := tenantIDFromContext(ctx)
-			e.metricInc(MetricLimiterCheck)
-			err := e.rateLimiter.ReserveLoginIP(ctx, tenantID, ip)
-			if err == nil || errors.Is(err, rate.ErrRateLimited) {
-				return err
-			}
-			return e.limiterOutage(ctx, "login_ip", tenantID, err)
-		}
-		deps.ReleaseLoginIPRate = func(ctx context.Context, ip string) {
-			tenantID := tenantIDFromContext(ctx)
-			if err := e.rateLimiter.ReleaseLoginIP(ctx, tenantID, ip); err != nil {
-				e.limiterCleanupFailed(ctx, "login_ip", tenantID, err)
-			}
-		}
-	}
+	e.configureLoginIPLimiterDeps(deps)
 	deps.ReserveLoginUserRate = func(ctx context.Context, userID string) error {
 		tenantID := tenantIDFromContext(ctx)
 		e.metricInc(MetricLimiterCheck)
@@ -3131,6 +3129,28 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		tenantID := tenantIDFromContext(ctx)
 		if err := e.rateLimiter.ResetLoginUser(ctx, tenantID, userID); err != nil {
 			e.limiterCleanupFailed(ctx, "login", tenantID, err)
+		}
+	}
+}
+
+// configureLoginIPLimiterDeps wires the opt-in per-client-IP login throttle.
+func (e *Engine) configureLoginIPLimiterDeps(deps *internalflows.LoginDeps) {
+	if !e.config.Security.LoginIPLimiter.Enabled {
+		return
+	}
+	deps.ReserveLoginIPRate = func(ctx context.Context, ip string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.rateLimiter.ReserveLoginIP(ctx, tenantID, ip)
+		if err == nil || errors.Is(err, rate.ErrRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "login_ip", tenantID, err)
+	}
+	deps.ReleaseLoginIPRate = func(ctx context.Context, ip string) {
+		tenantID := tenantIDFromContext(ctx)
+		if err := e.rateLimiter.ReleaseLoginIP(ctx, tenantID, ip); err != nil {
+			e.limiterCleanupFailed(ctx, "login_ip", tenantID, err)
 		}
 	}
 }
