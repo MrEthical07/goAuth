@@ -16,6 +16,12 @@ type Config struct {
 	LoginCooldownDuration     time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+
+	// IPLimiterEnabled turns on the per-client-IP login throttle; IPMaxAttempts
+	// and IPCooldown size it.
+	IPLimiterEnabled bool
+	IPMaxAttempts    int
+	IPCooldown       time.Duration
 }
 
 // Limiter enforces identifier-scoped login failure limits using Redis counters.
@@ -42,7 +48,7 @@ func (l *Limiter) ReserveLogin(ctx context.Context, tenantID, identifier string)
 	if !l.config.EnableLoginFailureLimiter {
 		return nil
 	}
-	return l.reserve(ctx, loginUserKey(tenantID, identifier), l.config.MaxLoginAttempts)
+	return l.reserve(ctx, loginUserKey(tenantID, identifier), l.config.MaxLoginAttempts, l.config.LoginCooldownDuration)
 }
 
 // ReserveLoginUser claims one login attempt against the resolved account,
@@ -56,7 +62,32 @@ func (l *Limiter) ReserveLoginUser(ctx context.Context, tenantID, userID string)
 	if !l.config.EnableLoginFailureLimiter {
 		return nil
 	}
-	return l.reserve(ctx, loginAccountKey(tenantID, userID), l.config.MaxLoginAttempts)
+	return l.reserve(ctx, loginAccountKey(tenantID, userID), l.config.MaxLoginAttempts, l.config.LoginCooldownDuration)
+}
+
+// ReserveLoginIP claims one login attempt for the client address before the
+// password is verified, when the per-IP throttle is enabled. The address is
+// hashed, so the key does not grow with it. It returns ErrRateLimited once the
+// address's budget is spent.
+func (l *Limiter) ReserveLoginIP(ctx context.Context, tenantID, ip string) error {
+	if !l.config.IPLimiterEnabled || ip == "" {
+		return nil
+	}
+	return l.reserve(ctx, loginIPKey(tenantID, ip), l.config.IPMaxAttempts, l.config.IPCooldown)
+}
+
+// ReleaseLoginIP gives back the slot ReserveLoginIP claimed for a login whose
+// password turned out right, so the count stays the failures per address. It
+// does not clear the budget: one good login must not reset an address that is
+// still guessing at other accounts.
+func (l *Limiter) ReleaseLoginIP(ctx context.Context, tenantID, ip string) error {
+	if !l.config.IPLimiterEnabled || ip == "" {
+		return nil
+	}
+	if err := l.window.Release(ctx, loginIPKey(tenantID, ip), l.config.IPCooldown); err != nil {
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	return nil
 }
 
 // ResetLoginUser clears the account's login budget.
@@ -70,8 +101,8 @@ func (l *Limiter) ResetLoginUser(ctx context.Context, tenantID, userID string) e
 	return nil
 }
 
-func (l *Limiter) reserve(ctx context.Context, key string, limit int) error {
-	_, ok, err := l.window.Reserve(ctx, key, l.config.LoginCooldownDuration, int64(limit))
+func (l *Limiter) reserve(ctx context.Context, key string, limit int, cooldown time.Duration) error {
+	_, ok, err := l.window.Reserve(ctx, key, cooldown, int64(limit))
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}

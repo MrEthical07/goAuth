@@ -197,6 +197,12 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		return challenge, nil
 	}
 
+	// The account's own budget (shared by every spelling of its identifier).
+	// A request over it is answered with the rate-limit error rather than a
+	// fake challenge, because the error is what stops the host from sending
+	// mail; with a provider that matches identifiers case-insensitively that
+	// lets a caller trying spellings tell that the account exists. Exact-match
+	// providers never see it, and docs/rate_limiting.md says so.
 	if deps.CheckRequestUserLimiter != nil {
 		if err := deps.CheckRequestUserLimiter(ctx, tenantID, user.UserID); err != nil {
 			mapped := deps.MapLimiterError(err)

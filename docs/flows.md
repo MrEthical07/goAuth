@@ -60,7 +60,7 @@ ceiling instead of the shorter default lifetime
 ### Steps
 
 1. Extract client IP via `WithClientIP(ctx)`.
-2. **Rate-limit check** — `rate.Limiter.CheckLogin(ctx, identifier, ip)`.
+2. **Rate-limit reservation** — the attempt claims a slot of the identifier's budget (`rate.Limiter.ReserveLogin`) in one atomic step before anything is verified; when `Security.LoginIPLimiter` is enabled and the context carries a client IP (`WithClientIP`), a slot of the address's budget is claimed first (`ReserveLoginIP`). Per-IP throttling is **opt-in** and off by default.
 3. **User lookup** — `UserProvider.GetUserByIdentifier(ctx, identifier)`. On "not found", perform dummy Argon2 verify to equalize timing, then return `ErrInvalidCredentials`.
 4. **Account status check** — reject `Disabled` / `Locked` / `Deleted` accounts with appropriate sentinel errors.
 5. **Email verification check** — if `RequireForLogin`, reject `PendingVerification` with `ErrAccountUnverified`.

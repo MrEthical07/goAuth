@@ -262,6 +262,9 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxLoginAttempts:          cfg.Security.MaxLoginAttempts,
 		LoginCooldownDuration:     cfg.Security.LoginCooldownDuration,
 		WindowMode:                windowMode,
+		IPLimiterEnabled:          cfg.Security.LoginIPLimiter.Enabled,
+		IPMaxAttempts:             cfg.Security.LoginIPLimiter.MaxAttempts,
+		IPCooldown:                cfg.Security.LoginIPLimiter.Cooldown,
 	})
 	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
 	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{

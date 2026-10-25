@@ -14,6 +14,11 @@ func loginUserKey(tenantID, identifier string) string {
 	return "rl:login:fail:" + safeID(tenantID) + ":" + safeID(identifier)
 }
 
+// loginIPKey is the budget of one client address within a tenant.
+func loginIPKey(tenantID, ip string) string {
+	return "rl:login:ip:" + safeID(tenantID) + ":" + safeID(ip)
+}
+
 // loginAccountKey is the budget of one resolved account, whatever spelling of
 // its identifier the caller used.
 func loginAccountKey(tenantID, userID string) string {

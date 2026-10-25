@@ -76,7 +76,7 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 
 | Function | Invocation | Parameters | Returns / Notes |
 |---|---|---|---|
-| `WithClientIP` | `goAuth.WithClientIP(ctx, ip)` | `ctx context.Context`, `ip string` | `context.Context`; used by rate limiting and device binding |
+| `WithClientIP` | `goAuth.WithClientIP(ctx, ip)` | `ctx context.Context`, `ip string` | `context.Context`; used by device binding and, when `Security.LoginIPLimiter` is enabled, the per-IP login throttle (the address must be one you trust; users behind one NAT or proxy share a budget) |
 | `WithTenantID` | `goAuth.WithTenantID(ctx, tenantID)` | `ctx context.Context`, `tenantID string` | `context.Context`; controls tenant scoping |
 | `WithUserAgent` | `goAuth.WithUserAgent(ctx, ua)` | `ctx context.Context`, `ua string` | `context.Context`; used for device binding checks |
 | `WithSessionProfile` | `goAuth.WithSessionProfile(ctx, "mobile")` | `ctx context.Context`, `name string` | `context.Context`; selects the [session profile](session.md#session-profiles) for sessions created under it (all login paths, MFA confirm, auto-login account creation). Unknown name: `ErrUnknownSessionProfile` before any work; with `RememberMe`: `ErrSessionProfileConflict`. Choose it from server-side signals only |

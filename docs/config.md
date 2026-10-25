@@ -149,6 +149,9 @@ created under it.
 | `AutoLockoutDuration`          | `time.Duration`| 30 min      | Duration of auto-lock |
 | `LimiterWindowMode`            | `string`      | `""` (fixed) | Rate-limiter algorithm for all domains: `"fixed"` or `"sliding"` (removes the 2× boundary burst) |
 | `LimiterFailClosed`            | `bool`        | `false`      | A limiter backend (Redis) error refuses the request with a system error (503) instead of letting it through; see [rate_limiting.md](rate_limiting.md#failing-closed) |
+| `LoginIPLimiter.Enabled`       | `bool`        | `false`      | Opt-in per-client-IP throttle on password login (keyed by tenant and the hashed `WithClientIP` address, skipped when no address is present); see [rate_limiting.md](rate_limiting.md#per-ip-login-throttle) |
+| `LoginIPLimiter.MaxAttempts`   | `int`         | 20           | Failed attempts per (tenant, address) within `Cooldown`; must be > 0 when enabled |
+| `LoginIPLimiter.Cooldown`      | `time.Duration`| 15 min      | Window the attempts are counted in; must be > 0 when enabled |
 
 > **See also:** [security.md](security.md), [rate_limiting.md](rate_limiting.md)
 
@@ -411,13 +414,14 @@ engine**:
 - `max_session_duration_long` (warn) — effective session ceiling > 30 days
 - `hybrid_enforcement_strict_routes_only` (info) — Hybrid mode with enforced device binding; enforcement runs only on `ModeStrict`-resolved routes
 - `email_change_keeps_other_sessions` (info) — `EmailChange.KeepOtherSessions` leaves every other session signed in after a confirmed change
+- `login_ip_limiter_disabled` (info) — `Security.LoginIPLimiter` is off: nothing throttles password login per client address unless your gateway does
 - `limiter_fail_closed_outage_blocks_signin` (info) — `Security.LimiterFailClosed` is on: a limiter backend outage blocks sign-in, MFA, password and account flows with a 503
 - `role_switch_stateless_validation` (info) — `RoleSwitch.Enabled` with `ModeJWTOnly`/`ModeHybrid`; a pre-switch access token stays valid on routes resolved in those modes until it expires (see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode))
 - `session_profile_*` codes — advisory notes on session profiles: a ceiling over 365 days or an unbounded profile (warn), `RenewOnUse` on a stateless validation mode and the "removing a profile ends its sessions" reminder (info); see [Session profiles](#session-profiles-configsessionprofiles)
 - `external_autolink_trusts_active_status` (info) — `ExternalAuth.AutoLinkVerifiedEmail` treats an Active account as email-verified, which legacy or imported accounts may not be; `external_signup_passwordless` (info) — `ExternalAuth.AllowSignup` creates accounts without a password; `external_key_max_stale_long` (warn) — `ExternalAuth.KeyMaxStale` above 72h keeps trusting cached provider keys that long during an outage
 - `*_noop` codes — config knobs that are accepted but never read by the engine (see the field tables above)
 
-The complete code list (35 codes: 14 INFO, 17 WARN, 4 HIGH) lives in
+The complete code list (36 codes: 15 INFO, 17 WARN, 4 HIGH) lives in
 [config_lint.md](config_lint.md).
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)

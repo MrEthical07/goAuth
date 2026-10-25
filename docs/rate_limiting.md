@@ -46,6 +46,22 @@ func New(redisClient redis.UniversalClient, cfg Config) *Limiter
 
 All limiters are nil-safe — calling a method on a nil receiver returns `nil`.
 
+### Per-IP login throttle
+
+`Security.LoginIPLimiter` (`Enabled`, `MaxAttempts`, `Cooldown`; **off by default**) adds a budget per
+(tenant, client IP) in front of the identifier and account budgets. The address is the one the host puts in the
+context with `WithClientIP`; it is hashed into the key (`rl:login:ip:{tenant}:{ip}`), and an attempt with no
+address in its context is not counted. A slot is claimed before anything else is done for the attempt, so an
+address that has used up its budget cannot also burn the budgets of the identifiers it names. A login whose
+password is right gives its slot back, so the count is the failures per address within `Cooldown`, and a good
+login cannot be used to refill the budget of an address that is still guessing. It honors
+`Security.LimiterWindowMode` and `Security.LimiterFailClosed`.
+
+Two things the library cannot decide for you: the address is only as trustworthy as the way your proxy chain
+derives it (never take it from a header the caller can set), and every user behind one NAT or proxy shares a
+budget, so size `MaxAttempts` for the busiest shared address you serve. `Config.Lint()` notes
+(`login_ip_limiter_disabled`, INFO) while the throttle is off.
+
 ### Policy Controls (Optional vs Failure-Based)
 
 | Flow | Request Limiter Toggle | Failure Limiter Toggle |

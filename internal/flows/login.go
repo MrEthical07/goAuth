@@ -164,6 +164,14 @@ type LoginDeps struct {
 	ReserveLoginUserRate func(ctx context.Context, userID string) error
 	ResetLoginUserRate   func(ctx context.Context, userID string)
 
+	// ReserveLoginIPRate claims one attempt of the client address's budget
+	// before anything else is done for the attempt, and ReleaseLoginIPRate
+	// gives it back once the password is verified. Both receive the address
+	// from the context and are called only when there is one. Nil unless the
+	// per-IP throttle is enabled.
+	ReserveLoginIPRate func(ctx context.Context, ip string) error
+	ReleaseLoginIPRate func(ctx context.Context, ip string)
+
 	// Auto-lockout hooks: RecordLockoutFailure returns true when threshold is reached.
 	AutoLockoutEnabled   bool
 	RecordLockoutFailure func(context.Context, string) (bool, error)
@@ -381,9 +389,20 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, deps.Errors.InvalidCredentials
 	}
 
+	// The client address first: an address that has used up its budget must not
+	// also burn the budgets of the identifiers it names.
+	clientIP := ""
+	if deps.ReserveLoginIPRate != nil {
+		clientIP = deps.ClientIPFromContext(ctx)
+		if clientIP != "" {
+			if err := deps.ReserveLoginIPRate(ctx, clientIP); err != nil {
+				return nil, deps.loginRateRefusal(ctx, err, "", tenantID, username, "ip")
+			}
+		}
+	}
 	if deps.ReserveLoginRate != nil {
 		if err := deps.ReserveLoginRate(ctx, username); err != nil {
-			return nil, deps.loginRateRefusal(ctx, err, "", tenantID, username)
+			return nil, deps.loginRateRefusal(ctx, err, "", tenantID, username, "")
 		}
 	}
 
@@ -517,6 +536,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 	}
 	if deps.ResetLoginUserRate != nil {
 		deps.ResetLoginUserRate(ctx, user.UserID)
+	}
+	if clientIP != "" && deps.ReleaseLoginIPRate != nil {
+		deps.ReleaseLoginIPRate(ctx, clientIP)
 	}
 
 	return runCompleteLogin(ctx, username, user, tenantID, opts, deps, func() {
@@ -1386,21 +1408,22 @@ func RunIssueLoginSessionTokens(
 // loginRateRefusal turns a failed limiter reservation into the error the login
 // returns, recording it as a rate-limit event unless the limiter backend was
 // down and the engine fails closed.
-func (d LoginDeps) loginRateRefusal(ctx context.Context, err error, userID, tenantID, username string) error {
+func (d LoginDeps) loginRateRefusal(ctx context.Context, err error, userID, tenantID, username, scope string) error {
 	if isLoginLimiterOutage(err, d) {
 		return d.Errors.SystemUnavailable
 	}
+	meta := func() map[string]string {
+		m := map[string]string{
+			"identifier": username,
+		}
+		if scope != "" {
+			m["scope"] = scope
+		}
+		return m
+	}
 	d.MetricInc(d.Metrics.LoginRateLimited)
-	d.EmitAudit(ctx, d.Events.LoginRateLimited, false, userID, tenantID, "", d.Errors.LoginRateLimited, func() map[string]string {
-		return map[string]string{
-			"identifier": username,
-		}
-	})
-	d.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-		return map[string]string{
-			"identifier": username,
-		}
-	})
+	d.EmitAudit(ctx, d.Events.LoginRateLimited, false, userID, tenantID, "", d.Errors.LoginRateLimited, meta)
+	d.EmitRateLimit(ctx, "login", tenantID, meta)
 	return d.Errors.LoginRateLimited
 }
 

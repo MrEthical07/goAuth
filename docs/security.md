@@ -28,7 +28,7 @@ goAuth assumes attackers may:
 | Attack | Mitigation | Invariant |
 |--------|-----------|-----------|
 | **Brute force** | 7-domain rate limiting + auto-lockout | Persistent failure counter across rate-limit windows |
-| **Credential stuffing** | Per-IP + per-identifier throttling | `ErrLoginRateLimited` before password verify |
+| **Credential stuffing** | Per-identifier and per-account throttling; per-IP throttling is opt-in (`Security.LoginIPLimiter`) | `ErrLoginRateLimited` before password verify. Without the per-IP limiter, one address can try a guess against every account unless your gateway throttles login by client IP. With it, the address must be one you can trust (`WithClientIP` from your own proxy chain) and everyone behind one NAT shares a budget |
 | **Password DoS** | `MaxPasswordBytes` (default 1024) | Reject before Argon2 |
 | **Empty password oracle** | Dummy `Verify` call on empty-password path | Equalized response time |
 | **User enumeration** | Fake challenges + 20–40ms random delay | Indistinguishable responses for unknown users |

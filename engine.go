@@ -3101,6 +3101,23 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		e.limiterCleanupFailed(ctx, "login", tenantID, err)
 		return nil
 	}
+	if e.config.Security.LoginIPLimiter.Enabled {
+		deps.ReserveLoginIPRate = func(ctx context.Context, ip string) error {
+			tenantID := tenantIDFromContext(ctx)
+			e.metricInc(MetricLimiterCheck)
+			err := e.rateLimiter.ReserveLoginIP(ctx, tenantID, ip)
+			if err == nil || errors.Is(err, rate.ErrRateLimited) {
+				return err
+			}
+			return e.limiterOutage(ctx, "login_ip", tenantID, err)
+		}
+		deps.ReleaseLoginIPRate = func(ctx context.Context, ip string) {
+			tenantID := tenantIDFromContext(ctx)
+			if err := e.rateLimiter.ReleaseLoginIP(ctx, tenantID, ip); err != nil {
+				e.limiterCleanupFailed(ctx, "login_ip", tenantID, err)
+			}
+		}
+	}
 	deps.ReserveLoginUserRate = func(ctx context.Context, userID string) error {
 		tenantID := tenantIDFromContext(ctx)
 		e.metricInc(MetricLimiterCheck)

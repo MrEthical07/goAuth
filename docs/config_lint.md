@@ -62,6 +62,7 @@ func (c *Config) Lint() LintResult
 | `limiter_fail_closed_outage_blocks_signin` | INFO | `Security.LimiterFailClosed` is on (a limiter backend outage blocks sign-in, MFA, password and account flows with a 503) |
 | `role_switch_stateless_validation` | INFO | `RoleSwitch.Enabled` with JWT-only or Hybrid mode (a pre-switch access token stays valid on stateless routes until it expires; see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode)) |
 | `login_failure_limiter_disabled` | HIGH | `Security.EnableLoginFailureLimiter == false` |
+| `login_ip_limiter_disabled` | INFO | `Security.LoginIPLimiter.Enabled == false` (nothing throttles password login per client address unless the gateway does) |
 | `session_lifetime_long` | WARN | Absolute session lifetime > 30 days |
 | `session_shorter_than_refresh` | HIGH | Session lifetime < refresh TTL |
 | `max_session_duration_caps_default` | WARN | Explicit `MaxSessionDuration` below the default session lifetime (caps all sessions) |
@@ -86,7 +87,7 @@ func (c *Config) Lint() LintResult
 | `external_signup_passwordless` | INFO | `ExternalAuth.Enabled` with `AllowSignup`: accounts are created without a password (they can set one through password reset) |
 | `external_key_max_stale_long` | WARN | `ExternalAuth.Enabled` with `KeyMaxStale` above 72h: a revoked or leaked provider key stays trusted that long during an outage |
 
-Summary: 14 INFO, 17 WARN, 4 HIGH.
+Summary: 15 INFO, 17 WARN, 4 HIGH.
 
 ### No-op knob warnings
 
