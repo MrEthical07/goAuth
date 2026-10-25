@@ -2839,6 +2839,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		EnforceReplayProtection:   cfg.TOTP.EnforceReplayProtection,
 		RequireVerified:           e != nil && e.shouldRequireVerified(),
 		PendingVerificationStatus: uint8(AccountPendingVerification),
+		ActiveStatus:              uint8(AccountActive),
 		PasswordUpgradeOnLogin:    cfg.Password.UpgradeOnLogin,
 		MFALoginMaxAttempts:       cfg.TOTP.MFALoginMaxAttempts,
 		MFALoginChallengeTTL:      cfg.TOTP.MFALoginChallengeTTL,

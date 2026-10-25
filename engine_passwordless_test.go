@@ -155,8 +155,8 @@ func TestPasswordlessLoginIsLimitedLikeAWrongPassword(t *testing.T) {
 				t.Fatalf("attempt %d: with a password %s, without %s", i+1, withPassword[i], without[i])
 			}
 		}
-		if without[1] != spbErr(ErrAccountLocked) {
-			t.Fatalf("sequence = %v; the threshold must lock the account", without)
+		if without[1] != spbErr(ErrInvalidCredentials) {
+			t.Fatalf("sequence = %v; the attempt that locks the account is answered like any other", without)
 		}
 	})
 }

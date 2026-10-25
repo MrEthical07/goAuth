@@ -33,10 +33,14 @@ func TestAutoLockout_ThresholdTriggersLock(t *testing.T) {
 		}
 	}
 
-	// The Nth failure should trigger lockout and return ErrAccountLocked.
+	// The Nth failure locks the account but is answered like any other wrong
+	// password; the lock shows once the right password is given.
 	_, _, err := engine.Login(ctx, "alice", wrongPwd)
-	if !errors.Is(err, ErrAccountLocked) {
-		t.Fatalf("threshold attempt: expected ErrAccountLocked, got %v", err)
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("threshold attempt: expected ErrInvalidCredentials, got %v", err)
+	}
+	if up.users["u1"].Status != AccountLocked {
+		t.Fatalf("expected the account to be locked, status %d", up.users["u1"].Status)
 	}
 }
 
@@ -253,8 +257,11 @@ func TestAutoLockout_StillTriggersWhenLoginFailureLimiterDisabled(t *testing.T) 
 	}
 
 	_, _, err := engine.Login(ctx, "alice", "wrong-password")
-	if !errors.Is(err, ErrAccountLocked) {
-		t.Fatalf("threshold attempt: expected ErrAccountLocked, got %v", err)
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("threshold attempt: expected ErrInvalidCredentials, got %v", err)
+	}
+	if up.users["u1"].Status != AccountLocked {
+		t.Fatalf("expected the account to be locked, status %d", up.users["u1"].Status)
 	}
 }
 

@@ -732,3 +732,54 @@ func TestUnauthenticatedEntryPointsRefuseAndTruncateHugeIdentifiers(t *testing.T
 		t.Fatalf("a refused identifier must leave no limiter state, found %v", keys)
 	}
 }
+
+// FAILED-BEFORE (R2-14): once an existing account had taken the threshold of
+// wrong passwords every further wrong password was answered "account locked",
+// while an unknown identifier always got "invalid credentials".
+func TestAutoLockoutDoesNotRevealWhichIdentifiersExist(t *testing.T) {
+	cfg := lockoutTestConfig()
+	cfg.Security.EnableLoginFailureLimiter = false
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	ctx := context.Background()
+
+	for i := 1; i <= cfg.Security.AutoLockoutThreshold+2; i++ {
+		_, _, errExisting := engine.Login(ctx, "alice", "wrong-password-1")
+		_, _, errUnknown := engine.Login(ctx, "nobody", "wrong-password-1")
+		if !errors.Is(errExisting, ErrInvalidCredentials) || !errors.Is(errUnknown, ErrInvalidCredentials) {
+			t.Fatalf("attempt %d: existing %v, unknown %v; both must be ErrInvalidCredentials", i, errExisting, errUnknown)
+		}
+	}
+	// The lock is still applied, and the right password now says so.
+	if up.users["u1"].Status != AccountLocked {
+		t.Fatalf("the account must be locked, status %d", up.users["u1"].Status)
+	}
+	if _, _, err := engine.Login(ctx, "alice", "correct-password-123"); !errors.Is(err, ErrAccountLocked) {
+		t.Fatalf("the right password on a locked account: %v, want ErrAccountLocked", err)
+	}
+}
+
+// FAILED-BEFORE (R2-16): wrong passwords turned a disabled, deleted or
+// unverified account into a locked one, and unlocking it then made it active.
+func TestAutoLockoutNeverRewritesAnAdministratorSetStatus(t *testing.T) {
+	for _, status := range []AccountStatus{AccountDisabled, AccountDeleted, AccountPendingVerification} {
+		cfg := lockoutTestConfig()
+		cfg.Security.EnableLoginFailureLimiter = false
+		up := newHardeningUserProvider(t)
+		user := up.users["u1"]
+		user.Status = status
+		up.users["u1"] = user
+		engine, _, done := newCreateAccountEngine(t, cfg, up)
+
+		for i := 0; i < cfg.Security.AutoLockoutThreshold+2; i++ {
+			if _, _, err := engine.Login(context.Background(), "alice", "wrong-password-1"); !errors.Is(err, ErrInvalidCredentials) {
+				t.Fatalf("status %d attempt %d: %v, want ErrInvalidCredentials", status, i+1, err)
+			}
+		}
+		if got := up.users["u1"].Status; got != status {
+			t.Fatalf("status %d was rewritten to %d by wrong passwords", status, got)
+		}
+		done()
+	}
+}

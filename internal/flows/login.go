@@ -129,12 +129,15 @@ type LoginDeps struct {
 	EnforceReplayProtection   bool
 	RequireVerified           bool
 	PendingVerificationStatus uint8
-	PasswordUpgradeOnLogin    bool
-	MFALoginMaxAttempts       int
-	MFALoginChallengeTTL      time.Duration
-	DeviceBindingEnabled      bool
-	EnforceIPBinding          bool
-	EnforceUserAgentBinding   bool
+	// ActiveStatus is the only status auto-lockout counts failures for and may
+	// lock. The zero value is the engine's active status.
+	ActiveStatus            uint8
+	PasswordUpgradeOnLogin  bool
+	MFALoginMaxAttempts     int
+	MFALoginChallengeTTL    time.Duration
+	DeviceBindingEnabled    bool
+	EnforceIPBinding        bool
+	EnforceUserAgentBinding bool
 
 	TenantIDFromContext  func(context.Context) string
 	ClientIPFromContext  func(context.Context) string
@@ -442,8 +445,14 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		ok, err = deps.VerifyPassword(password, user.PasswordHash)
 	}
 	if err != nil || !ok {
-		// Auto-lockout: record failure and lock if threshold reached.
-		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil {
+		// Auto-lockout: record the failure and lock once the threshold is
+		// reached. Only an active account takes part: a disabled, deleted,
+		// unverified or already locked one keeps the status an administrator
+		// (or an earlier lock) gave it. The caller is told nothing about it: the
+		// attempt that locks the account gets the same answer as any other
+		// wrong password, so lockout cannot be used to find out which
+		// identifiers exist. The lock shows once the right password is given.
+		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil && user.Status == deps.ActiveStatus {
 			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
 				deps.MetricInc(deps.Metrics.LockoutTrigger)
 				_ = deps.LockAccount(ctx, user.UserID)
@@ -453,7 +462,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 						"reason":     "auto_lockout",
 					}
 				})
-				return nil, deps.Errors.AccountLocked
+				return nil, deps.Errors.InvalidCredentials
 			}
 		}
 
