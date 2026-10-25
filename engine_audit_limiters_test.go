@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -583,6 +584,62 @@ func TestLimiterFailClosedAppliesToTheMFALoginTOTPBudget(t *testing.T) {
 			if _, err := env.engine.ConfirmLoginMFA(env.ctx(), res.MFASession, env.totpCode(secret)); err != nil {
 				t.Fatalf("closed: the challenge must survive an outage that refused the code: %v", err)
 			}
+		}
+	}
+}
+
+// capturedHashes records every encoded hash a password verification is run
+// against, so a test can see what the dummy verifications cost.
+func captureVerifiedHashes(engine *Engine) *[]string {
+	var mu sync.Mutex
+	var hashes []string
+	engine.verifyHashFn = func(password, encodedHash string) (bool, error) {
+		mu.Lock()
+		hashes = append(hashes, encodedHash)
+		mu.Unlock()
+		return engine.passwordHash.Verify(password, encodedHash)
+	}
+	return &hashes
+}
+
+func phcParams(t *testing.T, encoded string) string {
+	t.Helper()
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 {
+		t.Fatalf("not a PHC string: %q", encoded)
+	}
+	return parts[3]
+}
+
+// FAILED-BEFORE (R2-18): the hash verified in place of a real one was a
+// constant of fixed cost (m=65536,t=3,p=2), so with any other Password
+// configuration an unknown identifier took visibly more or less time than a
+// wrong password on a real account.
+func TestDummyVerificationCostsWhatTheConfiguredHasherCosts(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.Password = PasswordConfig{Memory: 16 * 1024, Time: 2, Parallelism: 1, SaltLength: 16, KeyLength: 32}
+	up := newHardeningUserProvider(t)
+	up.users["u3"] = UserRecord{UserID: "u3", Identifier: "carol", TenantID: "0", PasswordHash: "", Status: AccountActive, Role: "member", PermissionVersion: 1, RoleVersion: 1, AccountVersion: 1}
+	up.byIdentifier["carol"] = "u3"
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	hashes := captureVerifiedHashes(engine)
+	ctx := context.Background()
+	const want = "m=16384,t=2,p=1"
+
+	for name, call := range map[string]func(){
+		"unknown identifier":        func() { _, _, _ = engine.Login(ctx, "nobody", "some-password-123") },
+		"empty password":            func() { _, _, _ = engine.Login(ctx, "alice", "") },
+		"account without password":  func() { _, _, _ = engine.Login(ctx, "carol", "some-password-123") },
+		"VerifyPassword, no secret": func() { _ = engine.VerifyPassword(ctx, "u3", "some-password-123") },
+	} {
+		*hashes = (*hashes)[:0]
+		call()
+		if len(*hashes) != 1 {
+			t.Fatalf("%s: %d verifications, want exactly one", name, len(*hashes))
+		}
+		if got := phcParams(t, (*hashes)[0]); got != want {
+			t.Fatalf("%s: dummy verification ran at %s, want the configured %s", name, got, want)
 		}
 	}
 }

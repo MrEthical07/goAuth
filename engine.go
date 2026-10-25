@@ -62,6 +62,7 @@ type Engine struct {
 	jwtManager            *jwt.Manager
 	userProvider          UserProvider
 	verifyHashFn          func(password, encodedHash string) (bool, error)
+	dummyHash             string
 	verifyTOTPFn          func(secret []byte, code string, now time.Time) (bool, int64, error)
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
@@ -2898,6 +2899,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			MFAFailure:          auditEventMFAFailure,
 			MFAAttemptsExceeded: auditEventMFAAttemptsExceeded,
 		},
+	}
+	if e != nil {
+		deps.DummyHash = e.dummyHash
 	}
 	e.configureLoginRateLimiterDeps(&deps)
 	e.configureLoginTOTPLimiterDeps(&deps)

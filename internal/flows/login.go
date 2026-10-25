@@ -187,6 +187,10 @@ type LoginDeps struct {
 	ResetTOTPLimiter   func(ctx context.Context, tenantID, userID string)
 	IsTOTPRateLimited  func(error) bool
 
+	// DummyHash is verified in place of a real hash on every path that has
+	// none to verify. Empty means DummyTimingHash.
+	DummyHash string
+
 	VerifyPassword           func(string, string) (bool, error)
 	PasswordNeedsUpgrade     func(string) (bool, error)
 	HashPassword             func(string) (string, error)
@@ -261,14 +265,24 @@ func (d LoginDeps) profileRejection(status SessionProfileStatus) error {
 	return nil
 }
 
-// dummyTimingHash is a syntactically valid Argon2id hash used to equalize
-// response time on rejection paths that have no real hash to verify against
-// (empty password, unknown identifier). Skipping the dummy verification on
-// any credential-rejection path would create a measurable timing oracle.
-const dummyTimingHash = DummyTimingHash
+// dummyHash is the hash verified on rejection paths that have no real hash to
+// verify against (empty password, unknown identifier, an account without a
+// password). Skipping the dummy verification on any credential-rejection path
+// would create a measurable timing oracle. The engine supplies one made with
+// its own hasher, so it costs what verifying a hash made under the current
+// configuration costs; DummyTimingHash is the fallback for a LoginDeps that
+// carries none.
+func (d LoginDeps) dummyHash() string {
+	if d.DummyHash != "" {
+		return d.DummyHash
+	}
+	return DummyTimingHash
+}
 
-// DummyTimingHash is the hash verified in place of a real one when there is
-// none to verify, so every rejection costs one Argon2 verification.
+// DummyTimingHash is the fallback hash verified in place of a real one when
+// there is none to verify, so every rejection costs one Argon2 verification.
+// Its cost is fixed (m=65536, t=3, p=2); an engine built with Build uses a
+// hash of its own configured cost instead.
 const DummyTimingHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 // DummyTimingPassword is the password verified against DummyTimingHash.
@@ -350,7 +364,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// Without this, an attacker could distinguish empty-password rejections
 		// from wrong-password rejections by measuring response time.
 		if deps.VerifyPassword != nil {
-			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
+			_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
 		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
@@ -378,7 +392,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// the same as wrong passwords; returning immediately would let an
 		// attacker enumerate valid usernames by measuring response time.
 		if deps.VerifyPassword != nil {
-			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
+			_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
 		}
 		// The audit trail distinguishes a cross-tenant attempt from an
 		// unknown identifier; the caller-facing response deliberately does
@@ -404,7 +418,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// a dummy hash so it costs what a wrong password costs, and let it
 		// fall through the wrong-password path -- the same lockout, limiter
 		// and error -- so nothing tells it apart from one that has a password.
-		_, _ = deps.VerifyPassword(DummyTimingPassword, DummyTimingHash)
+		_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
 		mismatchReason = "password_not_set"
 	} else {
 		ok, err = deps.VerifyPassword(password, user.PasswordHash)

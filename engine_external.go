@@ -2,6 +2,8 @@ package goAuth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"sort"
@@ -13,6 +15,7 @@ import (
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/oidc"
+	"github.com/MrEthical07/goAuth/password"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -67,6 +70,28 @@ func (e *Engine) verifyHash(password, encodedHash string) (bool, error) {
 	return e.passwordHash.Verify(password, encodedHash)
 }
 
+// dummyTimingHash is the hash verified in place of a real one when there is
+// none: a hash of a throwaway password made by the engine's own hasher at
+// Build, so an unknown identifier or an account without a password costs the
+// same Argon2 work as a wrong password on an account hashed under the current
+// configuration. An engine that was not built with Build falls back to the
+// fixed-cost constant.
+func (e *Engine) dummyTimingHash() string {
+	if e.dummyHash != "" {
+		return e.dummyHash
+	}
+	return internalflows.DummyTimingHash
+}
+
+// newDummyTimingHash hashes a random password once with the configured hasher.
+func newDummyTimingHash(hasher *password.Argon2) (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hasher.Hash(hex.EncodeToString(raw[:]))
+}
+
 // rejectPasswordless is the guard ChangePassword and VerifyPassword run after
 // resolving the account. An account created through external sign-in has no
 // password: there is nothing to verify, so the call fails with
@@ -77,7 +102,7 @@ func (e *Engine) rejectPasswordless(ctx context.Context, event string, user User
 	if user.PasswordHash != "" {
 		return nil
 	}
-	_, _ = e.verifyHash(internalflows.DummyTimingPassword, internalflows.DummyTimingHash)
+	_, _ = e.verifyHash(internalflows.DummyTimingPassword, e.dummyTimingHash())
 	e.emitAudit(ctx, event, false, user.UserID, user.TenantID, "", ErrPasswordNotSet, func() map[string]string {
 		return map[string]string{
 			"reason": "password_not_set",
