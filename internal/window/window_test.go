@@ -2,6 +2,8 @@ package window
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,6 +227,148 @@ func TestErrorsSurfaceWhenRedisDown(t *testing.T) {
 		}
 		if _, err := w.Count(context.Background(), "k", time.Minute); err == nil {
 			t.Fatalf("mode %d: expected error with redis down", mode)
+		}
+	}
+}
+
+func TestReserveClaimsUpToTheLimitAndRefusesWithoutGrowing(t *testing.T) {
+	for _, mode := range []Mode{Fixed, Sliding} {
+		w, mr := newTestWindow(t, mode)
+		ctx := context.Background()
+
+		for i := int64(1); i <= 3; i++ {
+			count, ok, err := w.Reserve(ctx, "k", time.Minute, 3)
+			if err != nil || !ok || count != i {
+				t.Fatalf("mode %d claim %d: count=%d ok=%v err=%v", mode, i, count, ok, err)
+			}
+		}
+		for i := 0; i < 4; i++ {
+			count, ok, err := w.Reserve(ctx, "k", time.Minute, 3)
+			if err != nil || ok || count != 3 {
+				t.Fatalf("mode %d: expected a refusal at 3, got count=%d ok=%v err=%v", mode, count, ok, err)
+			}
+		}
+		if count, err := w.Count(ctx, "k", time.Minute); err != nil || count != 3 {
+			t.Fatalf("mode %d: refused claims must not grow the counter, got %d (%v)", mode, count, err)
+		}
+		if mode == Fixed {
+			if ttl := mr.TTL("k"); ttl <= 0 || ttl > time.Minute {
+				t.Fatalf("expected the first claim to pin a TTL, got %v", ttl)
+			}
+		}
+	}
+}
+
+func TestReserveWithoutWindowNeverExpires(t *testing.T) {
+	for _, mode := range []Mode{Fixed, Sliding} {
+		w, mr := newTestWindow(t, mode)
+		ctx := context.Background()
+
+		if _, ok, err := w.Reserve(ctx, "k", 0, 1); err != nil || !ok {
+			t.Fatalf("mode %d: expected the first claim, got ok=%v err=%v", mode, ok, err)
+		}
+		if _, ok, err := w.Reserve(ctx, "k", 0, 1); err != nil || ok {
+			t.Fatalf("mode %d: expected a refusal, got ok=%v err=%v", mode, ok, err)
+		}
+		if ttl := mr.TTL("k"); ttl != 0 {
+			t.Fatalf("mode %d: expected no TTL, got %v", mode, ttl)
+		}
+	}
+}
+
+func TestReserveSlidingCountsThePreviousBucket(t *testing.T) {
+	w, _ := newTestWindow(t, Sliding)
+	ctx := context.Background()
+	windowDur := time.Minute
+
+	t0 := time.UnixMilli(1_700_000_040_000).Truncate(windowDur)
+	setClock(w, t0.Add(59*time.Second))
+	for i := 0; i < 5; i++ {
+		if _, ok, err := w.Reserve(ctx, "k", windowDur, 5); err != nil || !ok {
+			t.Fatalf("claim %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+
+	// One second into the next bucket the previous one still weighs ~59/60
+	// (4 of the 5), so only one more claim fits where a fixed window would
+	// admit a whole second burst of five.
+	setClock(w, t0.Add(61*time.Second))
+	if count, ok, err := w.Reserve(ctx, "k", windowDur, 5); err != nil || !ok || count != 5 {
+		t.Fatalf("expected one claim after the boundary, got count=%d ok=%v err=%v", count, ok, err)
+	}
+	if _, ok, err := w.Reserve(ctx, "k", windowDur, 5); err != nil || ok {
+		t.Fatalf("expected the boundary burst to be refused, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestReserveIsBoundedUnderConcurrency(t *testing.T) {
+	for _, mode := range []Mode{Fixed, Sliding} {
+		w, _ := newTestWindow(t, mode)
+		ctx := context.Background()
+
+		const callers = 64
+		const limit = 5
+		var wg sync.WaitGroup
+		var claimed atomic.Int64
+		start := make(chan struct{})
+		for i := 0; i < callers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, ok, err := w.Reserve(ctx, "k", time.Minute, limit); err == nil && ok {
+					claimed.Add(1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		if got := claimed.Load(); got != limit {
+			t.Fatalf("mode %d: expected exactly %d claims, got %d", mode, limit, got)
+		}
+	}
+}
+
+func TestReleaseGivesASlotBackAndNeverGoesNegative(t *testing.T) {
+	for _, mode := range []Mode{Fixed, Sliding} {
+		w, _ := newTestWindow(t, mode)
+		ctx := context.Background()
+
+		if err := w.Release(ctx, "k", time.Minute); err != nil {
+			t.Fatalf("mode %d: release of a missing key failed: %v", mode, err)
+		}
+		if count, err := w.Count(ctx, "k", time.Minute); err != nil || count != 0 {
+			t.Fatalf("mode %d: release must not create state, got %d (%v)", mode, count, err)
+		}
+
+		for i := 0; i < 2; i++ {
+			if _, ok, err := w.Reserve(ctx, "k", time.Minute, 2); err != nil || !ok {
+				t.Fatalf("mode %d: claim failed: ok=%v err=%v", mode, ok, err)
+			}
+		}
+		if _, ok, _ := w.Reserve(ctx, "k", time.Minute, 2); ok {
+			t.Fatalf("mode %d: expected the window to be full", mode)
+		}
+		if err := w.Release(ctx, "k", time.Minute); err != nil {
+			t.Fatalf("mode %d: release failed: %v", mode, err)
+		}
+		if _, ok, err := w.Reserve(ctx, "k", time.Minute, 2); err != nil || !ok {
+			t.Fatalf("mode %d: expected a freed slot, got ok=%v err=%v", mode, ok, err)
+		}
+	}
+}
+
+func TestReserveAndReleaseSurfaceErrorsWhenRedisDown(t *testing.T) {
+	for _, mode := range []Mode{Fixed, Sliding} {
+		w, mr := newTestWindow(t, mode)
+		mr.Close()
+
+		if _, _, err := w.Reserve(context.Background(), "k", time.Minute, 1); err == nil {
+			t.Fatalf("mode %d: expected a reserve error with redis down", mode)
+		}
+		if err := w.Release(context.Background(), "k", time.Minute); err == nil {
+			t.Fatalf("mode %d: expected a release error with redis down", mode)
 		}
 	}
 }

@@ -21,6 +21,7 @@ Planned improvements and future work for goAuth, organized by category and prior
 | Item | Priority | Owner | Status | Expected Impact |
 |------|----------|-------|--------|-----------------|
 | Session binding to TLS channel (channel binding) | P2 | maintainer | planned | Security: prevents session export across TLS sessions |
+| Automatic unlock of auto-locked accounts after `Security.AutoLockoutDuration` (today the lock is the account's `Locked` status and only `UnlockAccount`/`EnableAccount` clears it; the duration only sizes the failure-counting window) | P2 | maintainer | planned | Security/ops: a lock caused by someone else's wrong passwords heals without an operator |
 | Per-account email-verified marker (`UserRecord.EmailVerified`, set by email verification and by a confirmed email change, read by external auto-link) so auto-link need not treat "Active" as "verified" | P1 | maintainer | planned | Security: closes the legacy/imported-account gap behind lint `external_autolink_trusts_active_status` |
 
 ---

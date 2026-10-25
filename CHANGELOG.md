@@ -495,6 +495,137 @@ pass unmodified. `gorelease -base=v0.7.0` reports only compatible changes.
   `ErrSessionInvalidationFailed` when the address changed but the other sessions
   could not be revoked.
 
+### Security fixes (audit)
+
+The pre-release security audit of this release (run 2, `R2-xx` below) is fixed in
+three pull requests. **This is part 1 of 3: limiters, brute force and
+enumeration** (R2-01, R2-04, R2-05, R2-06, R2-10, R2-14, R2-15, R2-16, R2-18,
+R2-19, R2-21, R2-22, R2-23 and the audit's needs-validation record on unbounded
+identifiers). Parts 2 (session lifecycle and revocation) and 3 (MFA artifacts,
+recovery, docs) follow.
+
+These are security fixes, so the unchanged-when-unused baselines moved where a
+fix required it; `session/golden_bytes_test.go` is untouched and no session
+or challenge format changed. The list of behavior changes for an application
+that enables nothing new is under **Behavior changes** below.
+
+#### Fixed
+
+- **R2-01 (high): TOTP guesses at MFA login are bounded per account.**
+  `ConfirmLoginMFA` counted wrong codes only inside the disposable challenge, and
+  a correct password mints a fresh one every time. The confirmation now claims an
+  attempt of the per-account TOTP budget that `VerifyTOTP` uses before the code is
+  evaluated, clears it on a right code, and when it is spent destroys the
+  challenge and returns `ErrTOTPRateLimited`. The per-challenge counter stays as a
+  second bound.
+- **R2-05, R2-10, R2-24: the check-then-record limiters now reserve first.** The
+  login failure limiter, the TOTP limiter (`VerifyTOTP`, `ConfirmTOTPSetup`, the
+  inline step-up check used by backup-code regeneration, password-reset MFA and
+  role switching), the backup-code limiter (including the one behind MFA login) and
+  the MFA challenge's attempt counter claim the attempt with one script
+  (`Window.Reserve`; the challenge uses a script over the record's attempt field,
+  replacing an optimistic transaction that gave up after four conflicts without
+  counting) *before* the password or code is evaluated, so a concurrent burst
+  evaluates at most the budget. A claim is given back only when the attempt was not
+  a guess (a replayed code, a provider error, an expired WebAuthn ceremony).
+- **R2-04: budgets keyed by the identifier as typed no longer multiply with
+  spellings.** A second budget keyed by the resolved (tenant, user) is claimed after
+  the lookup (login) or when the identifier resolves (password-reset and
+  email-verification requests). goAuth still does not canonicalize identifiers.
+  A login refused only by the account budget is answered `ErrInvalidCredentials`
+  after the dummy verification so it is not an existence oracle; a request refused by
+  it is answered with the rate-limit error (that is what stops the mail), which with
+  a case-insensitive provider tells a caller trying spellings that the account
+  exists. See `docs/rate_limiting.md`.
+- **R2-21: limiter keys never carry caller input.** The password-reset,
+  email-verification and account-creation limiter keys use SHA-256 digests of the
+  tenant and the identifier or ID, as the login key does. Their counters start from
+  zero on upgrade (`docs/migrations.md`).
+- **R2-23 and the unbounded-identifier record: input caps.** Login refuses an
+  identifier over `MaxIdentifierBytes` (320) or a password over the hasher's limit
+  before the limiter, the lookup or any hashing, on one cheap path (`ErrInvalidCredentials`)
+  that does the same work whether or not the account exists; an over-length password
+  used to skip Argon2 for an existing account only. Reset requests, verification
+  requests and account creation refuse an over-length identifier as an invalid
+  request, and identifiers copied into audit metadata are truncated to the cap.
+- **R2-18: the dummy verification costs what a real one costs.** `Build` hashes a
+  random password once with the engine's hasher and every dummy verification (unknown
+  identifier, empty password, an account without a password, `VerifyPassword` and
+  `ChangePassword` on one) uses that hash instead of a constant of fixed cost.
+- **R2-19: one response-time floor for every branch** of `RequestPasswordReset` and
+  `RequestEmailVerification`: a randomized 20-40 ms measured from request entry,
+  applied to the registered, unknown, inactive and already-verified branches.
+- **R2-14: auto-lockout is not an existence oracle.** The attempt that reaches the
+  threshold, and every wrong password after it, is answered `ErrInvalidCredentials`; the
+  lock is still applied and audited, and `ErrAccountLocked` appears once the right
+  password is given.
+- **R2-16: auto-lockout leaves other statuses alone.** Only an Active account is
+  counted or locked, so wrong passwords no longer rewrite a Disabled, Deleted or
+  PendingVerification account to Locked.
+- **R2-22: a login completed through MFA clears the auto-lockout counter**, as a
+  password-only login does.
+- **R2-15: `AutoLockoutDuration` is documented as what it is.** It sizes the
+  window failures are counted in; an auto-locked account stays Locked until
+  `UnlockAccount` or `EnableAccount`. Automatic unlocking is not built here (it is
+  on the roadmap). New lint warning `auto_lockout_duration_noop`.
+
+#### Added
+
+- **`Security.LoginIPLimiter`** (R2-06; `LoginIPLimiterConfig{Enabled, MaxAttempts,
+  Cooldown}`, **off by default**; defaults 20 per 15 minutes once enabled): a budget
+  per (tenant, canonical client IP from `WithClientIP`), claimed before anything
+  else is done for a login, given back when the password is right, skipped when the
+  context has no address, honoring `LimiterWindowMode` and `LimiterFailClosed`.
+  IPv6 addresses are grouped by /64. The address must come from your own proxy
+  chain, and users behind one NAT share a budget (`docs/rate_limiting.md`). The
+  documentation promised per-IP throttling that did not exist; it now says it is
+  opt-in. New lint note `login_ip_limiter_disabled` (INFO). The lint reference is
+  now 37 codes (15 INFO, 18 WARN, 4 HIGH).
+- `MaxIdentifierBytes` (320), `password.Argon2.MaxPasswordBytes()`.
+- New Redis keys (all counters with the limiter window as TTL): `rl:login:user:*`,
+  `rl:reset:req:user:*`, `rl:verify:req:user:*` and, only when the per-IP throttle is
+  on, `rl:login:ip:*`. The login, reset, verification and account-creation keys carry
+  digests, not identifiers.
+- Real-Redis `TestRedisCompat` coverage for the reserve, release and
+  MFA-challenge attempt scripts.
+
+#### Behavior changes (nothing new enabled)
+
+- Login: a correct password sent after `MaxLoginAttempts` wrong ones is now refused
+  with `ErrLoginRateLimited` (it used to be evaluated and accepted); the wrong
+  attempts are refused at the same attempt number as before. (R2-05)
+- Auto-lockout, if enabled: the threshold attempt is answered `ErrInvalidCredentials`
+  instead of `ErrAccountLocked`; Disabled, Deleted and PendingVerification accounts keep
+  their status. (R2-14, R2-16)
+- MFA login: a fifth wrong TOTP code within a minute across challenges answers
+  `ErrTOTPRateLimited` and destroys the challenge; `VerifyTOTP` failures share that
+  budget. (R2-01)
+- `RequestPasswordReset`, `RequestEmailVerification`: an over-length identifier is an
+  invalid request, a registered identifier now takes the same 20-40 ms as an unknown
+  one, and with a case-insensitive provider the account budget can answer the
+  rate-limit error to another spelling. `CreateAccount` refuses an identifier over
+  320 bytes. (R2-19, R2-23, R2-04)
+- Redis traffic of a login: the limiter `GET` becomes a reserve script, the failure
+  script is gone, and a right password issues `DEL` for the identifier and account
+  budgets; counters of the reset, verification and account-creation limiters restart
+  at zero on upgrade. `Build` performs one extra Argon2 hash. (R2-05, R2-04, R2-21,
+  R2-18)
+- `Config.Lint()` raises `login_ip_limiter_disabled` (INFO) for every config that has not
+  enabled the per-IP throttle.
+
+#### Notes
+
+- The sequential limits are unchanged; what changed is that a refused attempt is
+  refused before its secret is evaluated and that the budget cannot be exceeded by
+  parallel requests. The regression tests fail on the branch the audit was run against
+  (the TOTP ones need a one-line test seam there) and pass here.
+- Dummy-verification timing now matches a real verification only for accounts whose
+  stored hash was made under the current Argon2 settings; hashes that predate a cost
+  change stay distinguishable until their owner logs in and the hash is upgraded.
+- Auto-lockout's lock itself is a provider write that the attempt crossing the
+  threshold performs and a wrong password does not; that difference in work is not
+  equalized.
+
 ---
 
 ## [0.7.0] - 2026-10-04

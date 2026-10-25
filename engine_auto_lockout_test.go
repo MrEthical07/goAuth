@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // lockoutTestConfig returns a base config with auto-lockout enabled and a low threshold for testing.
@@ -33,10 +34,14 @@ func TestAutoLockout_ThresholdTriggersLock(t *testing.T) {
 		}
 	}
 
-	// The Nth failure should trigger lockout and return ErrAccountLocked.
+	// The Nth failure locks the account but is answered like any other wrong
+	// password; the lock shows once the right password is given.
 	_, _, err := engine.Login(ctx, "alice", wrongPwd)
-	if !errors.Is(err, ErrAccountLocked) {
-		t.Fatalf("threshold attempt: expected ErrAccountLocked, got %v", err)
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("threshold attempt: expected ErrInvalidCredentials, got %v", err)
+	}
+	if up.users["u1"].Status != AccountLocked {
+		t.Fatalf("expected the account to be locked, status %d", up.users["u1"].Status)
 	}
 }
 
@@ -253,8 +258,11 @@ func TestAutoLockout_StillTriggersWhenLoginFailureLimiterDisabled(t *testing.T) 
 	}
 
 	_, _, err := engine.Login(ctx, "alice", "wrong-password")
-	if !errors.Is(err, ErrAccountLocked) {
-		t.Fatalf("threshold attempt: expected ErrAccountLocked, got %v", err)
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("threshold attempt: expected ErrInvalidCredentials, got %v", err)
+	}
+	if up.users["u1"].Status != AccountLocked {
+		t.Fatalf("expected the account to be locked, status %d", up.users["u1"].Status)
 	}
 }
 
@@ -309,5 +317,50 @@ func TestAutoLockout_LockedAccountRefreshFails(t *testing.T) {
 	_, _, err = engine.Refresh(ctx, refresh)
 	if err == nil {
 		t.Fatal("expected error from Refresh for locked account")
+	}
+}
+
+// FAILED-BEFORE (R2-15): AutoLockoutDuration was documented as the duration of
+// the lock, but it only sizes the window failures are counted in. The account
+// stays Locked until it is unlocked, and Lint now says so.
+func TestAutoLockoutDurationDoesNotUnlockAndIsLinted(t *testing.T) {
+	cfg := lockoutTestConfig()
+	cfg.Security.AutoLockoutDuration = 2 * time.Second
+	up := newHardeningUserProvider(t)
+	engine, mr := newAuditEngine(t, cfg, up)
+	ctx := context.Background()
+
+	for i := 0; i < cfg.Security.AutoLockoutThreshold; i++ {
+		_, _, _ = engine.Login(ctx, "alice", "wrong-password")
+	}
+	mr.FastForward(24 * time.Hour)
+	if up.users["u1"].Status != AccountLocked {
+		t.Fatalf("status %d: the account must stay locked after the window", up.users["u1"].Status)
+	}
+	if _, _, err := engine.Login(ctx, "alice", "correct-password-123"); !errors.Is(err, ErrAccountLocked) {
+		t.Fatalf("got %v, want ErrAccountLocked until the account is unlocked", err)
+	}
+	if err := engine.UnlockAccount(ctx, "u1"); err != nil {
+		t.Fatalf("UnlockAccount: %v", err)
+	}
+	if _, _, err := engine.Login(ctx, "alice", "correct-password-123"); err != nil {
+		t.Fatalf("after UnlockAccount: %v", err)
+	}
+
+	on := lockoutTestConfig()
+	on.Security.AutoLockoutDuration = time.Minute
+	if !hasLintCode((&on).Lint(), "auto_lockout_duration_noop") {
+		t.Fatal("expected auto_lockout_duration_noop while auto-lockout has a duration")
+	}
+	manual := lockoutTestConfig()
+	manual.Security.AutoLockoutDuration = 0
+	if hasLintCode((&manual).Lint(), "auto_lockout_duration_noop") {
+		t.Fatal("no note without a duration")
+	}
+	off := lockoutTestConfig()
+	off.Security.AutoLockoutEnabled = false
+	off.Security.AutoLockoutDuration = time.Minute
+	if hasLintCode((&off).Lint(), "auto_lockout_duration_noop") {
+		t.Fatal("no note while auto-lockout is off")
 	}
 }

@@ -44,32 +44,40 @@ func (l *BackupCodeLimiter) key(tenantID, userID string) string {
 	return "rl:backup:fail:" + tenantID + ":" + userID
 }
 
-func (l *BackupCodeLimiter) Check(ctx context.Context, tenantID, userID string) error {
+// Reserve atomically claims one attempt before the code is evaluated, so a
+// burst of concurrent requests can never evaluate more than maxAttempts codes
+// per window. It returns ErrBackupCodeRateLimited, without letting the caller
+// evaluate anything, once the budget is spent. last reports that the claim
+// took the final slot, so a wrong code must be reported as rate limited, as
+// the failure that fills the budget always was. An unconfigured MaxAttempts of
+// zero still admits the first attempt. A good code clears the budget with
+// Reset.
+func (l *BackupCodeLimiter) Reserve(ctx context.Context, tenantID, userID string) (last bool, err error) {
 	if l == nil || l.window == nil {
-		return nil
+		return false, nil
 	}
-	count, err := l.window.Count(ctx, l.key(tenantID, userID), l.cooldown)
+	limit := int64(l.maxAttempts)
+	if limit < 1 {
+		limit = 1
+	}
+	count, ok, err := l.window.Reserve(ctx, l.key(tenantID, userID), l.cooldown, limit)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrBackupCodeUnavailable, err)
+		return false, fmt.Errorf("%w: %v", ErrBackupCodeUnavailable, err)
 	}
-	// count == 0 mirrors the previous missing-key early return, so an
-	// unconfigured MaxAttempts of zero still admits the first check.
-	if count > 0 && int(count) >= l.maxAttempts {
-		return ErrBackupCodeRateLimited
+	if !ok {
+		return false, ErrBackupCodeRateLimited
 	}
-	return nil
+	return count >= limit, nil
 }
 
-func (l *BackupCodeLimiter) RecordFailure(ctx context.Context, tenantID, userID string) error {
+// Release gives back a slot claimed with Reserve for an attempt that was not a
+// wrong guess (a provider failure).
+func (l *BackupCodeLimiter) Release(ctx context.Context, tenantID, userID string) error {
 	if l == nil || l.window == nil {
 		return nil
 	}
-	count, err := l.window.Incr(ctx, l.key(tenantID, userID), l.cooldown)
-	if err != nil {
+	if err := l.window.Release(ctx, l.key(tenantID, userID), l.cooldown); err != nil {
 		return fmt.Errorf("%w: %v", ErrBackupCodeUnavailable, err)
-	}
-	if int(count) >= l.maxAttempts {
-		return ErrBackupCodeRateLimited
 	}
 	return nil
 }

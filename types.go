@@ -7,8 +7,19 @@ import (
 	"time"
 
 	internalaudit "github.com/MrEthical07/goAuth/internal/audit"
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	internalmetrics "github.com/MrEthical07/goAuth/internal/metrics"
 )
+
+// MaxIdentifierBytes is the longest identifier, in bytes, that the
+// unauthenticated entry points accept: login, account creation, password-reset
+// requests and email-verification requests. A longer identifier is refused
+// before any lookup or limiter sees it, as a failed login (ErrInvalidCredentials)
+// or as an invalid request, and identifiers copied into audit events are
+// truncated to this length. Hosts that allow longer logins must shorten them.
+//
+//	Docs: docs/security.md, docs/flows.md
+const MaxIdentifierBytes = internalflows.MaxIdentifierBytes
 
 // AccountStatus represents the lifecycle state of a user account.
 //

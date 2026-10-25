@@ -13,6 +13,61 @@ audit events and metrics. `TestSessionProfilesUnusedMatchesV070` pins this: its
 expected values were captured by running the same scenario against the v0.7.0
 tag.
 
+**Exception: the security fixes from the pre-release audit** (below) deliberately
+change the limiter traffic and a few results, and the unchanged-when-unused
+transcripts were updated for exactly those lines.
+
+### Security fixes from the audit: what changes with nothing enabled
+
+Applications that enable nothing new see these differences (the CHANGELOG lists
+each with its finding ID):
+
+- **Login limiter traffic.** A login claims its identifier budget with one
+  script before the password is verified (it used to read the counter), also
+  claims the resolved account's budget (`rl:login:user:*`), and clears both when
+  the password is right. The attempt that used to be the first refused
+  (`MaxLoginAttempts + 1`) is still refused with `ErrLoginRateLimited`, but it is
+  now refused *before* its password is evaluated: a correct password sent after
+  `MaxLoginAttempts` wrong ones is rejected instead of accepted.
+- **Auto-lockout** (only if you turned it on): the attempt that reaches the
+  threshold locks the account but is answered `ErrInvalidCredentials`, like every
+  other wrong password; `ErrAccountLocked` appears once the right password is
+  given. Only an Active account is counted or locked; a Disabled, Deleted or
+  PendingVerification account keeps its status. A login completed through MFA
+  clears the failure counter, as a password-only login does.
+- **MFA login.** TOTP guesses at the confirmation count against the per-account
+  TOTP budget that `VerifyTOTP` uses (`TOTP.MFALoginMaxAttempts` per
+  `TOTP.VerifyAttemptCooldown`, default 5 per minute), across challenges; when
+  it is spent the challenge is destroyed and `ErrTOTPRateLimited` is returned. A
+  right code clears the budget. The per-challenge cap still answers
+  `ErrMFALoginAttemptsExceeded` on the last wrong code of a challenge.
+- **Input caps.** Login refuses an identifier over `MaxIdentifierBytes` (320) or
+  a password over 1024 bytes with `ErrInvalidCredentials` before any lookup.
+  Password-reset requests, email-verification requests and account creation
+  refuse an over-length identifier as an invalid request (`ErrPasswordResetInvalid`,
+  `ErrEmailVerificationInvalid`, `ErrAccountCreationInvalid`). Audit events copy at
+  most 320 bytes of an unauthenticated identifier.
+- **Reset and verification requests** answer after a randomized 20-40 ms floor on
+  every branch (they used to do so only for unknown identifiers), so a registered
+  address is no longer the fast answer.
+- **Limiter keys of the password-reset, email-verification and account-creation
+  limiters are hashed** (SHA-256 of the tenant and the identifier or ID): their
+  counters start from zero on upgrade, which is harmless (they expire within a
+  window). The old keys expire on their own.
+- `Build` hashes one throwaway password with your Argon2 settings (the dummy
+  verification hash), which takes one hash time at startup.
+- `Config.Lint()` gains `login_ip_limiter_disabled` (INFO, raised for every
+  config that has not enabled the new per-IP throttle) and `auto_lockout_duration_noop`
+  (WARN, `AutoLockoutEnabled` with a non-zero `AutoLockoutDuration`). If you gate
+  startup on lint output at INFO or WARN, expect the new codes.
+
+### Optional: per-IP login throttle
+
+Set `Security.LoginIPLimiter = LoginIPLimiterConfig{Enabled: true, MaxAttempts: 20, Cooldown: 15 * time.Minute}`
+and attach the client address with `WithClientIP`. The address must come from your
+own proxy chain; users behind one NAT share a budget. See
+[rate_limiting.md](rate_limiting.md#per-ip-login-throttle).
+
 ### Optional: adopt session profiles
 
 [Session profiles](session.md#session-profiles) give different clients different

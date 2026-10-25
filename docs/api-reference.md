@@ -239,7 +239,9 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `JWTConfig` | type | JWT signing/verification settings. |
 | `SessionConfig` | type | Session TTL and storage settings. |
 | `PasswordConfig` | type | Argon2id parameter settings. |
-| `SecurityConfig` | type | Rate-limit thresholds and lockout durations. |
+| `SecurityConfig` | type | Rate-limit thresholds, lockout settings and the opt-in per-IP login throttle (`LoginIPLimiter`). |
+| `LoginIPLimiterConfig` | type | `Enabled`, `MaxAttempts`, `Cooldown` of the per-client-IP login throttle (off by default). |
+| `MaxIdentifierBytes` | const | 320: the longest identifier the unauthenticated entry points accept (login, account creation, reset and verification requests); also the length audit events keep of such identifiers. |
 | `SessionHardeningConfig` | type | Concurrent session limits and replay detection. |
 | `DeviceBindingConfig` | type | IP/UA fingerprint binding mode (off / detect / enforce). |
 | `TOTPConfig` | type | TOTP algorithm, digits, period, drift window. |
@@ -460,6 +462,7 @@ Argon2id password hashing.
 | `Hash` | method | Hashes a plaintext password, returning a PHC-format string. |
 | `Verify` | method | Verifies a plaintext password against a stored hash. |
 | `NeedsUpgrade` | method | Reports whether a hash was produced with older parameters. |
+| `MaxPasswordBytes` | method | The longest password, in bytes, that `Hash` and `Verify` accept. |
 
 ---
 

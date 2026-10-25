@@ -54,10 +54,13 @@ type EmailVerificationDeps struct {
 	AccountStatusError  func(uint8) error
 	Now                 func() time.Time
 
-	CheckRequestLimiter func(context.Context, string, string) error
-	CheckConfirmLimiter func(context.Context, string, string) error
-	MapLimiterError     func(error) error
-	MapStoreError       func(error) error
+	// CheckRequestUserLimiter counts a request against the resolved account,
+	// whatever spelling of its identifier was used. Optional.
+	CheckRequestUserLimiter func(ctx context.Context, tenantID, userID string) error
+	CheckRequestLimiter     func(context.Context, string, string) error
+	CheckConfirmLimiter     func(context.Context, string, string) error
+	MapLimiterError         func(error) error
+	MapStoreError           func(error) error
 
 	// EnforceTenantMatch requires a resolved user's TenantID to equal the
 	// request's tenant. Set only when multi-tenancy is enabled.
@@ -86,10 +89,15 @@ type EmailVerificationDeps struct {
 	SaveVerificationRecord    func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
 	ConsumeVerificationRecord func(context.Context, string, string, [32]byte, int, int) (EmailVerificationStoreRecord, error)
 
-	GenerateChallenge     func(int, int, string) (string, string, [32]byte, error)
-	ParseChallenge        func(int, string, int) (string, string, [32]byte, error)
-	ParseChallengeCode    func(int, string, string, int) ([32]byte, error)
-	SleepEnumerationDelay func(context.Context) error
+	GenerateChallenge  func(int, int, string) (string, string, [32]byte, error)
+	ParseChallenge     func(int, string, int) (string, string, [32]byte, error)
+	ParseChallengeCode func(int, string, string, int) ([32]byte, error)
+	// EnumerationFloor draws the minimum time a request that answers with a
+	// challenge takes, whether the identifier is registered, unverified,
+	// verified or unknown; nil means no floor. SleepFor waits for a duration
+	// (nil: a context-aware sleep).
+	EnumerationFloor func() time.Duration
+	SleepFor         func(context.Context, time.Duration) error
 
 	MetricInc     func(int)
 	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
@@ -102,6 +110,7 @@ type EmailVerificationDeps struct {
 
 func RunRequestEmailVerification(ctx context.Context, identifier string, deps EmailVerificationDeps) (string, error) {
 	normalizeEmailVerificationDeps(&deps)
+	floor := startEnumerationFloor(deps.Now, deps.EnumerationFloor, deps.SleepFor)
 
 	if !deps.Enabled {
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationDisabled, nil)
@@ -114,6 +123,16 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationInvalid, func() map[string]string {
 			return map[string]string{
 				"reason": "empty_identifier",
+			}
+		})
+		return "", deps.Errors.EmailVerificationInvalid
+	}
+
+	if identifierTooLong(identifier) {
+		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationInvalid, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(identifier),
+				"reason":     "identifier_too_long",
 			}
 		})
 		return "", deps.Errors.EmailVerificationInvalid
@@ -158,9 +177,6 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", err
 		}
-		if err := deps.SleepEnumerationDelay(ctx); err != nil {
-			return "", err
-		}
 		_, fakeChallenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits, tenantID)
 		if genErr != nil {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", tenantID, "", deps.Errors.EmailVerificationUnavailable, func() map[string]string {
@@ -178,7 +194,35 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			}
 		})
 		deps.MetricInc(deps.Metrics.EmailVerificationRequest)
-		return fakeChallenge, nil
+		return floor.finish(ctx, fakeChallenge)
+	}
+
+	// The account's own budget (shared by every spelling of its identifier).
+	// A request over it is answered with the rate-limit error rather than a
+	// fake challenge, because the error is what stops the host from sending
+	// mail; with a provider that matches identifiers case-insensitively that
+	// lets a caller trying spellings tell that the account exists. Exact-match
+	// providers never see it, and docs/rate_limiting.md says so.
+	if deps.CheckRequestUserLimiter != nil {
+		if err := deps.CheckRequestUserLimiter(ctx, tenantID, user.UserID); err != nil {
+			mapped := deps.MapLimiterError(err)
+			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, tenantID, "", mapped, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"scope":      "account",
+				}
+			})
+			if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
+				deps.EmitRateLimit(ctx, "email_verification_request", tenantID, func() map[string]string {
+					return map[string]string{
+						"identifier": identifier,
+						"scope":      "account",
+					}
+				})
+			}
+			return "", mapped
+		}
 	}
 
 	if user.Status == deps.ActiveStatus {
@@ -193,7 +237,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			}
 		})
 		deps.MetricInc(deps.Metrics.EmailVerificationRequest)
-		return fakeChallenge, nil
+		return floor.finish(ctx, fakeChallenge)
 	}
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
 		_, fakeChallenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits, tenantID)
@@ -207,7 +251,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			}
 		})
 		deps.MetricInc(deps.Metrics.EmailVerificationRequest)
-		return fakeChallenge, nil
+		return floor.finish(ctx, fakeChallenge)
 	}
 
 	// When multi-tenancy is enabled the record is always stored under the
@@ -253,7 +297,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		}
 	})
 	deps.MetricInc(deps.Metrics.EmailVerificationRequest)
-	return challenge, nil
+	return floor.finish(ctx, challenge)
 }
 
 func RunConfirmEmailVerification(ctx context.Context, challenge string, deps EmailVerificationDeps) error {
@@ -498,8 +542,8 @@ func normalizeEmailVerificationDeps(deps *EmailVerificationDeps) {
 	if deps.TenantIDFromContext == nil {
 		deps.TenantIDFromContext = func(context.Context) string { return "" }
 	}
-	if deps.SleepEnumerationDelay == nil {
-		deps.SleepEnumerationDelay = func(context.Context) error { return nil }
+	if deps.SleepFor == nil {
+		deps.SleepFor = sleepContext
 	}
 	if deps.WithTenant == nil {
 		deps.WithTenant = func(ctx context.Context, _ string) context.Context { return ctx }

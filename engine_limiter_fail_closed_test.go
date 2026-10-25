@@ -23,8 +23,9 @@ type limiterBreaker struct {
 const (
 	breakOff int32 = iota
 	breakAll
-	breakReads  // GET: the "is this caller already limited" checks
-	breakWrites // everything else: counting, reserving, resetting
+	breakReads  // GET: the read-only "is this caller already limited" checks
+	breakWrites // everything else: reserving, counting, resetting
+	breakResets // DEL: only the cleanup after a success
 )
 
 var errLimiterBackendDown = errors.New("limiter backend down")
@@ -74,6 +75,8 @@ func (b *limiterBreaker) breaks(args []interface{}) bool {
 		return isRead
 	case breakWrites:
 		return !isRead
+	case breakResets:
+		return strings.EqualFold(name, "del")
 	}
 	return true
 }
@@ -116,7 +119,7 @@ func isCode(code AuthCode) func(error) bool {
 func limiterPaths() []limiterPath {
 	const newPassword = "another-password-789"
 	return []limiterPath{
-		{name: "login: check", scope: "login", mode: breakReads, wantOpen: isNil,
+		{name: "login: check", scope: "login", mode: breakWrites, wantOpen: isNil,
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				return func() error { _, _, err := env.engine.Login(env.ctx(), rsIdentifier, rsPassword); return err }
 			}},
@@ -140,17 +143,22 @@ func limiterPaths() []limiterPath {
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				return func() error { return env.engine.ChangePassword(env.ctx(), rsUserID, rsPassword, newPassword) }
 			}},
-		{name: "totp: check", scope: "totp", mode: breakReads, wantOpen: isNil,
+		{name: "totp: check", scope: "totp", mode: breakWrites, wantOpen: isNil,
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				secret := env.enableTOTP()
 				return func() error { return env.engine.VerifyTOTP(env.ctx(), rsUserID, env.totpCode(secret)) }
+			}},
+		{name: "totp: read-only check", scope: "totp", mode: breakReads, wantOpen: isCode(CodeAuthTOTPRequired),
+			prep: func(t *testing.T, env *rsEnv) func() error {
+				env.enableTOTP()
+				return func() error { return env.engine.VerifyTOTP(env.ctx(), rsUserID, "") }
 			}},
 		{name: "totp: failure counter", scope: "totp", mode: breakWrites, wantOpen: isCode(CodeAuthTOTPInvalid),
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				env.enableTOTP()
 				return func() error { return env.engine.VerifyTOTP(env.ctx(), rsUserID, "000000") }
 			}},
-		{name: "backup code: check", scope: "backup_code", mode: breakReads, wantOpen: isNil,
+		{name: "backup code: check", scope: "backup_code", mode: breakWrites, wantOpen: isNil,
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				env.enableTOTP()
 				codes, err := env.engine.GenerateBackupCodes(env.ctx(), rsUserID)
@@ -312,10 +320,9 @@ func TestLimiterFailClosedDoesNotChangeDenials(t *testing.T) {
 // a failed reset never blocks, flag or no flag.
 func TestLimiterFailClosedNeverBlocksOnCleanup(t *testing.T) {
 	env, br := newLimiterEnv(t, true)
-	br.set(breakAll)
-	// Prepare a successful login with only the cleanup (reset) broken: let the
-	// check and the reads through, fail the writes once the check is past.
-	br.set(breakWrites)
+	// A successful login with only the cleanup (the reset) broken: the
+	// reservation made before the password was verified goes through.
+	br.set(breakResets)
 	if _, _, err := env.engine.Login(env.ctx(), rsIdentifier, rsPassword); err != nil {
 		t.Fatalf("a failing limiter reset after a good login must not fail the login: %v", err)
 	}

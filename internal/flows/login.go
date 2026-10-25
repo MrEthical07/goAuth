@@ -109,6 +109,10 @@ type LoginErrors struct {
 	UnknownSessionProfile  error
 	SessionProfileConflict error
 
+	// TOTPRateLimited is returned when the account's TOTP guess budget is
+	// spent. Nil leaves the budget unused.
+	TOTPRateLimited error
+
 	// SystemUnavailable is what the login limiter hooks return when the
 	// limiter backend is down and Security.LimiterFailClosed is on. Any other
 	// error from a hook means "rate limited". Nil keeps that meaning for every
@@ -125,12 +129,15 @@ type LoginDeps struct {
 	EnforceReplayProtection   bool
 	RequireVerified           bool
 	PendingVerificationStatus uint8
-	PasswordUpgradeOnLogin    bool
-	MFALoginMaxAttempts       int
-	MFALoginChallengeTTL      time.Duration
-	DeviceBindingEnabled      bool
-	EnforceIPBinding          bool
-	EnforceUserAgentBinding   bool
+	// ActiveStatus is the only status auto-lockout counts failures for and may
+	// lock. The zero value is the engine's active status.
+	ActiveStatus            uint8
+	PasswordUpgradeOnLogin  bool
+	MFALoginMaxAttempts     int
+	MFALoginChallengeTTL    time.Duration
+	DeviceBindingEnabled    bool
+	EnforceIPBinding        bool
+	EnforceUserAgentBinding bool
 
 	TenantIDFromContext  func(context.Context) string
 	ClientIPFromContext  func(context.Context) string
@@ -138,9 +145,32 @@ type LoginDeps struct {
 	Now                  func() time.Time
 	AccountStatusError   func(status uint8) error
 
-	CheckLoginRate     func(context.Context, string) error
+	// ReserveLoginRate claims one attempt of the identifier's budget before
+	// the password is verified; any error it returns means "rate limited"
+	// unless it is Errors.SystemUnavailable (a fail-closed limiter outage).
+	// The claim is kept whatever the outcome, so concurrent requests cannot
+	// verify more passwords than the budget allows; ResetLoginRate clears it
+	// once the password is verified.
+	ReserveLoginRate func(context.Context, string) error
+	// IncrementLoginRate records a failure after the password was already
+	// verified (a role that no longer resolves).
 	IncrementLoginRate func(context.Context, string) error
 	ResetLoginRate     func(context.Context, string) error
+
+	// ReserveLoginUserRate claims one attempt of the resolved account's budget
+	// after the lookup and before the password is verified, so every spelling
+	// of one account shares it. ResetLoginUserRate clears it once the password
+	// is verified. Both are nil unless the login limiter is enabled.
+	ReserveLoginUserRate func(ctx context.Context, userID string) error
+	ResetLoginUserRate   func(ctx context.Context, userID string)
+
+	// ReserveLoginIPRate claims one attempt of the client address's budget
+	// before anything else is done for the attempt, and ReleaseLoginIPRate
+	// gives it back once the password is verified. Both receive the address
+	// from the context and are called only when there is one. Nil unless the
+	// per-IP throttle is enabled.
+	ReserveLoginIPRate func(ctx context.Context, ip string) error
+	ReleaseLoginIPRate func(ctx context.Context, ip string)
 
 	// Auto-lockout hooks: RecordLockoutFailure returns true when threshold is reached.
 	AutoLockoutEnabled   bool
@@ -165,6 +195,24 @@ type LoginDeps struct {
 	GetTOTPSecret              func(context.Context, string) (*LoginTOTPRecord, error)
 	UpdateTOTPLastUsedCounter  func(context.Context, string, int64) error
 
+	// Per-account TOTP guess budget, shared with Engine.VerifyTOTP so that
+	// minting new challenges does not reset it. All nil unless the engine has
+	// the TOTP limiter; the confirmation then claims an attempt before it
+	// evaluates a code and clears the budget when the code is right.
+	// ReserveTOTPLimiter's last is true when the claim took the final slot.
+	ReserveTOTPLimiter func(ctx context.Context, tenantID, userID string) (last bool, err error)
+	ReleaseTOTPLimiter func(ctx context.Context, tenantID, userID string)
+	ResetTOTPLimiter   func(ctx context.Context, tenantID, userID string)
+	IsTOTPRateLimited  func(error) bool
+
+	// MaxPasswordBytes is the longest password the hasher accepts; 0 disables
+	// the up-front length check.
+	MaxPasswordBytes int
+
+	// DummyHash is verified in place of a real hash on every path that has
+	// none to verify. Empty means DummyTimingHash.
+	DummyHash string
+
 	VerifyPassword           func(string, string) (bool, error)
 	PasswordNeedsUpgrade     func(string) (bool, error)
 	HashPassword             func(string) (string, error)
@@ -174,8 +222,15 @@ type LoginDeps struct {
 	GetMFAChallenge    func(context.Context, string) (*MFALoginChallengeRecord, error)
 	SaveMFAChallenge   func(context.Context, string, *MFALoginChallengeRecord, time.Duration) error
 	DeleteMFAChallenge func(context.Context, string) (bool, error)
-	RecordMFAFailure   func(context.Context, string, int) (bool, error)
-	MapMFAStoreError   func(error) error
+	// ReserveMFAAttempt claims one attempt of the challenge before a factor
+	// is evaluated and returns how many have been used including this one; a
+	// claim past limit deletes the challenge and returns a store error that
+	// MapMFAStoreError maps to Errors.MFALoginAttemptsExceeded.
+	ReserveMFAAttempt func(ctx context.Context, challengeID string, limit int) (int, error)
+	// ReleaseMFAAttempt gives a claim back for a request that evaluated no
+	// factor. Optional.
+	ReleaseMFAAttempt func(ctx context.Context, challengeID string)
+	MapMFAStoreError  func(error) error
 
 	// RecordAssurance, when set, records that the session just issued after
 	// a successful second factor holds an MFA assurance. It receives the
@@ -232,14 +287,24 @@ func (d LoginDeps) profileRejection(status SessionProfileStatus) error {
 	return nil
 }
 
-// dummyTimingHash is a syntactically valid Argon2id hash used to equalize
-// response time on rejection paths that have no real hash to verify against
-// (empty password, unknown identifier). Skipping the dummy verification on
-// any credential-rejection path would create a measurable timing oracle.
-const dummyTimingHash = DummyTimingHash
+// dummyHash is the hash verified on rejection paths that have no real hash to
+// verify against (empty password, unknown identifier, an account without a
+// password). Skipping the dummy verification on any credential-rejection path
+// would create a measurable timing oracle. The engine supplies one made with
+// its own hasher, so it costs what verifying a hash made under the current
+// configuration costs; DummyTimingHash is the fallback for a LoginDeps that
+// carries none.
+func (d LoginDeps) dummyHash() string {
+	if d.DummyHash != "" {
+		return d.DummyHash
+	}
+	return DummyTimingHash
+}
 
-// DummyTimingHash is the hash verified in place of a real one when there is
-// none to verify, so every rejection costs one Argon2 verification.
+// DummyTimingHash is the fallback hash verified in place of a real one when
+// there is none to verify, so every rejection costs one Argon2 verification.
+// Its cost is fixed (m=65536, t=3, p=2); an engine built with Build uses a
+// hash of its own configured cost instead.
 const DummyTimingHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 // DummyTimingPassword is the password verified against DummyTimingHash.
@@ -301,7 +366,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		if rejected := deps.profileRejection(status); rejected != nil {
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", rejected, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "session_profile",
 				}
 			})
@@ -310,23 +375,34 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		ctx = withResolvedSessionProfile(ctx, name)
 	}
 
-	if deps.CheckLoginRate != nil {
-		if err := deps.CheckLoginRate(ctx, username); err != nil {
-			if isLoginLimiterOutage(err, deps) {
-				return nil, deps.Errors.SystemUnavailable
+	// An identifier or password that cannot be real is refused before the
+	// limiter is read, a user is looked up or a hash is verified, on one path
+	// that does the same work whether or not the account exists.
+	if identifierTooLong(username) || (deps.MaxPasswordBytes > 0 && len(password) > deps.MaxPasswordBytes) {
+		deps.MetricInc(deps.Metrics.LoginFailure)
+		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(username),
+				"reason":     "input_too_long",
 			}
-			deps.MetricInc(deps.Metrics.LoginRateLimited)
-			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-				return map[string]string{
-					"identifier": username,
-				}
-			})
-			return nil, deps.Errors.LoginRateLimited
+		})
+		return nil, deps.Errors.InvalidCredentials
+	}
+
+	// The client address first: an address that has used up its budget must not
+	// also burn the budgets of the identifiers it names.
+	clientIP := ""
+	if deps.ReserveLoginIPRate != nil {
+		clientIP = deps.ClientIPFromContext(ctx)
+		if clientIP != "" {
+			if err := deps.ReserveLoginIPRate(ctx, clientIP); err != nil {
+				return nil, deps.loginRateRefusal(ctx, err, "", tenantID, username, "ip")
+			}
+		}
+	}
+	if deps.ReserveLoginRate != nil {
+		if err := deps.ReserveLoginRate(ctx, username); err != nil {
+			return nil, deps.loginRateRefusal(ctx, err, "", tenantID, username, "")
 		}
 	}
 
@@ -335,26 +411,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// Without this, an attacker could distinguish empty-password rejections
 		// from wrong-password rejections by measuring response time.
 		if deps.VerifyPassword != nil {
-			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
-		}
-		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username); err != nil {
-				if isLoginLimiterOutage(err, deps) {
-					return nil, deps.Errors.SystemUnavailable
-				}
-				deps.MetricInc(deps.Metrics.LoginRateLimited)
-				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, deps.Errors.LoginRateLimited
-			}
+			_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
 		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
@@ -382,26 +439,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// the same as wrong passwords; returning immediately would let an
 		// attacker enumerate valid usernames by measuring response time.
 		if deps.VerifyPassword != nil {
-			_, _ = deps.VerifyPassword("dummy-timing-equalization", dummyTimingHash)
-		}
-		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username); err != nil {
-				if isLoginLimiterOutage(err, deps) {
-					return nil, deps.Errors.SystemUnavailable
-				}
-				deps.MetricInc(deps.Metrics.LoginRateLimited)
-				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, "", tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, deps.Errors.LoginRateLimited
-			}
+			_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
 		}
 		// The audit trail distinguishes a cross-tenant attempt from an
 		// unknown identifier; the caller-facing response deliberately does
@@ -420,6 +458,33 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		return nil, deps.Errors.InvalidCredentials
 	}
 
+	// The account's own budget. When it is spent the attempt is answered as a
+	// wrong password after the same dummy verification: a "rate limited" here
+	// would tell a caller trying spellings of an identifier that the account
+	// exists, since an unknown identifier never reaches this budget.
+	if deps.ReserveLoginUserRate != nil {
+		if rerr := deps.ReserveLoginUserRate(ctx, user.UserID); rerr != nil {
+			if isLoginLimiterOutage(rerr, deps) {
+				return nil, deps.Errors.SystemUnavailable
+			}
+			_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
+			deps.MetricInc(deps.Metrics.LoginRateLimited)
+			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
+				return map[string]string{
+					"identifier": username,
+					"scope":      "account",
+				}
+			})
+			deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
+				return map[string]string{
+					"identifier": username,
+					"scope":      "account",
+				}
+			})
+			return nil, deps.Errors.InvalidCredentials
+		}
+	}
+
 	var ok bool
 	mismatchReason := "password_mismatch"
 	if user.PasswordHash == "" {
@@ -427,14 +492,20 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		// a dummy hash so it costs what a wrong password costs, and let it
 		// fall through the wrong-password path -- the same lockout, limiter
 		// and error -- so nothing tells it apart from one that has a password.
-		_, _ = deps.VerifyPassword(DummyTimingPassword, DummyTimingHash)
+		_, _ = deps.VerifyPassword(DummyTimingPassword, deps.dummyHash())
 		mismatchReason = "password_not_set"
 	} else {
 		ok, err = deps.VerifyPassword(password, user.PasswordHash)
 	}
 	if err != nil || !ok {
-		// Auto-lockout: record failure and lock if threshold reached.
-		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil {
+		// Auto-lockout: record the failure and lock once the threshold is
+		// reached. Only an active account takes part: a disabled, deleted,
+		// unverified or already locked one keeps the status an administrator
+		// (or an earlier lock) gave it. The caller is told nothing about it: the
+		// attempt that locks the account gets the same answer as any other
+		// wrong password, so lockout cannot be used to find out which
+		// identifiers exist. The lock shows once the right password is given.
+		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil && user.Status == deps.ActiveStatus {
 			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
 				deps.MetricInc(deps.Metrics.LockoutTrigger)
 				_ = deps.LockAccount(ctx, user.UserID)
@@ -444,29 +515,10 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 						"reason":     "auto_lockout",
 					}
 				})
-				return nil, deps.Errors.AccountLocked
+				return nil, deps.Errors.InvalidCredentials
 			}
 		}
 
-		if deps.IncrementLoginRate != nil {
-			if err := deps.IncrementLoginRate(ctx, username); err != nil {
-				if isLoginLimiterOutage(err, deps) {
-					return nil, deps.Errors.SystemUnavailable
-				}
-				deps.MetricInc(deps.Metrics.LoginRateLimited)
-				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-					}
-				})
-				return nil, deps.Errors.LoginRateLimited
-			}
-		}
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
@@ -475,6 +527,18 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 			}
 		})
 		return nil, deps.Errors.InvalidCredentials
+	}
+
+	// The password is right: the claim made before verification is not a
+	// failure, whatever the account's status or second factor turns out to be.
+	if deps.ResetLoginRate != nil {
+		_ = deps.ResetLoginRate(ctx, username)
+	}
+	if deps.ResetLoginUserRate != nil {
+		deps.ResetLoginUserRate(ctx, user.UserID)
+	}
+	if clientIP != "" && deps.ReleaseLoginIPRate != nil {
+		deps.ReleaseLoginIPRate(ctx, clientIP)
 	}
 
 	return runCompleteLogin(ctx, username, user, tenantID, opts, deps, func() {
@@ -673,7 +737,7 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	}
 	if deps.GetMFAChallenge == nil ||
 		deps.DeleteMFAChallenge == nil ||
-		deps.RecordMFAFailure == nil ||
+		deps.ReserveMFAAttempt == nil ||
 		deps.GetUserByID == nil ||
 		deps.GetTOTPSecret == nil ||
 		deps.VerifyTOTPCode == nil ||
@@ -770,56 +834,98 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, deps.Errors.AccountUnverified
 	}
 
+	// Every factor evaluation is preceded by a claim on the challenge's
+	// attempts, made in one atomic step, so concurrent confirmations cannot
+	// evaluate more codes than MFALoginMaxAttempts allows.
+	var attempt int
+	claim := func() error {
+		var claimErr error
+		attempt, claimErr = claimLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps)
+		return claimErr
+	}
+	fail := func(cause error) (*LoginResult, error) {
+		return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, attempt, cause, deps)
+	}
+
 	switch strings.ToLower(strings.TrimSpace(mfaType)) {
 	case "", "totp":
 		totpRecord, terr := loadLoginTOTPRecord(ctx, challengeID, user.UserID, record.TenantID, deps)
 		if terr != nil {
 			return nil, terr
 		}
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
+		}
 		if code == "" {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
+		}
+		// The account's own budget: a wrong guess counts here whichever
+		// challenge it was made against.
+		budgetLast := false
+		if deps.ReserveTOTPLimiter != nil {
+			var lerr error
+			if budgetLast, lerr = deps.ReserveTOTPLimiter(ctx, record.TenantID, user.UserID); lerr != nil {
+				return nil, refuseLoginTOTPBudget(ctx, challengeID, user.UserID, record.TenantID, lerr, deps)
+			}
 		}
 		ok, counter, verr := deps.VerifyTOTPCode(totpRecord.Secret, code, deps.Now())
 		if verr != nil || !ok {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			if budgetLast && attempt < deps.mfaAttemptLimit() {
+				// This guess used up the account's budget.
+				return nil, spendLoginTOTPBudget(ctx, challengeID, user.UserID, record.TenantID, deps)
+			}
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 
 		if deps.EnforceReplayProtection {
 			if counter <= totpRecord.LastUsedCounter {
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
+				releaseLoginTOTPAttempt(ctx, user.UserID, record.TenantID, deps)
 				deps.MetricInc(deps.Metrics.MFAReplayAttempt)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginReplay, nil)
 				return nil, deps.Errors.MFALoginReplay
 			}
 			if err := deps.UpdateTOTPLastUsedCounter(ctx, user.UserID, counter); err != nil {
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
+				releaseLoginTOTPAttempt(ctx, user.UserID, record.TenantID, deps)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
 				return nil, deps.Errors.MFALoginUnavailable
 			}
 		}
+		if deps.ResetTOTPLimiter != nil {
+			deps.ResetTOTPLimiter(ctx, record.TenantID, user.UserID)
+		}
 	case "backup":
 		if _, terr := loadLoginTOTPRecord(ctx, challengeID, user.UserID, record.TenantID, deps); terr != nil {
 			return nil, terr
 		}
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
+		}
 		if code == "" {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 		if berr := deps.VerifyBackupCodeInTenant(ctx, record.TenantID, user.UserID, code); berr != nil {
 			switch {
 			case errors.Is(berr, deps.Errors.BackupCodeRateLimited):
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginAttemptsExceeded, deps)
+				return fail(deps.Errors.MFALoginAttemptsExceeded)
 			case errors.Is(berr, deps.Errors.BackupCodeInvalid), errors.Is(berr, deps.Errors.BackupCodesNotConfigured):
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+				return fail(deps.Errors.MFALoginInvalid)
 			default:
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginUnavailable, deps)
+				return fail(deps.Errors.MFALoginUnavailable)
 			}
 		}
 	case "webauthn":
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
+		}
 		if !webauthnConfigured || deps.ConfirmWebAuthnAssertion == nil {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 		if code == "" {
-			return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+			return fail(deps.Errors.MFALoginInvalid)
 		}
 		if werr := deps.ConfirmWebAuthnAssertion(ctx, challengeID, user.UserID, []byte(code)); werr != nil {
 			switch {
@@ -838,6 +944,7 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 			case errors.Is(werr, deps.Errors.WebAuthnCeremonyExpired):
 				// No verification happened; surface "call BeginWebAuthnLogin
 				// (again)" without consuming a challenge attempt.
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", werr, func() map[string]string {
 					return map[string]string{
@@ -846,15 +953,19 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 				})
 				return nil, werr
 			case errors.Is(werr, deps.Errors.WebAuthnUnavailable):
+				releaseLoginMFAAttempt(ctx, challengeID, deps)
 				deps.MetricInc(deps.Metrics.MFALoginFailure)
 				deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
 				return nil, deps.Errors.MFALoginUnavailable
 			default:
-				return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+				return fail(deps.Errors.MFALoginInvalid)
 			}
 		}
 	default:
-		return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, deps.Errors.MFALoginInvalid, deps)
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
+		}
+		return fail(deps.Errors.MFALoginInvalid)
 	}
 
 	deleted, err := deps.DeleteMFAChallenge(ctx, challengeID)
@@ -883,6 +994,12 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 
 	if deps.RecordAssurance != nil {
 		deps.RecordAssurance(ctx, record.TenantID, refresh, loginAssuranceMethod(mfaType), record.RememberMe)
+	}
+
+	// Matches the password-only login: a completed login clears the failures
+	// counted against the account.
+	if deps.AutoLockoutEnabled && deps.ResetLockoutCounter != nil {
+		_ = deps.ResetLockoutCounter(ctx, user.UserID)
 	}
 
 	deps.MetricInc(deps.Metrics.MFALoginSuccess)
@@ -940,22 +1057,95 @@ func loadLoginTOTPRecord(
 	return totpRecord, nil
 }
 
+// mfaAttemptLimit is the number of factor evaluations one challenge allows.
+func (d LoginDeps) mfaAttemptLimit() int {
+	if d.MFALoginMaxAttempts < 1 {
+		return 1
+	}
+	return d.MFALoginMaxAttempts
+}
+
+// claimLoginMFAAttempt claims one attempt of the challenge before a factor is
+// evaluated. A refusal (the challenge is gone, expired, or this claim is past
+// the limit and deleted it) is returned as the error the confirmation ends
+// with.
+func claimLoginMFAAttempt(ctx context.Context, challengeID, userID, tenantID string, deps LoginDeps) (int, error) {
+	attempt, err := deps.ReserveMFAAttempt(ctx, challengeID, deps.mfaAttemptLimit())
+	if err == nil {
+		return attempt, nil
+	}
+	deps.MetricInc(deps.Metrics.MFALoginFailure)
+	mapped := deps.MapMFAStoreError(err)
+	event := deps.Events.MFAFailure
+	if errors.Is(mapped, deps.Errors.MFALoginAttemptsExceeded) {
+		event = deps.Events.MFAAttemptsExceeded
+	}
+	deps.EmitAudit(ctx, event, false, userID, tenantID, "", mapped, nil)
+	return 0, mapped
+}
+
+// releaseLoginMFAAttempt gives back a claim for a request that evaluated no
+// factor.
+func releaseLoginMFAAttempt(ctx context.Context, challengeID string, deps LoginDeps) {
+	if deps.ReleaseMFAAttempt != nil {
+		deps.ReleaseMFAAttempt(ctx, challengeID)
+	}
+}
+
+// refuseLoginTOTPBudget ends a confirmation whose claim on the account's TOTP
+// budget was refused. When the budget is spent the challenge is destroyed with
+// it: the account has no guesses left in this window, whichever challenge
+// holds them. Any other refusal is a fail-closed limiter outage, which leaves
+// the challenge alone.
+func refuseLoginTOTPBudget(ctx context.Context, challengeID, userID, tenantID string, err error, deps LoginDeps) error {
+	if deps.IsTOTPRateLimited != nil && deps.IsTOTPRateLimited(err) {
+		return spendLoginTOTPBudget(ctx, challengeID, userID, tenantID, deps)
+	}
+	releaseLoginMFAAttempt(ctx, challengeID, deps)
+	deps.MetricInc(deps.Metrics.MFALoginFailure)
+	unavailable := deps.Errors.SystemUnavailable
+	if unavailable == nil {
+		unavailable = deps.Errors.MFALoginUnavailable
+	}
+	deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", unavailable, nil)
+	return unavailable
+}
+
+// spendLoginTOTPBudget destroys the challenge and reports the account's TOTP
+// budget as spent.
+func spendLoginTOTPBudget(ctx context.Context, challengeID, userID, tenantID string, deps LoginDeps) error {
+	_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
+	deps.MetricInc(deps.Metrics.MFALoginFailure)
+	deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", deps.Errors.TOTPRateLimited, func() map[string]string {
+		return map[string]string{
+			"reason": "totp_rate_limited",
+		}
+	})
+	return deps.Errors.TOTPRateLimited
+}
+
+// releaseLoginTOTPAttempt gives back a claim on the account's TOTP budget for
+// a code that was right but did not complete the login.
+func releaseLoginTOTPAttempt(ctx context.Context, userID, tenantID string, deps LoginDeps) {
+	if deps.ReleaseTOTPLimiter != nil {
+		deps.ReleaseTOTPLimiter(ctx, tenantID, userID)
+	}
+}
+
+// runFailLoginMFAAttempt ends a confirmation whose factor was wrong. attempt
+// is the claim it made; when that claim took the last attempt the challenge is
+// destroyed and the caller learns the attempts are exhausted.
 func runFailLoginMFAAttempt(
 	ctx context.Context,
 	challengeID string,
 	userID string,
 	tenantID string,
+	attempt int,
 	cause error,
 	deps LoginDeps,
 ) (*LoginResult, error) {
-	exceeded, recErr := deps.RecordMFAFailure(ctx, challengeID, deps.MFALoginMaxAttempts)
-	if recErr != nil {
-		deps.MetricInc(deps.Metrics.MFALoginFailure)
-		mapped := deps.MapMFAStoreError(recErr)
-		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, userID, tenantID, "", mapped, nil)
-		return nil, mapped
-	}
-	if exceeded {
+	if attempt >= deps.mfaAttemptLimit() {
+		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
 		deps.MetricInc(deps.Metrics.MFALoginFailure)
 		deps.EmitAudit(ctx, deps.Events.MFAAttemptsExceeded, false, userID, tenantID, "", deps.Errors.MFALoginAttemptsExceeded, nil)
 		return nil, deps.Errors.MFALoginAttemptsExceeded
@@ -1213,6 +1403,28 @@ func RunIssueLoginSessionTokens(
 	})
 
 	return access, refresh, nil
+}
+
+// loginRateRefusal turns a failed limiter reservation into the error the login
+// returns, recording it as a rate-limit event unless the limiter backend was
+// down and the engine fails closed.
+func (d LoginDeps) loginRateRefusal(ctx context.Context, err error, userID, tenantID, username, scope string) error {
+	if isLoginLimiterOutage(err, d) {
+		return d.Errors.SystemUnavailable
+	}
+	meta := func() map[string]string {
+		m := map[string]string{
+			"identifier": username,
+		}
+		if scope != "" {
+			m["scope"] = scope
+		}
+		return m
+	}
+	d.MetricInc(d.Metrics.LoginRateLimited)
+	d.EmitAudit(ctx, d.Events.LoginRateLimited, false, userID, tenantID, "", d.Errors.LoginRateLimited, meta)
+	d.EmitRateLimit(ctx, "login", tenantID, meta)
+	return d.Errors.LoginRateLimited
 }
 
 // isLoginLimiterOutage reports whether a login limiter hook failed because the

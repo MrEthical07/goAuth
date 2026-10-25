@@ -330,7 +330,15 @@ type SecurityConfig struct {
 	EnableAccountVersionCheck    bool
 	AutoLockoutEnabled           bool
 	AutoLockoutThreshold         int
-	AutoLockoutDuration          time.Duration // 0 = manual unlock only
+
+	// AutoLockoutDuration is the rolling window in which failures are counted
+	// towards AutoLockoutThreshold; 0 means they are counted until the account
+	// is unlocked. It does NOT unlock the account: an account locked by
+	// auto-lockout stays Locked until UnlockAccount or EnableAccount is
+	// called, whatever this is set to. Setting it produces the
+	// auto_lockout_duration_noop lint warning. Automatic unlocking is on the
+	// roadmap.
+	AutoLockoutDuration time.Duration
 
 	// LimiterWindowMode selects the rate-limiter counting algorithm for all
 	// limiter domains: "fixed" (or empty, the default) keeps classic
@@ -350,6 +358,37 @@ type SecurityConfig struct {
 	//
 	//	Docs: docs/rate_limiting.md
 	LimiterFailClosed bool
+
+	// LoginIPLimiter is an opt-in per-client-IP throttle on password login,
+	// next to the per-identifier and per-account budgets. It bounds how many
+	// accounts one address can try a guess against. See [LoginIPLimiterConfig].
+	//
+	//	Docs: docs/rate_limiting.md
+	LoginIPLimiter LoginIPLimiterConfig
+}
+
+// LoginIPLimiterConfig configures the per-IP login throttle. It is off by
+// default: the client address is only as trustworthy as the one the host puts
+// in the context with [WithClientIP] (behind a proxy, derive it from a header
+// you control, never from one the caller can set), and users behind one NAT or
+// proxy share a budget, so a limit that is right for one office can lock out
+// another. Each login attempt from an address claims one slot before the
+// password is verified; a login whose password turns out right gives its slot
+// back, so the count is the failures per address within Cooldown. An attempt
+// with no client address in its context is not counted. It honors
+// [SecurityConfig.LimiterWindowMode] and [SecurityConfig.LimiterFailClosed].
+//
+//	Docs: docs/rate_limiting.md
+type LoginIPLimiterConfig struct {
+	// Enabled turns the throttle on.
+	Enabled bool
+	// MaxAttempts is the number of failed attempts per (tenant, address) within
+	// Cooldown after which further attempts are refused with
+	// [ErrLoginRateLimited]. Must be > 0 when Enabled; the default is 20.
+	MaxAttempts int
+	// Cooldown is the window the attempts are counted in. Must be > 0 when
+	// Enabled; the default is 15 minutes.
+	Cooldown time.Duration
 }
 
 // SessionHardeningConfig controls session limits: max per user/tenant,
@@ -955,6 +994,11 @@ func defaultConfig() Config {
 			AutoLockoutEnabled:           false,
 			AutoLockoutThreshold:         10,
 			AutoLockoutDuration:          30 * time.Minute,
+			LoginIPLimiter: LoginIPLimiterConfig{
+				Enabled:     false,
+				MaxAttempts: 20,
+				Cooldown:    15 * time.Minute,
+			},
 		},
 		SessionHardening: SessionHardeningConfig{
 			MaxSessionsPerUser:   0,
@@ -1478,6 +1522,14 @@ func (c *Config) Validate() error {
 	}
 	if c.SessionHardening.MaxClockSkew < 0 {
 		return errors.New("SessionHardening MaxClockSkew must be >= 0")
+	}
+	if c.Security.LoginIPLimiter.Enabled {
+		if c.Security.LoginIPLimiter.MaxAttempts <= 0 {
+			return errors.New("LoginIPLimiter MaxAttempts must be > 0 when enabled")
+		}
+		if c.Security.LoginIPLimiter.Cooldown <= 0 {
+			return errors.New("LoginIPLimiter Cooldown must be > 0 when enabled")
+		}
 	}
 	if c.Security.AutoLockoutEnabled {
 		if c.Security.AutoLockoutThreshold <= 0 {
@@ -2235,6 +2287,16 @@ func (c *Config) Lint() LintResult {
 	if !c.Security.EnableLoginFailureLimiter {
 		warn(LintHigh, "login_failure_limiter_disabled",
 			"EnableLoginFailureLimiter is false; login abuse protection is disabled")
+	}
+
+	if c.Security.AutoLockoutEnabled && c.Security.AutoLockoutDuration > 0 {
+		warn(LintWarn, "auto_lockout_duration_noop",
+			"Security.AutoLockoutDuration does not unlock an auto-locked account; it only sets the window in which failures are counted, and the account stays Locked until UnlockAccount or EnableAccount is called")
+	}
+
+	if !c.Security.LoginIPLimiter.Enabled {
+		warn(LintInfo, "login_ip_limiter_disabled",
+			"Security.LoginIPLimiter is off; goAuth throttles password login per identifier and per account but not per client address, so one address can try a guess against every account unless your gateway throttles login by client IP")
 	}
 
 	// --- Session ---

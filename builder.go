@@ -262,6 +262,9 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxLoginAttempts:          cfg.Security.MaxLoginAttempts,
 		LoginCooldownDuration:     cfg.Security.LoginCooldownDuration,
 		WindowMode:                windowMode,
+		IPLimiterEnabled:          cfg.Security.LoginIPLimiter.Enabled,
+		IPMaxAttempts:             cfg.Security.LoginIPLimiter.MaxAttempts,
+		IPCooldown:                cfg.Security.LoginIPLimiter.Cooldown,
 	})
 	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
 	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{
@@ -401,6 +404,11 @@ func (b *Builder) Build() (*Engine, error) {
 		return nil, err
 	}
 	engine.passwordHash = ph
+	dummy, err := newDummyTimingHash(ph)
+	if err != nil {
+		return nil, fmt.Errorf("goauth: cannot prepare the timing-equalization hash: %w", err)
+	}
+	engine.dummyHash = dummy
 
 	jm, err := jwt.NewManager(jwt.Config{
 		AccessTTL:     cfg.JWT.AccessTTL,

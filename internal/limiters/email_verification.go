@@ -46,6 +46,18 @@ func (l *EmailVerificationLimiter) CheckRequest(ctx context.Context, tenantID, i
 	return nil
 }
 
+// CheckRequestUser counts a verification request against the resolved
+// account. The identifier budget (CheckRequest) is keyed by the string the
+// caller typed, so a provider that matches identifiers case-insensitively gives
+// every spelling of one account its own budget; this one is shared by all of
+// them.
+func (l *EmailVerificationLimiter) CheckRequestUser(ctx context.Context, tenantID, userID string) error {
+	if !l.config.EnableRequestLimiter || userID == "" {
+		return nil
+	}
+	return l.enforceWindow(ctx, verificationRequestUserKey(tenantID, userID))
+}
+
 func (l *EmailVerificationLimiter) CheckConfirm(ctx context.Context, tenantID, verificationID string) error {
 	if !l.config.EnableConfirmFailureLimiter || verificationID == "" {
 		return nil
@@ -70,9 +82,13 @@ func (l *EmailVerificationLimiter) enforceWindow(ctx context.Context, key string
 }
 
 func verificationRequestIdentifierKey(tenantID, identifier string) string {
-	return "rl:verify:req:" + tenantID + ":" + identifier
+	return "rl:verify:req:" + hashPart(tenantID) + ":" + hashPart(identifier)
+}
+
+func verificationRequestUserKey(tenantID, userID string) string {
+	return "rl:verify:req:user:" + hashPart(tenantID) + ":" + hashPart(userID)
 }
 
 func verificationConfirmIdentifierKey(tenantID, verificationID string) string {
-	return "rl:verify:confirm:fail:" + tenantID + ":" + verificationID
+	return "rl:verify:confirm:fail:" + hashPart(tenantID) + ":" + hashPart(verificationID)
 }

@@ -61,5 +61,5 @@ func (l *AccountCreationLimiter) enforceKey(ctx context.Context, key string) err
 }
 
 func accountIdentifierKey(tenantID, identifier string) string {
-	return "rl:account:req:" + tenantID + ":" + identifier
+	return "rl:account:req:" + hashPart(tenantID) + ":" + hashPart(identifier)
 }

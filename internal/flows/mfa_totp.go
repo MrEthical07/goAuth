@@ -78,10 +78,18 @@ type TOTPDeps struct {
 	ProvisionURI   func(string, string) string
 	VerifyCode     func([]byte, string, time.Time) (bool, int64, error)
 
-	CheckTOTPLimiter         func(context.Context, string) error
-	RecordTOTPLimiterFailure func(context.Context, string) error
-	ResetTOTPLimiter         func(context.Context, string) error
-	IsTOTPRateLimited        func(error) bool
+	// CheckTOTPLimiter reports whether the budget is spent without claiming
+	// anything; it only gates the requests refused before a code is evaluated.
+	CheckTOTPLimiter func(context.Context, string) error
+	// ReserveTOTPLimiter claims one attempt before a code is evaluated. last
+	// is true when the claim took the final slot of the window, so a wrong
+	// code must be reported as rate limited.
+	ReserveTOTPLimiter func(context.Context, string) (last bool, err error)
+	// ReleaseTOTPLimiter gives a claim back for an attempt that was not a
+	// wrong guess (a replayed code, a provider failure). Optional.
+	ReleaseTOTPLimiter func(context.Context, string)
+	ResetTOTPLimiter   func(context.Context, string) error
+	IsTOTPRateLimited  func(error) bool
 
 	MetricInc func(int)
 	EmitAudit func(context.Context, string, bool, string, string, string, error, func() map[string]string)
@@ -180,7 +188,7 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		deps.MarkTOTPVerified == nil ||
 		deps.EnableTOTP == nil ||
 		deps.CheckTOTPLimiter == nil ||
-		deps.RecordTOTPLimiterFailure == nil ||
+		deps.ReserveTOTPLimiter == nil ||
 		deps.ResetTOTPLimiter == nil ||
 		deps.UpdateTOTPLastUsedCounter == nil ||
 		deps.LogoutAllInTenant == nil {
@@ -200,7 +208,7 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		return deps.Errors.TOTPNotConfigured
 	}
 
-	if err := deps.CheckTOTPLimiter(ctx, userID); err != nil {
+	limiterRefused := func(err error) error {
 		deps.MetricInc(deps.Metrics.TOTPFailure)
 		if deps.IsTOTPRateLimited(err) {
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPRateLimited, nil)
@@ -210,23 +218,26 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		return deps.Errors.TOTPUnavailable
 	}
 	if code == "" {
+		if err := deps.CheckTOTPLimiter(ctx, userID); err != nil {
+			return limiterRefused(err)
+		}
 		deps.MetricInc(deps.Metrics.TOTPRequired)
 		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPRequired, nil)
 		return deps.Errors.TOTPRequired
 	}
 
+	// The attempt is claimed before the code is evaluated, so concurrent
+	// requests cannot evaluate more codes than the budget allows.
+	last, err := deps.ReserveTOTPLimiter(ctx, userID)
+	if err != nil {
+		return limiterRefused(err)
+	}
 	ok, counter, err := deps.VerifyCode(record.Secret, code, deps.Now())
 	if err != nil || !ok {
 		deps.MetricInc(deps.Metrics.TOTPFailure)
-		recErr := deps.RecordTOTPLimiterFailure(ctx, userID)
-		if recErr != nil && deps.IsTOTPRateLimited(recErr) {
+		if last {
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPRateLimited, nil)
 			return deps.Errors.TOTPRateLimited
-		}
-		if recErr != nil {
-			// Only a fail-closed limiter reports a non-denial error here.
-			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
-			return deps.Errors.TOTPUnavailable
 		}
 		if err != nil {
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
@@ -238,11 +249,13 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 
 	if deps.EnforceReplayProtection {
 		if counter <= record.LastUsedCounter {
+			releaseTOTPAttempt(ctx, userID, deps)
 			deps.MetricInc(deps.Metrics.TOTPFailure)
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPInvalid, nil)
 			return deps.Errors.TOTPInvalid
 		}
 		if err := deps.UpdateTOTPLastUsedCounter(ctx, userID, counter); err != nil {
+			releaseTOTPAttempt(ctx, userID, deps)
 			deps.MetricInc(deps.Metrics.TOTPFailure)
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, before.UserID, before.TenantID, "", deps.Errors.TOTPUnavailable, nil)
 			return deps.Errors.TOTPUnavailable
@@ -289,7 +302,7 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 		deps.VerifyCode == nil ||
 		deps.UpdateTOTPLastUsedCounter == nil ||
 		deps.CheckTOTPLimiter == nil ||
-		deps.RecordTOTPLimiterFailure == nil ||
+		deps.ReserveTOTPLimiter == nil ||
 		deps.ResetTOTPLimiter == nil {
 		return deps.Errors.EngineNotReady
 	}
@@ -307,24 +320,29 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 		return deps.Errors.TOTPNotConfigured
 	}
 
-	if err := deps.CheckTOTPLimiter(ctx, userID); err != nil {
+	limiterRefused := func(err error) error {
 		if deps.IsTOTPRateLimited(err) {
 			return deps.Errors.TOTPRateLimited
 		}
 		return deps.Errors.TOTPUnavailable
 	}
 	if code == "" {
+		if err := deps.CheckTOTPLimiter(ctx, userID); err != nil {
+			return limiterRefused(err)
+		}
 		return deps.Errors.TOTPRequired
 	}
 
+	// The attempt is claimed before the code is evaluated, so concurrent
+	// requests cannot evaluate more codes than the budget allows.
+	last, err := deps.ReserveTOTPLimiter(ctx, userID)
+	if err != nil {
+		return limiterRefused(err)
+	}
 	ok, counter, err := deps.VerifyCode(record.Secret, code, deps.Now())
 	if err != nil || !ok {
-		recErr := deps.RecordTOTPLimiterFailure(ctx, userID)
-		if recErr != nil && deps.IsTOTPRateLimited(recErr) {
+		if last {
 			return deps.Errors.TOTPRateLimited
-		}
-		if recErr != nil {
-			return deps.Errors.TOTPUnavailable
 		}
 		if err != nil {
 			return deps.Errors.TOTPUnavailable
@@ -333,9 +351,11 @@ func RunVerifyTOTP(ctx context.Context, userID, code string, deps TOTPDeps) erro
 	}
 	if deps.EnforceReplayProtection {
 		if counter <= record.LastUsedCounter {
+			releaseTOTPAttempt(ctx, userID, deps)
 			return deps.Errors.TOTPInvalid
 		}
 		if err := deps.UpdateTOTPLastUsedCounter(ctx, userID, counter); err != nil {
+			releaseTOTPAttempt(ctx, userID, deps)
 			return deps.Errors.TOTPUnavailable
 		}
 	}
@@ -396,7 +416,7 @@ func RunVerifyTOTPForUser(ctx context.Context, user TOTPUser, code string, deps 
 		deps.VerifyCode == nil ||
 		deps.UpdateTOTPLastUsedCounter == nil ||
 		deps.CheckTOTPLimiter == nil ||
-		deps.RecordTOTPLimiterFailure == nil ||
+		deps.ReserveTOTPLimiter == nil ||
 		deps.ResetTOTPLimiter == nil {
 		return deps.Errors.EngineNotReady
 	}
@@ -409,7 +429,7 @@ func RunVerifyTOTPForUser(ctx context.Context, user TOTPUser, code string, deps 
 		return nil
 	}
 
-	if err := deps.CheckTOTPLimiter(ctx, user.UserID); err != nil {
+	limiterRefused := func(err error) error {
 		deps.MetricInc(deps.Metrics.TOTPFailure)
 		if deps.IsTOTPRateLimited(err) {
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPRateLimited, nil)
@@ -419,22 +439,26 @@ func RunVerifyTOTPForUser(ctx context.Context, user TOTPUser, code string, deps 
 		return deps.Errors.TOTPUnavailable
 	}
 	if code == "" {
+		if err := deps.CheckTOTPLimiter(ctx, user.UserID); err != nil {
+			return limiterRefused(err)
+		}
 		deps.MetricInc(deps.Metrics.TOTPRequired)
 		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPRequired, nil)
 		return deps.Errors.TOTPRequired
 	}
 
+	// The attempt is claimed before the code is evaluated, so concurrent
+	// requests cannot evaluate more codes than the budget allows.
+	last, err := deps.ReserveTOTPLimiter(ctx, user.UserID)
+	if err != nil {
+		return limiterRefused(err)
+	}
 	ok, counter, err := deps.VerifyCode(record.Secret, code, deps.Now())
 	if err != nil || !ok {
 		deps.MetricInc(deps.Metrics.TOTPFailure)
-		recErr := deps.RecordTOTPLimiterFailure(ctx, user.UserID)
-		if recErr != nil && deps.IsTOTPRateLimited(recErr) {
+		if last {
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPRateLimited, nil)
 			return deps.Errors.TOTPRateLimited
-		}
-		if recErr != nil {
-			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPUnavailable, nil)
-			return deps.Errors.TOTPUnavailable
 		}
 		deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPInvalid, nil)
 		return deps.Errors.TOTPInvalid
@@ -442,11 +466,13 @@ func RunVerifyTOTPForUser(ctx context.Context, user TOTPUser, code string, deps 
 
 	if deps.EnforceReplayProtection {
 		if counter <= record.LastUsedCounter {
+			releaseTOTPAttempt(ctx, user.UserID, deps)
 			deps.MetricInc(deps.Metrics.TOTPFailure)
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPInvalid, nil)
 			return deps.Errors.TOTPInvalid
 		}
 		if err := deps.UpdateTOTPLastUsedCounter(ctx, user.UserID, counter); err != nil {
+			releaseTOTPAttempt(ctx, user.UserID, deps)
 			deps.MetricInc(deps.Metrics.TOTPFailure)
 			deps.EmitAudit(ctx, deps.Events.TOTPFailure, false, user.UserID, user.TenantID, "", deps.Errors.TOTPUnavailable, nil)
 			return deps.Errors.TOTPUnavailable
@@ -457,6 +483,15 @@ func RunVerifyTOTPForUser(ctx context.Context, user TOTPUser, code string, deps 
 	deps.MetricInc(deps.Metrics.TOTPSuccess)
 	deps.EmitAudit(ctx, deps.Events.TOTPSuccess, true, user.UserID, user.TenantID, "", nil, nil)
 	return nil
+}
+
+// releaseTOTPAttempt gives back the attempt claimed before a code was
+// evaluated when the code turned out right but the request still fails (a
+// replayed code, a provider error): that was not a wrong guess.
+func releaseTOTPAttempt(ctx context.Context, userID string, deps TOTPDeps) {
+	if deps.ReleaseTOTPLimiter != nil {
+		deps.ReleaseTOTPLimiter(ctx, userID)
+	}
 }
 
 func normalizeTOTPDeps(deps *TOTPDeps) {

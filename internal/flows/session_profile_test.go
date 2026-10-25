@@ -34,7 +34,7 @@ func newProfileLoginDeps(resolve SessionProfileResolver) *profileLoginDeps {
 			return now.Add(90 * 24 * time.Hour).Unix(), 24 * time.Hour, nil
 		},
 		AccountStatusError: func(uint8) error { return nil },
-		CheckLoginRate:     func(context.Context, string) error { p.limiter++; return nil },
+		ReserveLoginRate:   func(context.Context, string) error { p.limiter++; return nil },
 		IncrementLoginRate: func(context.Context, string) error { p.limiter++; return nil },
 		GetUserByIdentifier: func(context.Context, string) (LoginUserRecord, error) {
 			p.lookups++
@@ -165,7 +165,7 @@ func TestConfirmLoginMFAProfileConflictConsumesNothing(t *testing.T) {
 			return "", SessionProfileConflict
 		},
 		DeleteMFAChallenge: func(context.Context, string) (bool, error) { deleted++; return true, nil },
-		RecordMFAFailure:   func(context.Context, string, int) (bool, error) { failures++; return false, nil },
+		ReserveMFAAttempt:  func(context.Context, string, int) (int, error) { failures++; return 1, nil },
 		GetUserByID:        func(context.Context, string) (LoginUserRecord, error) { return LoginUserRecord{UserID: "u1"}, nil },
 		GetTOTPSecret: func(context.Context, string) (*LoginTOTPRecord, error) {
 			return &LoginTOTPRecord{Enabled: true, Secret: []byte("s")}, nil

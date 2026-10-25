@@ -2,3 +2,8 @@
 G404|cmd/goauth-loadtest/main.go|114
 G404|cmd/goauth-loadtest/main.go|152
 G505|internal/security/totp.go|6
+# testdata/webauthn_v0.17/gen is a fixture generator that writes test files; newer gosec reports it
+G301|testdata/webauthn_v0.17/gen/main.go|121
+G304|testdata/webauthn_v0.17/gen/main.go|187
+G304|testdata/webauthn_v0.17/gen/main.go|202
+G306|testdata/webauthn_v0.17/gen/main.go|116

@@ -135,7 +135,7 @@ func TestPasswordlessLoginIsLimitedLikeAWrongPassword(t *testing.T) {
 			t.Fatalf("the limiter never engaged: %v", without)
 		}
 		attempts, err := env.engine.GetLoginAttempts(env.ctx(), plIdentifier)
-		if err != nil || attempts < 4 {
+		if err != nil || attempts < 3 {
 			t.Fatalf("GetLoginAttempts = %d, %v; password-less attempts must be counted", attempts, err)
 		}
 	})
@@ -155,8 +155,8 @@ func TestPasswordlessLoginIsLimitedLikeAWrongPassword(t *testing.T) {
 				t.Fatalf("attempt %d: with a password %s, without %s", i+1, withPassword[i], without[i])
 			}
 		}
-		if without[1] != spbErr(ErrAccountLocked) {
-			t.Fatalf("sequence = %v; the threshold must lock the account", without)
+		if without[1] != spbErr(ErrInvalidCredentials) {
+			t.Fatalf("sequence = %v; the attempt that locks the account is answered like any other", without)
 		}
 	})
 }

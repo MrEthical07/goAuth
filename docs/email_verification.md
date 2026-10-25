@@ -111,7 +111,7 @@ type EmailVerificationConfig struct {
 
 An attacker observing only the HTTP response **cannot distinguish** whether a given identifier maps to an existing account or its verification state.
 
-A timing delay (`SleepEnumerationDelay`) is applied on "user not found" to equalize response times with the real path.
+A randomized 20-40 ms response-time floor, measured from request entry, is applied to every branch that answers with a challenge (pending, already verified, not verifiable, unknown), so the response times of the real path and the fake paths overlap. Requests are limited per identifier as typed and per resolved account (`rl:verify:req:user:*`); the account budget answers `ErrEmailVerificationRateLimited` so that your application sends no mail. An identifier over `MaxIdentifierBytes` (320) is refused as `ErrEmailVerificationInvalid`.
 
 ### Tenant Binding
 

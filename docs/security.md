@@ -28,9 +28,9 @@ goAuth assumes attackers may:
 | Attack | Mitigation | Invariant |
 |--------|-----------|-----------|
 | **Brute force** | 7-domain rate limiting + auto-lockout | Persistent failure counter across rate-limit windows |
-| **Credential stuffing** | Per-IP + per-identifier throttling | `ErrLoginRateLimited` before password verify |
-| **Password DoS** | `MaxPasswordBytes` (default 1024) | Reject before Argon2 |
-| **Empty password oracle** | Dummy `Verify` call on empty-password path | Equalized response time |
+| **Credential stuffing** | Per-identifier and per-account throttling; per-IP throttling is opt-in (`Security.LoginIPLimiter`) | `ErrLoginRateLimited` before password verify. Without the per-IP limiter, one address can try a guess against every account unless your gateway throttles login by client IP. With it, the address must be one you can trust (`WithClientIP` from your own proxy chain) and everyone behind one NAT shares a budget |
+| **Password DoS** | `MaxPasswordBytes` (default 1024), `MaxIdentifierBytes` (320) | Reject before the limiter, the lookup and Argon2, on one path that does the same work for every account |
+| **Empty password oracle** | Dummy `Verify` call on empty-password path, against a hash made with the engine's own Argon2 settings at `Build` | Equalized response time |
 | **User enumeration** | Fake challenges + 20–40ms random delay | Indistinguishable responses for unknown users |
 
 ### Token Security
@@ -185,7 +185,8 @@ All findings tracked in `SECURITY_FINDINGS.md`.
 - [ ] `JWT.RequireIAT = true`
 - [ ] `Security.EnableLoginFailureLimiter = true`
 - [ ] `Security.EnforceRefreshRotation = true`
-- [ ] `Security.AutoLockoutEnabled = true`
+- [ ] `Security.AutoLockoutEnabled = true` (an auto-locked account stays Locked until `UnlockAccount`/`EnableAccount`; `AutoLockoutDuration` only sizes the failure-counting window)
+- [ ] `Security.LoginIPLimiter.Enabled = true` with a client IP you trust attached through `WithClientIP`, unless your gateway throttles login per client address
 - [ ] `Audit.Enabled = true` with durable sink
 - [ ] `Config.Lint()` returns no HIGH-severity warnings
 - [ ] Redis uses `noeviction` policy

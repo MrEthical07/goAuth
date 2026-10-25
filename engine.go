@@ -62,6 +62,8 @@ type Engine struct {
 	jwtManager            *jwt.Manager
 	userProvider          UserProvider
 	verifyHashFn          func(password, encodedHash string) (bool, error)
+	dummyHash             string
+	verifyTOTPFn          func(secret []byte, code string, now time.Time) (bool, int64, error)
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
 	roleSwitchProvider    RoleSwitchProvider
@@ -158,6 +160,16 @@ func newTOTPManager(cfg TOTPConfig) *totpManager {
 		Algorithm: cfg.Algorithm,
 		Skew:      cfg.Skew,
 	})
+}
+
+// verifyTOTP evaluates a TOTP code against a secret. Every code check in the
+// engine goes through it, which gives tests one place to count evaluations; in
+// production it is exactly totp.VerifyCode.
+func (e *Engine) verifyTOTP(secret []byte, code string, now time.Time) (bool, int64, error) {
+	if e.verifyTOTPFn != nil {
+		return e.verifyTOTPFn(secret, code, now)
+	}
+	return e.totp.VerifyCode(secret, code, now)
 }
 
 func hotpCode(secret []byte, counter int64, digits int, algorithm string) (string, error) {
@@ -919,6 +931,9 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		}
 		// Limiter reset is best-effort and must not block successful password change.
 		if err := e.rateLimiter.ResetLogin(ctx, tenantIDFromContext(ctx), identifier); err != nil {
+			e.warn("goAuth: login limiter reset failed after password change")
+		}
+		if err := e.rateLimiter.ResetLoginUser(ctx, tenantIDFromContext(ctx), userID); err != nil {
 			e.warn("goAuth: login limiter reset failed after password change")
 		}
 	}
@@ -2086,27 +2101,21 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 		}
 	}
 	if e != nil && e.backupLimiter != nil {
-		deps.CheckLimiter = func(ctx context.Context, tenantID, userID string) error {
+		deps.ReserveLimiter = func(ctx context.Context, tenantID, userID string) (bool, error) {
 			e.metricInc(MetricLimiterCheck)
-			err := e.backupLimiter.Check(ctx, tenantID, userID)
+			last, err := e.backupLimiter.Reserve(ctx, tenantID, userID)
 			if err == nil {
-				return nil
+				return last, nil
 			}
 			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
-				return err
+				return false, err
 			}
-			return e.limiterOutage(ctx, "backup_code", tenantID, err)
+			return false, e.limiterOutage(ctx, "backup_code", tenantID, err)
 		}
-		deps.RecordLimiterFailure = func(ctx context.Context, tenantID, userID string) error {
-			e.metricInc(MetricLimiterCheck)
-			err := e.backupLimiter.RecordFailure(ctx, tenantID, userID)
-			if err == nil {
-				return nil
+		deps.ReleaseLimiter = func(ctx context.Context, tenantID, userID string) {
+			if err := e.backupLimiter.Release(ctx, tenantID, userID); err != nil {
+				e.limiterCleanupFailed(ctx, "backup_code", tenantID, err)
 			}
-			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
-				return err
-			}
-			return e.limiterOutage(ctx, "backup_code", tenantID, err)
 		}
 		deps.ResetLimiter = func(ctx context.Context, tenantID, userID string) error {
 			if err := e.backupLimiter.Reset(ctx, tenantID, userID); err != nil {
@@ -2289,7 +2298,7 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		ParseChallengeCode: func(strategy int, verificationID, code string, otpDigits int) ([32]byte, error) {
 			return parseEmailVerificationChallengeCode(VerificationStrategyType(strategy), verificationID, code, otpDigits)
 		},
-		SleepEnumerationDelay: sleepPasswordResetEnumerationDelay,
+		EnumerationFloor: enumerationFloorDuration,
 		MetricInc: func(id int) {
 			e.metricInc(MetricID(id))
 		},
@@ -2335,6 +2344,17 @@ func (e *Engine) configureEmailVerificationLimiterDeps(deps *internalflows.Email
 		}
 		e.metricInc(MetricLimiterCheck)
 		err := e.verificationLimiter.CheckRequest(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, limiters.ErrVerificationRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "email_verification_request", tenantID, err)
+	}
+	deps.CheckRequestUserLimiter = func(ctx context.Context, tenantID, userID string) error {
+		if !cfg.EmailVerification.EnableRequestLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.verificationLimiter.CheckRequestUser(ctx, tenantID, userID)
 		if err == nil || errors.Is(err, limiters.ErrVerificationRateLimited) {
 			return err
 		}
@@ -2833,6 +2853,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		EnforceReplayProtection:   cfg.TOTP.EnforceReplayProtection,
 		RequireVerified:           e != nil && e.shouldRequireVerified(),
 		PendingVerificationStatus: uint8(AccountPendingVerification),
+		ActiveStatus:              uint8(AccountActive),
 		PasswordUpgradeOnLogin:    cfg.Password.UpgradeOnLogin,
 		MFALoginMaxAttempts:       cfg.TOTP.MFALoginMaxAttempts,
 		MFALoginChallengeTTL:      cfg.TOTP.MFALoginChallengeTTL,
@@ -2850,50 +2871,18 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		EmitAudit:     e.emitAudit,
 		EmitRateLimit: e.emitRateLimit,
 		Warn:          e.warn,
-		Errors: internalflows.LoginErrors{
-			EngineNotReady:           ErrEngineNotReady,
-			InvalidCredentials:       ErrInvalidCredentials,
-			LoginRateLimited:         ErrLoginRateLimited,
-			SystemUnavailable:        ErrSystemUnavailable,
-			AccountUnverified:        ErrAccountUnverified,
-			AccountLocked:            ErrAccountLocked,
-			DeviceBindingRejected:    ErrDeviceBindingRejected,
-			TOTPFeatureDisabled:      ErrTOTPFeatureDisabled,
-			MFALoginInvalid:          ErrMFALoginInvalid,
-			MFALoginExpired:          ErrMFALoginExpired,
-			MFALoginAttemptsExceeded: ErrMFALoginAttemptsExceeded,
-			MFALoginReplay:           ErrMFALoginReplay,
-			MFALoginUnavailable:      ErrMFALoginUnavailable,
-			UserNotFound:             ErrUserNotFound,
-			BackupCodeRateLimited:    ErrBackupCodeRateLimited,
-			BackupCodeInvalid:        ErrBackupCodeInvalid,
-			BackupCodesNotConfigured: ErrBackupCodesNotConfigured,
-			WebAuthnCloneDetected:    ErrWebAuthnCloneDetected,
-			WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
-			WebAuthnUnavailable:      ErrWebAuthnUnavailable,
-		},
-		Metrics: internalflows.LoginMetrics{
-			LoginSuccess:     int(MetricLoginSuccess),
-			LoginFailure:     int(MetricLoginFailure),
-			LoginRateLimited: int(MetricLoginRateLimited),
-			LockoutTrigger:   int(MetricLockoutTrigger),
-			SessionCreated:   int(MetricSessionCreated),
-			MFALoginRequired: int(MetricMFALoginRequired),
-			MFALoginSuccess:  int(MetricMFALoginSuccess),
-			MFALoginFailure:  int(MetricMFALoginFailure),
-			MFAReplayAttempt: int(MetricMFAReplayAttempt),
-		},
-		Events: internalflows.LoginEvents{
-			LoginSuccess:        auditEventLoginSuccess,
-			LoginFailure:        auditEventLoginFailure,
-			LoginRateLimited:    auditEventLoginRateLimited,
-			MFARequired:         auditEventMFARequired,
-			MFASuccess:          auditEventMFASuccess,
-			MFAFailure:          auditEventMFAFailure,
-			MFAAttemptsExceeded: auditEventMFAAttemptsExceeded,
-		},
+		Errors:        loginErrors(),
+		Metrics:       loginMetrics(),
+		Events:        loginEvents(),
+	}
+	if e != nil {
+		deps.DummyHash = e.dummyHash
+		if e.passwordHash != nil {
+			deps.MaxPasswordBytes = e.passwordHash.MaxPasswordBytes()
+		}
 	}
 	e.configureLoginRateLimiterDeps(&deps)
+	e.configureLoginTOTPLimiterDeps(&deps)
 	e.configureLoginAssuranceDeps(&deps)
 	e.configureLoginProfileDeps(&deps)
 	if e != nil && e.lockoutLimiter != nil && e.config.Security.AutoLockoutEnabled {
@@ -2934,7 +2923,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.HashPassword = e.passwordHash.Hash
 	}
 	if e != nil && e.totp != nil {
-		deps.VerifyTOTPCode = e.totp.VerifyCode
+		deps.VerifyTOTPCode = e.verifyTOTP
 	}
 	if e != nil && e.webauthnProvider != nil {
 		deps.HasWebAuthnCredentials = func(ctx context.Context, userID string) (bool, error) {
@@ -2982,7 +2971,10 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			}, ttl)
 		}
 		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete
-		deps.RecordMFAFailure = e.mfaLoginStore.RecordFailure
+		deps.ReserveMFAAttempt = e.mfaLoginStore.ReserveAttempt
+		deps.ReleaseMFAAttempt = func(ctx context.Context, challengeID string) {
+			_ = e.mfaLoginStore.ReleaseAttempt(ctx, challengeID)
+		}
 	}
 	deps.MapMFAStoreError = mapMFALoginStoreError
 	if e != nil && e.roleManager != nil {
@@ -3015,6 +3007,60 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	return deps
 }
 
+// loginErrors, loginMetrics and loginEvents are the sentinels, metric IDs and
+// audit event names the login flows report with.
+func loginErrors() internalflows.LoginErrors {
+	return internalflows.LoginErrors{
+		EngineNotReady:           ErrEngineNotReady,
+		InvalidCredentials:       ErrInvalidCredentials,
+		LoginRateLimited:         ErrLoginRateLimited,
+		SystemUnavailable:        ErrSystemUnavailable,
+		AccountUnverified:        ErrAccountUnverified,
+		AccountLocked:            ErrAccountLocked,
+		DeviceBindingRejected:    ErrDeviceBindingRejected,
+		TOTPFeatureDisabled:      ErrTOTPFeatureDisabled,
+		MFALoginInvalid:          ErrMFALoginInvalid,
+		MFALoginExpired:          ErrMFALoginExpired,
+		MFALoginAttemptsExceeded: ErrMFALoginAttemptsExceeded,
+		MFALoginReplay:           ErrMFALoginReplay,
+		MFALoginUnavailable:      ErrMFALoginUnavailable,
+		UserNotFound:             ErrUserNotFound,
+		BackupCodeRateLimited:    ErrBackupCodeRateLimited,
+		BackupCodeInvalid:        ErrBackupCodeInvalid,
+		BackupCodesNotConfigured: ErrBackupCodesNotConfigured,
+		WebAuthnCloneDetected:    ErrWebAuthnCloneDetected,
+		WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
+		WebAuthnUnavailable:      ErrWebAuthnUnavailable,
+		TOTPRateLimited:          ErrTOTPRateLimited,
+	}
+}
+
+func loginMetrics() internalflows.LoginMetrics {
+	return internalflows.LoginMetrics{
+		LoginSuccess:     int(MetricLoginSuccess),
+		LoginFailure:     int(MetricLoginFailure),
+		LoginRateLimited: int(MetricLoginRateLimited),
+		LockoutTrigger:   int(MetricLockoutTrigger),
+		SessionCreated:   int(MetricSessionCreated),
+		MFALoginRequired: int(MetricMFALoginRequired),
+		MFALoginSuccess:  int(MetricMFALoginSuccess),
+		MFALoginFailure:  int(MetricMFALoginFailure),
+		MFAReplayAttempt: int(MetricMFAReplayAttempt),
+	}
+}
+
+func loginEvents() internalflows.LoginEvents {
+	return internalflows.LoginEvents{
+		LoginSuccess:        auditEventLoginSuccess,
+		LoginFailure:        auditEventLoginFailure,
+		LoginRateLimited:    auditEventLoginRateLimited,
+		MFARequired:         auditEventMFARequired,
+		MFASuccess:          auditEventMFASuccess,
+		MFAFailure:          auditEventMFAFailure,
+		MFAAttemptsExceeded: auditEventMFAAttemptsExceeded,
+	}
+}
+
 // configureLoginUserLookupDeps wires the login flow's user lookups. Both
 // route through the engine resolvers, so they are tenant-scoped whenever
 // multi-tenancy is enabled and tenant-blind exactly as before when it is
@@ -3042,10 +3088,10 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		return
 	}
 
-	deps.CheckLoginRate = func(ctx context.Context, identifier string) error {
+	deps.ReserveLoginRate = func(ctx context.Context, identifier string) error {
 		tenantID := tenantIDFromContext(ctx)
 		e.metricInc(MetricLimiterCheck)
-		err := e.rateLimiter.CheckLogin(ctx, tenantID, identifier)
+		err := e.rateLimiter.ReserveLogin(ctx, tenantID, identifier)
 		if err == nil || errors.Is(err, rate.ErrRateLimited) {
 			return err
 		}
@@ -3068,6 +3114,77 @@ func (e *Engine) configureLoginRateLimiterDeps(deps *internalflows.LoginDeps) {
 		}
 		e.limiterCleanupFailed(ctx, "login", tenantID, err)
 		return nil
+	}
+	e.configureLoginIPLimiterDeps(deps)
+	deps.ReserveLoginUserRate = func(ctx context.Context, userID string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.rateLimiter.ReserveLoginUser(ctx, tenantID, userID)
+		if err == nil || errors.Is(err, rate.ErrRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "login", tenantID, err)
+	}
+	deps.ResetLoginUserRate = func(ctx context.Context, userID string) {
+		tenantID := tenantIDFromContext(ctx)
+		if err := e.rateLimiter.ResetLoginUser(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "login", tenantID, err)
+		}
+	}
+}
+
+// configureLoginIPLimiterDeps wires the opt-in per-client-IP login throttle.
+func (e *Engine) configureLoginIPLimiterDeps(deps *internalflows.LoginDeps) {
+	if !e.config.Security.LoginIPLimiter.Enabled {
+		return
+	}
+	deps.ReserveLoginIPRate = func(ctx context.Context, ip string) error {
+		tenantID := tenantIDFromContext(ctx)
+		e.metricInc(MetricLimiterCheck)
+		err := e.rateLimiter.ReserveLoginIP(ctx, tenantID, ip)
+		if err == nil || errors.Is(err, rate.ErrRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "login_ip", tenantID, err)
+	}
+	deps.ReleaseLoginIPRate = func(ctx context.Context, ip string) {
+		tenantID := tenantIDFromContext(ctx)
+		if err := e.rateLimiter.ReleaseLoginIP(ctx, tenantID, ip); err != nil {
+			e.limiterCleanupFailed(ctx, "login_ip", tenantID, err)
+		}
+	}
+}
+
+// configureLoginTOTPLimiterDeps lets the MFA login confirmation draw on the
+// same per-account TOTP budget as Engine.VerifyTOTP.
+func (e *Engine) configureLoginTOTPLimiterDeps(deps *internalflows.LoginDeps) {
+	if e == nil || e.totpLimiter == nil {
+		return
+	}
+
+	deps.ReserveTOTPLimiter = func(ctx context.Context, tenantID, userID string) (bool, error) {
+		e.metricInc(MetricLimiterCheck)
+		last, err := e.totpLimiter.Reserve(ctx, tenantID, userID)
+		if err == nil {
+			return last, nil
+		}
+		if errors.Is(err, limiters.ErrTOTPRateLimited) {
+			return false, err
+		}
+		return false, e.limiterOutage(ctx, "totp", tenantID, err)
+	}
+	deps.ReleaseTOTPLimiter = func(ctx context.Context, tenantID, userID string) {
+		if err := e.totpLimiter.Release(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "totp", tenantID, err)
+		}
+	}
+	deps.ResetTOTPLimiter = func(ctx context.Context, tenantID, userID string) {
+		if err := e.totpLimiter.Reset(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "totp", tenantID, err)
+		}
+	}
+	deps.IsTOTPRateLimited = func(err error) bool {
+		return errors.Is(err, limiters.ErrTOTPRateLimited)
 	}
 }
 
@@ -3216,7 +3333,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 		ParseChallenge: func(strategy int, challenge string, otpDigits int) (string, [32]byte, error) {
 			return parsePasswordResetChallenge(ResetStrategyType(strategy), challenge, otpDigits)
 		},
-		SleepEnumerationDelay: sleepPasswordResetEnumerationDelay,
+		EnumerationFloor: enumerationFloorDuration,
 		MetricInc: func(id int) {
 			e.metricInc(MetricID(id))
 		},
@@ -3442,26 +3559,21 @@ func mapPasswordResetStoreError(err error) error {
 	}
 }
 
-func sleepPasswordResetEnumerationDelay(ctx context.Context) error {
+// enumerationFloorDuration draws the minimum time, 20 to 40 ms, that a
+// password-reset or email-verification request which answers with a challenge
+// takes whatever the identifier turns out to be.
+func enumerationFloorDuration() time.Duration {
 	minMs := int64(20)
 	maxMs := int64(40)
 	span := maxMs - minMs + 1
 
 	n, err := rand.Int(rand.Reader, big.NewInt(span))
 	if err != nil {
-		return err
+		// Without randomness fall back to the top of the range: still a
+		// floor, just not a random one.
+		return time.Duration(maxMs) * time.Millisecond
 	}
-
-	delay := time.Duration(minMs+n.Int64()) * time.Millisecond
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return time.Duration(minMs+n.Int64()) * time.Millisecond
 }
 
 func isNumericString(v string) bool {
@@ -3486,6 +3598,17 @@ func (e *Engine) configurePasswordResetLimiterDeps(deps *internalflows.PasswordR
 		}
 		e.metricInc(MetricLimiterCheck)
 		err := e.resetLimiter.CheckRequest(ctx, tenantID, identifier)
+		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
+			return err
+		}
+		return e.limiterOutage(ctx, "password_reset_request", tenantID, err)
+	}
+	deps.CheckRequestUserLimiter = func(ctx context.Context, tenantID, userID string) error {
+		if !cfg.PasswordReset.EnableRequestLimiter {
+			return nil
+		}
+		e.metricInc(MetricLimiterCheck)
+		err := e.resetLimiter.CheckRequestUser(ctx, tenantID, userID)
 		if err == nil || errors.Is(err, limiters.ErrResetRateLimited) {
 			return err
 		}
@@ -3655,7 +3778,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret
 		deps.ProvisionURI = e.totp.ProvisionURI
-		deps.VerifyCode = e.totp.VerifyCode
+		deps.VerifyCode = e.verifyTOTP
 	}
 	e.configureTOTPLimiterDeps(&deps)
 
@@ -3676,14 +3799,23 @@ func (e *Engine) configureTOTPLimiterDeps(deps *internalflows.TOTPDeps) {
 		}
 		return e.limiterOutage(ctx, "totp", tenantID, err)
 	}
-	deps.RecordTOTPLimiterFailure = func(ctx context.Context, userID string) error {
+	deps.ReserveTOTPLimiter = func(ctx context.Context, userID string) (bool, error) {
 		tenantID := tenantIDFromContext(ctx)
 		e.metricInc(MetricLimiterCheck)
-		err := e.totpLimiter.RecordFailure(ctx, tenantID, userID)
-		if err == nil || errors.Is(err, limiters.ErrTOTPRateLimited) {
-			return err
+		last, err := e.totpLimiter.Reserve(ctx, tenantID, userID)
+		if err == nil {
+			return last, nil
 		}
-		return e.limiterOutage(ctx, "totp", tenantID, err)
+		if errors.Is(err, limiters.ErrTOTPRateLimited) {
+			return false, err
+		}
+		return false, e.limiterOutage(ctx, "totp", tenantID, err)
+	}
+	deps.ReleaseTOTPLimiter = func(ctx context.Context, userID string) {
+		tenantID := tenantIDFromContext(ctx)
+		if err := e.totpLimiter.Release(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "totp", tenantID, err)
+		}
 	}
 	deps.ResetTOTPLimiter = func(ctx context.Context, userID string) error {
 		tenantID := tenantIDFromContext(ctx)

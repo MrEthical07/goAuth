@@ -112,89 +112,106 @@ func (s *MFALoginChallengeStore) Delete(ctx context.Context, challengeID string)
 	return n > 0, nil
 }
 
+// reserveAttemptScript claims one attempt of a challenge and leaves the rest
+// of the record, and its TTL, untouched. KEYS[1] = challenge, ARGV[1] = the
+// number of attempts allowed, ARGV[2] = now in unix seconds. The attempt
+// counter and the expiry sit at fixed offsets of every record version: byte 0
+// is the version, bytes 1-2 the big-endian attempts, bytes 3-10 the big-endian
+// expiry. It returns the number of attempts used including this one, or a
+// negative status: -1 no such challenge, -2 the claim is past the limit (the
+// challenge is deleted), -3 the challenge expired (deleted), -4 malformed.
+var reserveAttemptScript = redis.NewScript(`
+local data = redis.call('GET', KEYS[1])
+if not data then
+  return -1
+end
+if #data < 11 then
+  return -4
+end
+local exp = 0
+for i = 4, 11 do
+  exp = exp * 256 + string.byte(data, i)
+end
+if tonumber(ARGV[2]) > exp then
+  redis.call('DEL', KEYS[1])
+  return -3
+end
+local attempts = string.byte(data, 2) * 256 + string.byte(data, 3) + 1
+if attempts > tonumber(ARGV[1]) or attempts > 65535 then
+  redis.call('DEL', KEYS[1])
+  return -2
+end
+redis.call('SETRANGE', KEYS[1], 1, string.char(math.floor(attempts / 256), attempts % 256))
+return attempts
+`)
+
+// releaseAttemptScript gives back one attempt claimed with ReserveAttempt.
+var releaseAttemptScript = redis.NewScript(`
+local data = redis.call('GET', KEYS[1])
+if not data or #data < 3 then
+  return 0
+end
+local attempts = string.byte(data, 2) * 256 + string.byte(data, 3)
+if attempts < 1 then
+  return 0
+end
+attempts = attempts - 1
+redis.call('SETRANGE', KEYS[1], 1, string.char(math.floor(attempts / 256), attempts % 256))
+return attempts
+`)
+
+// ReserveAttempt atomically claims one attempt of the challenge before a
+// factor is evaluated, so concurrent confirmations cannot evaluate more codes
+// than limit allows: counting the attempt after the factor was checked lets
+// every request in flight pass the cap. It returns the number of attempts used
+// including this one. A claim past the limit deletes the challenge and returns
+// ErrMFALoginChallengeExceeded; a missing challenge is
+// ErrMFALoginChallengeNotFound and an expired one ErrMFALoginChallengeExpired.
+func (s *MFALoginChallengeStore) ReserveAttempt(ctx context.Context, challengeID string, limit int) (int, error) {
+	res, err := reserveAttemptScript.Run(ctx, s.redis, []string{s.key(challengeID)}, limit, time.Now().Unix()).Int64()
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
+	}
+	switch {
+	case res >= 0:
+		return int(res), nil
+	case res == -1:
+		return 0, ErrMFALoginChallengeNotFound
+	case res == -2:
+		return 0, ErrMFALoginChallengeExceeded
+	case res == -3:
+		return 0, ErrMFALoginChallengeExpired
+	default:
+		return 0, fmt.Errorf("%w: malformed challenge record", ErrMFALoginChallengeBackend)
+	}
+}
+
+// ReleaseAttempt gives back an attempt claimed with ReserveAttempt for a
+// request that evaluated no factor (a ceremony that has to be restarted, a
+// replayed code).
+func (s *MFALoginChallengeStore) ReleaseAttempt(ctx context.Context, challengeID string) error {
+	if err := releaseAttemptScript.Run(ctx, s.redis, []string{s.key(challengeID)}).Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
+	}
+	return nil
+}
+
+// RecordFailure counts one failed attempt and reports whether that attempt
+// used up maxAttempts, in which case the challenge is deleted. It is a single
+// atomic step; the login flow reserves the attempt before evaluating the
+// factor instead (see ReserveAttempt).
 func (s *MFALoginChallengeStore) RecordFailure(
 	ctx context.Context,
 	challengeID string,
 	maxAttempts int,
 ) (bool, error) {
-	const maxRetries = 4
-	key := s.key(challengeID)
-
-	for i := 0; i < maxRetries; i++ {
-		var exceeded bool
-		err := s.redis.Watch(ctx, func(tx *redis.Tx) error {
-			data, err := tx.Get(ctx, key).Bytes()
-			if err != nil {
-				return err
-			}
-
-			record, err := decodeMFALoginChallenge(data)
-			if err != nil {
-				return err
-			}
-			if time.Now().Unix() > record.ExpiresAt {
-				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-					pipe.Del(ctx, key)
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				return ErrMFALoginChallengeExpired
-			}
-
-			record.Attempts++
-			if int(record.Attempts) >= maxAttempts {
-				exceeded = true
-				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-					pipe.Del(ctx, key)
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				return nil
-			}
-
-			ttl := time.Until(time.Unix(record.ExpiresAt, 0))
-			if ttl <= 0 {
-				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-					pipe.Del(ctx, key)
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-				return ErrMFALoginChallengeExpired
-			}
-
-			updated, err := encodeMFALoginChallenge(record)
-			if err != nil {
-				return err
-			}
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, key, updated, ttl)
-				return nil
-			})
-			return err
-		}, key)
-
-		if err == redis.TxFailedErr {
-			continue
+	if _, err := s.ReserveAttempt(ctx, challengeID, maxAttempts-1); err != nil {
+		if errors.Is(err, ErrMFALoginChallengeExceeded) {
+			return true, nil
 		}
-		if err != nil {
-			if errors.Is(err, redis.Nil) {
-				return false, ErrMFALoginChallengeNotFound
-			}
-			if errors.Is(err, ErrMFALoginChallengeExpired) {
-				return false, err
-			}
-			return false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
-		}
-		return exceeded, nil
+		return false, err
 	}
-
-	return false, ErrMFALoginChallengeNotFound
+	return false, nil
 }
 
 func encodeMFALoginChallenge(record *MFALoginChallenge) ([]byte, error) {

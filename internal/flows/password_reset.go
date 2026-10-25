@@ -59,11 +59,14 @@ type PasswordResetDeps struct {
 	AccountStatusError  func(uint8) error
 	Now                 func() time.Time
 
-	CheckRequestLimiter func(context.Context, string, string) error
-	CheckConfirmLimiter func(context.Context, string, string) error
-	MapLimiterError     func(error) error
-	MapStoreError       func(error) error
-	IsStoreNotFound     func(error) bool
+	// CheckRequestUserLimiter counts a request against the resolved account,
+	// whatever spelling of its identifier was used. Optional.
+	CheckRequestUserLimiter func(ctx context.Context, tenantID, userID string) error
+	CheckRequestLimiter     func(context.Context, string, string) error
+	CheckConfirmLimiter     func(context.Context, string, string) error
+	MapLimiterError         func(error) error
+	MapStoreError           func(error) error
+	IsStoreNotFound         func(error) bool
 
 	// EnforceTenantMatch requires a resolved user's TenantID to equal the
 	// request's tenant. Set only when multi-tenancy is enabled.
@@ -87,9 +90,13 @@ type PasswordResetDeps struct {
 	GetResetRecord     func(context.Context, string, string) (PasswordResetStoreRecord, error)
 	ConsumeResetRecord func(context.Context, string, string, [32]byte, int, int) (PasswordResetStoreRecord, error)
 
-	GenerateChallenge     func(int, int) (string, string, [32]byte, error)
-	ParseChallenge        func(int, string, int) (string, [32]byte, error)
-	SleepEnumerationDelay func(context.Context) error
+	GenerateChallenge func(int, int) (string, string, [32]byte, error)
+	ParseChallenge    func(int, string, int) (string, [32]byte, error)
+	// EnumerationFloor draws the minimum time a request that answers with a
+	// challenge takes, whether the identifier is registered or not; nil means
+	// no floor. SleepFor waits for a duration (nil: a context-aware sleep).
+	EnumerationFloor func() time.Duration
+	SleepFor         func(context.Context, time.Duration) error
 
 	VerifyTOTPForUser        func(context.Context, PasswordResetUser, string) error
 	VerifyBackupCodeInTenant func(context.Context, string, string, string) error
@@ -105,6 +112,7 @@ type PasswordResetDeps struct {
 
 func RunRequestPasswordReset(ctx context.Context, identifier string, deps PasswordResetDeps) (string, error) {
 	normalizePasswordResetDeps(&deps)
+	floor := startEnumerationFloor(deps.Now, deps.EnumerationFloor, deps.SleepFor)
 
 	if !deps.Enabled {
 		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.PasswordResetDisabled, nil)
@@ -117,6 +125,16 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.PasswordResetInvalid, func() map[string]string {
 			return map[string]string{
 				"reason": "empty_identifier",
+			}
+		})
+		return "", deps.Errors.PasswordResetInvalid
+	}
+
+	if identifierTooLong(identifier) {
+		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.PasswordResetInvalid, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(identifier),
+				"reason":     "identifier_too_long",
 			}
 		})
 		return "", deps.Errors.PasswordResetInvalid
@@ -161,9 +179,6 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", err
 		}
-		if sleepErr := deps.SleepEnumerationDelay(ctx); sleepErr != nil {
-			return "", sleepErr
-		}
 		_, challenge, _, genErr := deps.GenerateChallenge(deps.Strategy, deps.OTPDigits)
 		if genErr != nil {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", tenantID, "", deps.Errors.PasswordResetUnavailable, func() map[string]string {
@@ -181,7 +196,34 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 			}
 		})
 		deps.MetricInc(deps.Metrics.PasswordResetRequest)
-		return challenge, nil
+		return floor.finish(ctx, challenge)
+	}
+
+	// The account's own budget (shared by every spelling of its identifier).
+	// A request over it is answered with the rate-limit error rather than a
+	// fake challenge, because the error is what stops the host from sending
+	// mail; with a provider that matches identifiers case-insensitively that
+	// lets a caller trying spellings tell that the account exists. Exact-match
+	// providers never see it, and docs/rate_limiting.md says so.
+	if deps.CheckRequestUserLimiter != nil {
+		if err := deps.CheckRequestUserLimiter(ctx, tenantID, user.UserID); err != nil {
+			mapped := deps.MapLimiterError(err)
+			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, tenantID, "", mapped, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"scope":      "account",
+				}
+			})
+			if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
+				deps.EmitRateLimit(ctx, "password_reset_request", tenantID, func() map[string]string {
+					return map[string]string{
+						"identifier": identifier,
+						"scope":      "account",
+					}
+				})
+			}
+			return "", mapped
+		}
 	}
 
 	// When multi-tenancy is enabled the record is always stored under the
@@ -226,7 +268,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		}
 	})
 	deps.MetricInc(deps.Metrics.PasswordResetRequest)
-	return challenge, nil
+	return floor.finish(ctx, challenge)
 }
 
 func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword, mfaType, mfaCode string, deps PasswordResetDeps) error {
@@ -431,8 +473,8 @@ func normalizePasswordResetDeps(deps *PasswordResetDeps) {
 	if deps.TenantIDFromContext == nil {
 		deps.TenantIDFromContext = func(context.Context) string { return "" }
 	}
-	if deps.SleepEnumerationDelay == nil {
-		deps.SleepEnumerationDelay = func(context.Context) error { return nil }
+	if deps.SleepFor == nil {
+		deps.SleepFor = sleepContext
 	}
 	if deps.Warn == nil {
 		deps.Warn = func(string, ...any) {}

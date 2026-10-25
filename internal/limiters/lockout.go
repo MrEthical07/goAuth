@@ -14,7 +14,11 @@ import (
 type LockoutConfig struct {
 	Enabled   bool
 	Threshold int
-	Duration  time.Duration // 0 = manual unlock only
+	// Duration is the rolling window failures are counted in; 0 counts them
+	// until the counter is reset. It is not a lock duration: the lock itself is
+	// the account's Locked status, which only UnlockAccount or EnableAccount
+	// clears.
+	Duration time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	// With Duration = 0 the counter never expires regardless of mode.
 	WindowMode window.Mode

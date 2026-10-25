@@ -6,7 +6,7 @@ Multi-layer, Redis-backed rate limiting for every security-sensitive flow. Two p
 
 | Package | Scope |
 |---------|-------|
-| `internal/rate` | Login-failure limiter (tenant + identifier scoped) |
+| `internal/rate` | Login limiter: identifier, resolved-account and (opt-in) client-IP budgets, all tenant scoped |
 | `internal/limiters` | Per-flow domain limiters (account, backup-code, email-verification, TOTP, password-reset, lockout) |
 | `internal/window` | Shared window-counting primitive (fixed or sliding) consumed by every limiter |
 
@@ -20,9 +20,11 @@ func New(redisClient redis.UniversalClient, cfg Config) *Limiter
 
 | Method | Signature |
 |--------|-----------|
-| `CheckLogin` | `(ctx, tenantID, identifier string) error` |
-| `IncrementLogin` | `(ctx, tenantID, identifier string) error` |
-| `ResetLogin` | `(ctx, tenantID, identifier string) error` |
+| `ReserveLogin` | `(ctx, tenantID, identifier string) error` — claims one attempt before the password is verified |
+| `ReserveLoginUser` | `(ctx, tenantID, userID string) error` — the same for the resolved account |
+| `ReserveLoginIP` / `ReleaseLoginIP` | `(ctx, tenantID, ip string) error` — the opt-in per-IP budget |
+| `IncrementLogin` | `(ctx, tenantID, identifier string) error` — records a failure after the password was verified |
+| `ResetLogin` / `ResetLoginUser` | `(ctx, tenantID, identifier\|userID string) error` |
 | `GetLoginAttempts` | `(ctx, tenantID, identifier string) (int, error)` |
 
 **Config:**
@@ -39,12 +41,66 @@ func New(redisClient redis.UniversalClient, cfg Config) *Limiter
 | Limiter | Constructor | Key Methods |
 |---------|-------------|-------------|
 | `AccountCreationLimiter` | `NewAccountCreationLimiter(redis, cfg)` | `Enforce(ctx, tenantID, identifier)` |
-| `BackupCodeLimiter` | `NewBackupCodeLimiter(redis, cfg)` | `Check`, `RecordFailure`, `Reset` |
-| `EmailVerificationLimiter` | `NewEmailVerificationLimiter(redis, cfg)` | `CheckRequest`, `CheckConfirm` |
-| `TOTPLimiter` | `NewTOTPLimiter(redis, cfg)` | `Check`, `RecordFailure`, `Reset` |
-| `PasswordResetLimiter` | `NewPasswordResetLimiter(redis, cfg)` | `CheckRequest`, `CheckConfirm`, `Cooldown()` |
+| `BackupCodeLimiter` | `NewBackupCodeLimiter(redis, cfg)` | `Reserve`, `Release`, `Reset` |
+| `EmailVerificationLimiter` | `NewEmailVerificationLimiter(redis, cfg)` | `CheckRequest`, `CheckRequestUser`, `CheckConfirm` |
+| `TOTPLimiter` | `NewTOTPLimiter(redis, cfg)` | `Reserve`, `Release`, `Reset` (and a read-only `Check` for requests refused before a code is evaluated) |
+| `PasswordResetLimiter` | `NewPasswordResetLimiter(redis, cfg)` | `CheckRequest`, `CheckRequestUser`, `CheckConfirm`, `Cooldown()` |
+
+### Reserve before you verify
+
+A check-then-record limiter (read the count, verify the secret, record the failure afterwards) lets every request
+of a concurrent burst observe a count below the limit before any of them records a failure, so the limit bounds
+only sequential guessing. The login budgets, the TOTP and backup-code budgets and the MFA challenge's attempt
+counter therefore **claim the attempt first**, in one script (`Window.Reserve`: `GET`, compare, `INCR`; a refused
+claim changes nothing), and only the claims that succeed go on to the Argon2 verification or the code check. The
+claim stays whatever the outcome; a right password or code clears it (`Reset`), and a claim is given back
+(`Release`) only when the attempt turned out not to be a guess (a replayed code, a provider error, an expired
+WebAuthn ceremony). Sequentially nothing moves: the attempt that used to be the first refused still is, and the
+failure that fills a TOTP or backup-code budget is still reported as rate limited. What changes is that the
+refused attempt is refused **before** its password or code is evaluated, so a correct password past
+`MaxLoginAttempts` no longer gets in.
+
+### Budgets a login draws on
+
+| Budget | Key | Claimed | Cleared |
+|--------|-----|---------|---------|
+| client IP (opt-in) | `rl:login:ip:{tenant}:{ip}` | first, when the context has an address | a right password gives its slot back |
+| identifier as typed | `rl:login:fail:{tenant}:{identifier}` | before the lookup | a right password |
+| resolved account | `rl:login:user:{tenant}:{userID}` | after the lookup, before the password is verified | a right password, `ChangePassword` |
+
+The identifier budget is keyed by the string the caller typed, and goAuth does not canonicalize identifiers: a
+provider that matches them case-insensitively would otherwise give every spelling of one account a fresh budget.
+The account budget is shared by all spellings. When a login is refused **only** by the account budget it is
+answered with `ErrInvalidCredentials` after the same dummy verification as an unknown identifier (and audited as
+`login_rate_limited` with `scope=account`), so trying spellings does not reveal which identifiers exist; the
+identifier and IP budgets answer `ErrLoginRateLimited` as before. Password-reset and email-verification
+*requests* have the same two budgets (`rl:reset:req:user:*`, `rl:verify:req:user:*`). A request refused by the
+account budget gets the rate-limit error rather than a fake challenge, because the error is what stops your
+application from sending the mail; with a case-insensitive provider that means a caller trying spellings can see
+that the account exists. With an exact-match provider the account budget is never reached by a spelling that does
+not resolve.
+
+Limiter keys never carry caller input: the login, reset, verification and account-creation keys use SHA-256 hex
+digests of the tenant and the identifier or ID.
 
 All limiters are nil-safe — calling a method on a nil receiver returns `nil`.
+
+### Per-IP login throttle
+
+`Security.LoginIPLimiter` (`Enabled`, `MaxAttempts`, `Cooldown`; **off by default**) adds a budget per
+(tenant, client IP) in front of the identifier and account budgets. The address is the one the host puts in the
+context with `WithClientIP`; it is canonicalized (port and zone dropped, an IPv4-mapped IPv6 form unmapped, an
+IPv6 address grouped by its /64, the unit one subscriber is normally given) and hashed into the key
+(`rl:login:ip:{tenant}:{ip}`), and an attempt with no address in its context is not counted. A slot is claimed before anything else is done for the attempt, so an
+address that has used up its budget cannot also burn the budgets of the identifiers it names. A login whose
+password is right gives its slot back, so the count is the failures per address within `Cooldown`, and a good
+login cannot be used to refill the budget of an address that is still guessing. It honors
+`Security.LimiterWindowMode` and `Security.LimiterFailClosed`.
+
+Two things the library cannot decide for you: the address is only as trustworthy as the way your proxy chain
+derives it (never take it from a header the caller can set), and every user behind one NAT or proxy shares a
+budget, so size `MaxAttempts` for the busiest shared address you serve. `Config.Lint()` notes
+(`login_ip_limiter_disabled`, INFO) while the throttle is off.
 
 ### Policy Controls (Optional vs Failure-Based)
 
@@ -89,7 +145,10 @@ Redis key prefixes:
 
 | Prefix | Scope |
 |--------|-------|
-| `rl:login:fail:{tenant}:{identifier}` | Login failure counter |
+| `rl:login:fail:{tenant}:{identifier}` | Login attempts per identifier as typed |
+| `rl:login:user:{tenant}:{userID}` | Login attempts per resolved account |
+| `rl:login:ip:{tenant}:{ip}` | Login failures per client address (opt-in) |
+| `rl:reset:req:user:{tenant}:{userID}`, `rl:verify:req:user:{tenant}:{userID}` | Reset and verification requests per resolved account |
 
 Domain limiters also use explicit tenant-scoped `rl:*` key namespaces. In sliding mode
 the counters live in `{<key>}:s:<bucket>` sub-keys of the same namespaces.
@@ -158,13 +217,13 @@ Window A (60s)          Window B (60s)
 **Removal:** set `Security.LimiterWindowMode = "sliding"`. The weighted sliding window carries the previous window's count (proportionally decayed) into the current one, so a boundary-straddling burst stays over the limit and is rejected. The regression is pinned by `TestSlidingBlocksBoundaryBurstThatFixedAdmits`.
 
 **Mitigations in place for fixed mode:**
-- Auto-lockout (when enabled) counts failures persistently across all windows — a burst still triggers lockout once the threshold is reached.
+- Auto-lockout (when enabled) counts failures persistently across all windows — a burst still triggers lockout once the threshold is reached (only an Active account takes part, and the attempt that locks it is answered like any other wrong password).
 - Argon2 hashing cost limits the practical throughput of password-guessing regardless of rate limit windows.
 - All rate-limited paths also emit audit events, enabling detection of boundary bursts.
 
 ## Performance Notes
 
-- One atomic Lua script call per increment (`EVALSHA`, cached after first use); plain `GET` for fixed-mode checks.
+- One atomic Lua script call per claim or increment (`EVALSHA`, cached after first use). A login makes one claim per budget it draws on and clears them on success.
 - The first-hit `INCR`+`PEXPIRE` pair executes atomically in the script, so a crash between the two can no longer leave a counter without a TTL (permanently rate-limited identifier).
 - Sliding mode reads/writes at most two counter keys per operation — O(1) memory per identifier regardless of attempt volume.
 
@@ -178,13 +237,15 @@ Rate limiting is split into three layers:
 
 ```
 Engine.Login()
-  ├─ rate.Limiter.CheckLogin(tenant, identifier)     ← core limiter
-  │   └─ Redis GET rl:login:fail:{tenant}:{identifier}
-  └─ On failure: rate.Limiter.IncrementLogin(tenant, identifier)
+  ├─ rate.Limiter.ReserveLoginIP(tenant, ip)          ← opt-in
+  ├─ rate.Limiter.ReserveLogin(tenant, identifier)    ← core limiter, one script
+  │   └─ Redis EVALSHA rl:login:fail:{tenant}:{identifier}
+  ├─ rate.Limiter.ReserveLoginUser(tenant, userID)    ← after the lookup
+  └─ On a right password: ResetLogin, ResetLoginUser, ReleaseLoginIP
 
 Engine.ConfirmTOTPSetup()
-  └─ limiters.TOTPLimiter.Check(tenant, user)       ← domain limiter
-       └─ Redis GET rl:totp:fail:{tenant}:{user}
+  └─ limiters.TOTPLimiter.Reserve(tenant, user)     ← domain limiter
+       └─ Redis EVALSHA rl:totp:fail:{tenant}:{user}
 ```
 
 All limiters count through the shared window primitive; `Security.LimiterWindowMode` selects the algorithm engine-wide.
@@ -193,10 +254,10 @@ All limiters count through the shared window primitive; `Security.LimiterWindowM
 
 | Flow | Entry Point | Internal Module |
 |------|-------------|------------------|
-| Login Throttle | `Limiter.CheckLogin`, `Limiter.IncrementLogin` | `internal/rate/limiter.go` |
+| Login Throttle | `Limiter.ReserveLogin`, `Limiter.ReserveLoginUser`, `Limiter.ReserveLoginIP` | `internal/rate/limiter.go` |
 | Account Creation | `AccountCreationLimiter.Enforce` | `internal/limiters/account.go` |
-| TOTP Attempts | `TOTPLimiter.Check`, `TOTPLimiter.RecordFailure` | `internal/limiters/totp.go` |
-| Backup Code Attempts | `BackupCodeLimiter.Check`, `BackupCodeLimiter.RecordFailure` | `internal/limiters/backup.go` |
+| TOTP Attempts | `TOTPLimiter.Reserve`, `TOTPLimiter.Release` | `internal/limiters/totp.go` |
+| Backup Code Attempts | `BackupCodeLimiter.Reserve`, `BackupCodeLimiter.Release` | `internal/limiters/backup.go` |
 | Email Verification | `EmailVerificationLimiter.CheckRequest/CheckConfirm` | `internal/limiters/email_verification.go` |
 | Password Reset | `PasswordResetLimiter.CheckRequest/CheckConfirm` | `internal/limiters/password_reset.go` |
 
