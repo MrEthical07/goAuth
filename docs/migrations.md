@@ -1,21 +1,16 @@
 # Migrations
 
-## v0.8.0 Migration Notes (Non-Breaking)
+## v0.8.1 Migration Notes (Non-Breaking)
 
-**No action needed unless you adopt session profiles or external sign-in.** v0.8.0 is additive: no
-exported signature changed and everything `gorelease -base=v0.7.0` lists is an
-addition (`Config` gained `SessionProfiles` and `ExternalAuth` fields; `SessionConfig` itself is
-unchanged). With profiles unused (the default) behavior is byte-for-byte what
-it was in v0.7.0: the same session bytes in Redis (`session/golden_bytes_test.go`
-passes unmodified), the same MFA challenge bytes, the same Redis commands for
-login, refresh, validate and logout, the same token claims and lifetimes, errors,
-audit events and metrics. `TestSessionProfilesUnusedMatchesV070` pins this: its
-expected values were captured by running the same scenario against the v0.7.0
-tag.
+### Upgrading from v0.8.0
 
-**Exception: the security fixes from the pre-release audit** (below) deliberately
-change the limiter traffic and a few results, and the unchanged-when-unused
-transcripts were updated for exactly those lines.
+**No code change is needed.** v0.8.1 contains the fixes for the security audit of
+v0.8.0: no exported signature changed and `gorelease -base=v0.8.0` reports no
+incompatible change. Redis can be shared by v0.8.0 and v0.8.1 instances during a
+rolling deploy: the new keys are counters that expire with their window, and no
+stored format changed. Read the behavior changes below before you deploy; the
+unchanged-when-unused transcripts of v0.8.0 (`TestSessionProfilesUnusedMatchesV070`,
+`TestExternalAuthUnusedMatchesMain`) were updated for exactly those lines.
 
 ### Security fixes from the audit: what changes with nothing enabled
 
@@ -67,6 +62,19 @@ Set `Security.LoginIPLimiter = LoginIPLimiterConfig{Enabled: true, MaxAttempts: 
 and attach the client address with `WithClientIP`. The address must come from your
 own proxy chain; users behind one NAT share a budget. See
 [rate_limiting.md](rate_limiting.md#per-ip-login-throttle).
+
+## v0.8.0 Migration Notes (Non-Breaking)
+
+**No action needed unless you adopt session profiles or external sign-in.** v0.8.0 is additive: no
+exported signature changed and everything `gorelease -base=v0.7.0` lists is an
+addition (`Config` gained `SessionProfiles` and `ExternalAuth` fields; `SessionConfig` itself is
+unchanged). With profiles unused (the default) behavior is byte-for-byte what
+it was in v0.7.0: the same session bytes in Redis (`session/golden_bytes_test.go`
+passes unmodified), the same MFA challenge bytes, the same Redis commands for
+login, refresh, validate and logout, the same token claims and lifetimes, errors,
+audit events and metrics. `TestSessionProfilesUnusedMatchesV070` pins this: its
+expected values were captured by running the same scenario against the v0.7.0
+tag.
 
 ### Optional: adopt session profiles
 
