@@ -143,17 +143,22 @@ func limiterPaths() []limiterPath {
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				return func() error { return env.engine.ChangePassword(env.ctx(), rsUserID, rsPassword, newPassword) }
 			}},
-		{name: "totp: check", scope: "totp", mode: breakReads, wantOpen: isNil,
+		{name: "totp: check", scope: "totp", mode: breakWrites, wantOpen: isNil,
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				secret := env.enableTOTP()
 				return func() error { return env.engine.VerifyTOTP(env.ctx(), rsUserID, env.totpCode(secret)) }
+			}},
+		{name: "totp: read-only check", scope: "totp", mode: breakReads, wantOpen: isCode(CodeAuthTOTPRequired),
+			prep: func(t *testing.T, env *rsEnv) func() error {
+				env.enableTOTP()
+				return func() error { return env.engine.VerifyTOTP(env.ctx(), rsUserID, "") }
 			}},
 		{name: "totp: failure counter", scope: "totp", mode: breakWrites, wantOpen: isCode(CodeAuthTOTPInvalid),
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				env.enableTOTP()
 				return func() error { return env.engine.VerifyTOTP(env.ctx(), rsUserID, "000000") }
 			}},
-		{name: "backup code: check", scope: "backup_code", mode: breakReads, wantOpen: isNil,
+		{name: "backup code: check", scope: "backup_code", mode: breakWrites, wantOpen: isNil,
 			prep: func(t *testing.T, env *rsEnv) func() error {
 				env.enableTOTP()
 				codes, err := env.engine.GenerateBackupCodes(env.ctx(), rsUserID)

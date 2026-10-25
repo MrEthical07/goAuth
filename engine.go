@@ -62,6 +62,7 @@ type Engine struct {
 	jwtManager            *jwt.Manager
 	userProvider          UserProvider
 	verifyHashFn          func(password, encodedHash string) (bool, error)
+	verifyTOTPFn          func(secret []byte, code string, now time.Time) (bool, int64, error)
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
 	roleSwitchProvider    RoleSwitchProvider
@@ -158,6 +159,16 @@ func newTOTPManager(cfg TOTPConfig) *totpManager {
 		Algorithm: cfg.Algorithm,
 		Skew:      cfg.Skew,
 	})
+}
+
+// verifyTOTP evaluates a TOTP code against a secret. Every code check in the
+// engine goes through it, which gives tests one place to count evaluations; in
+// production it is exactly totp.VerifyCode.
+func (e *Engine) verifyTOTP(secret []byte, code string, now time.Time) (bool, int64, error) {
+	if e.verifyTOTPFn != nil {
+		return e.verifyTOTPFn(secret, code, now)
+	}
+	return e.totp.VerifyCode(secret, code, now)
 }
 
 func hotpCode(secret []byte, counter int64, digits int, algorithm string) (string, error) {
@@ -2086,27 +2097,21 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 		}
 	}
 	if e != nil && e.backupLimiter != nil {
-		deps.CheckLimiter = func(ctx context.Context, tenantID, userID string) error {
+		deps.ReserveLimiter = func(ctx context.Context, tenantID, userID string) (bool, error) {
 			e.metricInc(MetricLimiterCheck)
-			err := e.backupLimiter.Check(ctx, tenantID, userID)
+			last, err := e.backupLimiter.Reserve(ctx, tenantID, userID)
 			if err == nil {
-				return nil
+				return last, nil
 			}
 			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
-				return err
+				return false, err
 			}
-			return e.limiterOutage(ctx, "backup_code", tenantID, err)
+			return false, e.limiterOutage(ctx, "backup_code", tenantID, err)
 		}
-		deps.RecordLimiterFailure = func(ctx context.Context, tenantID, userID string) error {
-			e.metricInc(MetricLimiterCheck)
-			err := e.backupLimiter.RecordFailure(ctx, tenantID, userID)
-			if err == nil {
-				return nil
+		deps.ReleaseLimiter = func(ctx context.Context, tenantID, userID string) {
+			if err := e.backupLimiter.Release(ctx, tenantID, userID); err != nil {
+				e.limiterCleanupFailed(ctx, "backup_code", tenantID, err)
 			}
-			if errors.Is(err, limiters.ErrBackupCodeRateLimited) {
-				return err
-			}
-			return e.limiterOutage(ctx, "backup_code", tenantID, err)
 		}
 		deps.ResetLimiter = func(ctx context.Context, tenantID, userID string) error {
 			if err := e.backupLimiter.Reset(ctx, tenantID, userID); err != nil {
@@ -2934,7 +2939,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.HashPassword = e.passwordHash.Hash
 	}
 	if e != nil && e.totp != nil {
-		deps.VerifyTOTPCode = e.totp.VerifyCode
+		deps.VerifyTOTPCode = e.verifyTOTP
 	}
 	if e != nil && e.webauthnProvider != nil {
 		deps.HasWebAuthnCredentials = func(ctx context.Context, userID string) (bool, error) {
@@ -3655,7 +3660,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret
 		deps.ProvisionURI = e.totp.ProvisionURI
-		deps.VerifyCode = e.totp.VerifyCode
+		deps.VerifyCode = e.verifyTOTP
 	}
 	e.configureTOTPLimiterDeps(&deps)
 
@@ -3676,14 +3681,23 @@ func (e *Engine) configureTOTPLimiterDeps(deps *internalflows.TOTPDeps) {
 		}
 		return e.limiterOutage(ctx, "totp", tenantID, err)
 	}
-	deps.RecordTOTPLimiterFailure = func(ctx context.Context, userID string) error {
+	deps.ReserveTOTPLimiter = func(ctx context.Context, userID string) (bool, error) {
 		tenantID := tenantIDFromContext(ctx)
 		e.metricInc(MetricLimiterCheck)
-		err := e.totpLimiter.RecordFailure(ctx, tenantID, userID)
-		if err == nil || errors.Is(err, limiters.ErrTOTPRateLimited) {
-			return err
+		last, err := e.totpLimiter.Reserve(ctx, tenantID, userID)
+		if err == nil {
+			return last, nil
 		}
-		return e.limiterOutage(ctx, "totp", tenantID, err)
+		if errors.Is(err, limiters.ErrTOTPRateLimited) {
+			return false, err
+		}
+		return false, e.limiterOutage(ctx, "totp", tenantID, err)
+	}
+	deps.ReleaseTOTPLimiter = func(ctx context.Context, userID string) {
+		tenantID := tenantIDFromContext(ctx)
+		if err := e.totpLimiter.Release(ctx, tenantID, userID); err != nil {
+			e.limiterCleanupFailed(ctx, "totp", tenantID, err)
+		}
 	}
 	deps.ResetTOTPLimiter = func(ctx context.Context, userID string) error {
 		tenantID := tenantIDFromContext(ctx)

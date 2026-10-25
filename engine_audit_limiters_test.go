@@ -188,3 +188,181 @@ func TestLoginSuccessResetsTheClaim(t *testing.T) {
 		t.Fatalf("GetLoginAttempts = %d, %v; a good login must leave nothing behind", attempts, err)
 	}
 }
+
+// gatedBackupProvider parks every backup-code evaluation on a gate and counts
+// them. The code is always wrong.
+type gatedBackupProvider struct {
+	*mockUserProvider
+	gate     chan struct{}
+	consumes atomic.Int64
+}
+
+func (p *gatedBackupProvider) ConsumeBackupCode(ctx context.Context, userID string, codeHash [32]byte) (bool, error) {
+	p.consumes.Add(1)
+	if p.gate != nil {
+		<-p.gate
+	}
+	return false, nil
+}
+
+// gateTOTPEvaluations makes every TOTP code evaluation park on gate, count
+// itself and report a wrong code.
+func gateTOTPEvaluations(engine *Engine, gate chan struct{}) *atomic.Int64 {
+	var evals atomic.Int64
+	engine.verifyTOTPFn = func([]byte, string, time.Time) (bool, int64, error) {
+		evals.Add(1)
+		<-gate
+		return false, 0, nil
+	}
+	return &evals
+}
+
+// requireBoundedEvaluations checks a burst of wrong codes: exactly max codes
+// were evaluated, max-1 of them answered "invalid", and everything else,
+// including the evaluation that filled the budget, was "rate limited".
+func requireBoundedEvaluations(t *testing.T, errs []error, evaluated int64, max int, invalid, limited error) {
+	t.Helper()
+	if evaluated != int64(max) {
+		t.Fatalf("%d of %d concurrent attempts were evaluated, want exactly the budget (%d)", evaluated, len(errs), max)
+	}
+	if got := countErrs(errs, invalid); got != max-1 {
+		t.Fatalf("%d attempts answered %v, want %d (errors: %v)", got, invalid, max-1, errs)
+	}
+	if got := countErrs(errs, limited); got != len(errs)-max+1 {
+		t.Fatalf("%d attempts answered %v, want %d", got, limited, len(errs)-max+1)
+	}
+}
+
+// FAILED-BEFORE (R2-10): VerifyTOTP read the failure counter, evaluated the
+// code and recorded the failure afterwards, so a burst evaluated far more
+// codes than the budget.
+func TestVerifyTOTPConcurrentBurstBoundedByMaxAttempts(t *testing.T) {
+	cfg := totpTestConfig()
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	enableUserTOTP(t, engine, "u1", cfg)
+
+	gate := make(chan struct{})
+	evals := gateTOTPEvaluations(engine, gate)
+	const n = 40
+	max := cfg.TOTP.MFALoginMaxAttempts
+	errs := burst(t, n, n-max, gate, func(i int) error {
+		return engine.VerifyTOTP(context.Background(), "u1", fmt.Sprintf("%06d", i))
+	})
+	requireBoundedEvaluations(t, errs, evals.Load(), max, ErrTOTPInvalid, ErrTOTPRateLimited)
+}
+
+// FAILED-BEFORE (R2-10): the same race on the enrolment confirmation.
+func TestConfirmTOTPSetupConcurrentBurstBoundedByMaxAttempts(t *testing.T) {
+	cfg := totpTestConfig()
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	if _, err := engine.GenerateTOTPSetup(context.Background(), "u1"); err != nil {
+		t.Fatalf("GenerateTOTPSetup: %v", err)
+	}
+
+	gate := make(chan struct{})
+	evals := gateTOTPEvaluations(engine, gate)
+	const n = 40
+	max := cfg.TOTP.MFALoginMaxAttempts
+	errs := burst(t, n, n-max, gate, func(i int) error {
+		return engine.ConfirmTOTPSetup(context.Background(), "u1", fmt.Sprintf("%06d", i))
+	})
+	requireBoundedEvaluations(t, errs, evals.Load(), max, ErrTOTPInvalid, ErrTOTPRateLimited)
+}
+
+// FAILED-BEFORE (R2-10): the same race on the inline step-up check that backs
+// backup-code regeneration, password-reset MFA and role switching.
+func TestVerifyTOTPForUserConcurrentBurstBoundedByMaxAttempts(t *testing.T) {
+	cfg := totpTestConfig()
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	enableUserTOTP(t, engine, "u1", cfg)
+
+	gate := make(chan struct{})
+	evals := gateTOTPEvaluations(engine, gate)
+	const n = 40
+	max := cfg.TOTP.MFALoginMaxAttempts
+	errs := burst(t, n, n-max, gate, func(i int) error {
+		_, err := engine.RegenerateBackupCodes(context.Background(), "u1", fmt.Sprintf("%06d", i))
+		return err
+	})
+	requireBoundedEvaluations(t, errs, evals.Load(), max, ErrTOTPInvalid, ErrTOTPRateLimited)
+}
+
+// FAILED-BEFORE (R2-10): the same race on backup codes.
+func TestVerifyBackupCodeConcurrentBurstBoundedByMaxAttempts(t *testing.T) {
+	cfg := totpTestConfig()
+	up := &gatedBackupProvider{mockUserProvider: newHardeningUserProvider(t), gate: make(chan struct{})}
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	const n = 40
+	max := cfg.TOTP.BackupCodeMaxAttempts
+	errs := burst(t, n, n-max, up.gate, func(i int) error {
+		return engine.VerifyBackupCode(context.Background(), "u1", fmt.Sprintf("AAAAA-%05d", i))
+	})
+	requireBoundedEvaluations(t, errs, up.consumes.Load(), max, ErrBackupCodeInvalid, ErrBackupCodeRateLimited)
+}
+
+// Sequentially nothing changes: the failure that fills the budget is already
+// reported as rate limited, later attempts are refused without being
+// evaluated, and a refused request never reaches the code check.
+func TestVerifyTOTPSequentialBudgetIsUnchanged(t *testing.T) {
+	cfg := totpTestConfig()
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	secret := enableUserTOTP(t, engine, "u1", cfg)
+
+	var evals atomic.Int64
+	real := engine.totp.VerifyCode
+	engine.verifyTOTPFn = func(s []byte, code string, now time.Time) (bool, int64, error) {
+		evals.Add(1)
+		return real(s, code, now)
+	}
+
+	ctx := context.Background()
+	max := cfg.TOTP.MFALoginMaxAttempts
+	for i := 1; i < max; i++ {
+		if err := engine.VerifyTOTP(ctx, "u1", "000000"); !errors.Is(err, ErrTOTPInvalid) {
+			t.Fatalf("wrong code %d: %v, want ErrTOTPInvalid", i, err)
+		}
+	}
+	if err := engine.VerifyTOTP(ctx, "u1", "000000"); !errors.Is(err, ErrTOTPRateLimited) {
+		t.Fatalf("wrong code %d: %v, want ErrTOTPRateLimited", max, err)
+	}
+	before := evals.Load()
+	if err := engine.VerifyTOTP(ctx, "u1", codeForNow(t, secret, cfg.TOTP)); !errors.Is(err, ErrTOTPRateLimited) {
+		t.Fatalf("the correct code past the budget: %v, want ErrTOTPRateLimited", err)
+	}
+	if evals.Load() != before {
+		t.Fatal("a refused attempt evaluated the code")
+	}
+	if err := engine.VerifyTOTP(ctx, "u1", ""); !errors.Is(err, ErrTOTPRateLimited) {
+		t.Fatalf("an empty code past the budget: %v, want ErrTOTPRateLimited", err)
+	}
+}
+
+// A good code clears the budget it claimed.
+func TestVerifyTOTPSuccessResetsTheClaim(t *testing.T) {
+	cfg := totpTestConfig()
+	cfg.TOTP.EnforceReplayProtection = false
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	secret := enableUserTOTP(t, engine, "u1", cfg)
+
+	ctx := context.Background()
+	for round := 0; round < 3; round++ {
+		for i := 0; i < cfg.TOTP.MFALoginMaxAttempts-1; i++ {
+			_ = engine.VerifyTOTP(ctx, "u1", "000000")
+		}
+		if err := engine.VerifyTOTP(ctx, "u1", codeForNow(t, secret, cfg.TOTP)); err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+	}
+}

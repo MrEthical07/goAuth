@@ -30,15 +30,15 @@ func TestBackupLimiterKeyTenantScoped(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	if err := limiter.RecordFailure(ctx, "t1", "u1"); err != nil {
-		t.Fatalf("record failure (tenant t1) failed: %v", err)
+	if _, err := limiter.Reserve(ctx, "t1", "u1"); err != nil {
+		t.Fatalf("reserve (tenant t1) failed: %v", err)
 	}
 	if !mr.Exists("rl:backup:fail:t1:u1") {
 		t.Fatal("expected tenant-scoped key rl:backup:fail:t1:u1 to be written")
 	}
 
-	if err := limiter.RecordFailure(ctx, "0", "u2"); err != nil {
-		t.Fatalf("record failure (default tenant) failed: %v", err)
+	if _, err := limiter.Reserve(ctx, "0", "u2"); err != nil {
+		t.Fatalf("reserve (default tenant) failed: %v", err)
 	}
 	if !mr.Exists("rl:backup:fail:0:u2") {
 		t.Fatal("expected default-tenant key rl:backup:fail:0:u2 to be written")

@@ -60,10 +60,15 @@ type BackupCodeDeps struct {
 	ConsumeBackupCode   func(context.Context, string, [32]byte) (bool, error)
 	VerifyTOTPForUser   func(context.Context, BackupCodeUser, string) error
 
-	CheckLimiter         func(context.Context, string, string) error
-	RecordLimiterFailure func(context.Context, string, string) error
-	ResetLimiter         func(context.Context, string, string) error
-	IsRateLimited        func(error) bool
+	// ReserveLimiter claims one attempt before a code is evaluated. last is
+	// true when the claim took the final slot of the window, so a wrong code
+	// must be reported as rate limited.
+	ReserveLimiter func(ctx context.Context, tenantID, userID string) (last bool, err error)
+	// ReleaseLimiter gives a claim back for an attempt that was not a wrong
+	// guess (a provider failure). Optional.
+	ReleaseLimiter func(ctx context.Context, tenantID, userID string)
+	ResetLimiter   func(context.Context, string, string) error
+	IsRateLimited  func(error) bool
 
 	RandomIndex func(int) (int, error)
 
@@ -180,7 +185,7 @@ func RunVerifyBackupCode(ctx context.Context, userID, code string, deps BackupCo
 func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code string, deps BackupCodeDeps) error {
 	normalizeBackupCodeDeps(&deps)
 
-	if deps.ConsumeBackupCode == nil || deps.CheckLimiter == nil || deps.RecordLimiterFailure == nil || deps.ResetLimiter == nil {
+	if deps.ConsumeBackupCode == nil || deps.ReserveLimiter == nil || deps.ResetLimiter == nil {
 		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.EngineNotReady, nil)
 		return deps.Errors.EngineNotReady
 	}
@@ -192,7 +197,10 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 		tenantID = deps.TenantIDFromContext(ctx)
 	}
 
-	if err := deps.CheckLimiter(ctx, tenantID, userID); err != nil {
+	// The attempt is claimed before anything is evaluated, so concurrent
+	// requests cannot evaluate more codes than the budget allows.
+	last, err := deps.ReserveLimiter(ctx, tenantID, userID)
+	if err != nil {
 		if deps.IsRateLimited(err) {
 			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, nil)
 			return deps.Errors.BackupCodeRateLimited
@@ -205,11 +213,10 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 
 	if deps.ResolveUserInTenant != nil {
 		if err := deps.ResolveUserInTenant(ctx, tenantID, userID); err != nil {
-			// Counted like a wrong code so cross-tenant probing is
-			// rate-limited. The outcome is not-found regardless of what the
-			// limiter reports; a tripped limit surfaces on the next attempt.
+			// Counted like a wrong code (the claim stays) so cross-tenant
+			// probing is rate-limited. The outcome is not-found; a tripped
+			// limit surfaces on the next attempt.
 			deps.MetricInc(deps.Metrics.BackupCodeFailed)
-			_ = deps.RecordLimiterFailure(ctx, tenantID, userID)
 			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.UserNotFound, map[string]string{
 				"reason": "user_not_found",
 			})
@@ -220,17 +227,11 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 	canonical := CanonicalizeBackupCode(code)
 	if canonical == "" {
 		deps.MetricInc(deps.Metrics.BackupCodeFailed)
-		if err := deps.RecordLimiterFailure(ctx, tenantID, userID); err != nil {
-			if deps.IsRateLimited(err) {
-				emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, map[string]string{
-					"reason": "invalid_format",
-				})
-				return deps.Errors.BackupCodeRateLimited
-			}
-			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+		if last {
+			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, map[string]string{
 				"reason": "invalid_format",
 			})
-			return deps.Errors.BackupCodeUnavailable
+			return deps.Errors.BackupCodeRateLimited
 		}
 		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeInvalid, map[string]string{
 			"reason": "invalid_format",
@@ -240,6 +241,9 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 
 	ok, err := deps.ConsumeBackupCode(ctx, userID, BackupCodeHash(userID, canonical))
 	if err != nil {
+		if deps.ReleaseLimiter != nil {
+			deps.ReleaseLimiter(ctx, tenantID, userID)
+		}
 		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
 			"reason": "consume_failed",
 		})
@@ -247,17 +251,11 @@ func RunVerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code str
 	}
 	if !ok {
 		deps.MetricInc(deps.Metrics.BackupCodeFailed)
-		if err := deps.RecordLimiterFailure(ctx, tenantID, userID); err != nil {
-			if deps.IsRateLimited(err) {
-				emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, map[string]string{
-					"reason": "invalid_code",
-				})
-				return deps.Errors.BackupCodeRateLimited
-			}
-			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+		if last {
+			emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeRateLimited, map[string]string{
 				"reason": "invalid_code",
 			})
-			return deps.Errors.BackupCodeUnavailable
+			return deps.Errors.BackupCodeRateLimited
 		}
 		emitBackupCodeFailure(ctx, deps, userID, tenantID, deps.Errors.BackupCodeInvalid, map[string]string{
 			"reason": "invalid_code",
