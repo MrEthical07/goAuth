@@ -67,6 +67,7 @@ type Engine struct {
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
 	passwordCAS           PasswordHashCASUpdater
+	statusCAS             AccountStatusCASUpdater
 	roleSwitchProvider    RoleSwitchProvider
 	roleSwitchLimiter     *limiters.RoleSwitchLimiter
 	externalProvider      ExternalIdentityProvider
@@ -2360,6 +2361,7 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		VerificationTTL:     cfg.EmailVerification.VerificationTTL,
 		MaxAttempts:         cfg.EmailVerification.MaxAttempts,
 		ActiveStatus:        uint8(AccountActive),
+		PendingStatus:       uint8(AccountPendingVerification),
 		TenantIDFromContext: tenantIDFromContext,
 		Now:                 time.Now,
 		AccountStatusError: func(status uint8) error {
@@ -2456,6 +2458,17 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		deps.WithTenant = WithTenantID
 		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
 			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
+		}
+		if e.statusCAS != nil {
+			deps.UpdateStatusIf = func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error) {
+				return e.statusCAS.UpdateAccountStatusIf(ctx, tenantID, userID, AccountStatus(expected), AccountStatus(next))
+			}
+			deps.InvalidateSessions = func(ctx context.Context, tenantID, userID string) error {
+				if err := e.revokeUserSessions(ctx, tenantID, userID); err != nil {
+					return errors.Join(ErrSessionInvalidationFailed, err)
+				}
+				return nil
+			}
 		}
 	}
 	if e == nil || e.userProvider == nil {

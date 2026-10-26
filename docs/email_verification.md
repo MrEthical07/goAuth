@@ -179,6 +179,8 @@ err = engine.ConfirmEmailVerification(ctx, challenge)
 - When `RequireForLogin` is true, `CreateAccount` sets status to `AccountPendingVerification`.
 - OTP mode limits are enforced more strictly in production mode.
 - UUID strategy: the verificationID *is* the code — do not log it.
+- Verification only moves an account **from pending verification to active**. An account that was disabled, locked or deleted after the challenge was issued is never made active again by confirming it: the confirmation returns the account's status error and leaves the status alone.
+- **`AccountStatusCASUpdater`** (optional, detected on the `UserProvider` at `Build`): `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)` stores `next` only if the current status is exactly `expected` (`UPDATE ... WHERE status = $expected`), advances the account version when it applies, and reports whether it did; a status that no longer matches is `(false, nil)`. With it the transition is exact. Without it the engine reads the account again immediately before the write and transitions only from pending verification; that narrows the window to the gap between the read and the write but does not close it.
 
 ## Architecture
 

@@ -201,6 +201,30 @@ type PasswordHashCASUpdater interface {
 	CompareAndSwapPasswordHash(ctx context.Context, tenantID, userID, expectedOldHash, newHash string) (applied bool, err error)
 }
 
+// AccountStatusCASUpdater is an optional capability interface a [UserProvider]
+// can additionally implement so email verification cannot undo a status change
+// that landed after the verification was read. It is detected via type
+// assertion at [Builder.Build].
+//
+// UpdateAccountStatusIf must store next only if the account's current status
+// is exactly expected, in one atomic step (UPDATE ... WHERE status =
+// $expected), and report whether it did. Like [UserProvider.UpdateAccountStatus]
+// it must advance the account version when it applies. A status that no longer
+// matches is (false, nil), not an error. tenantID is the tenant the engine
+// resolved itself.
+//
+// The engine uses it for the pending-verification to active transition that
+// confirming an email address performs; a disabled, locked or deleted account
+// is then never made active again by a verification that was in flight when it
+// was blocked. Without it the engine reads the account again immediately before
+// the write and transitions only from pending-verification, which narrows the
+// window to the gap between that read and the write but cannot close it.
+//
+//	Docs: docs/email_verification.md
+type AccountStatusCASUpdater interface {
+	UpdateAccountStatusIf(ctx context.Context, tenantID, userID string, expected, next AccountStatus) (applied bool, err error)
+}
+
 // RoleSwitchProvider is an optional capability interface a [UserProvider]
 // can additionally implement to enable [Engine.SwitchRole]. It is detected
 // via type assertion at [Builder.Build]; when [Config.RoleSwitch] is enabled

@@ -49,6 +49,9 @@ type EmailVerificationDeps struct {
 	VerificationTTL time.Duration
 	MaxAttempts     int
 	ActiveStatus    uint8
+	// PendingStatus is the status an account has until its address is verified;
+	// it is the only one verification moves to ActiveStatus.
+	PendingStatus uint8
 
 	TenantIDFromContext func(context.Context) string
 	AccountStatusError  func(uint8) error
@@ -85,6 +88,13 @@ type EmailVerificationDeps struct {
 	WithTenant func(ctx context.Context, tenantID string) context.Context
 
 	UpdateStatusAndInvalidate func(context.Context, string, uint8) error
+
+	// UpdateStatusIf and InvalidateSessions, when both are set, replace
+	// UpdateStatusAndInvalidate for the pending-to-active transition: the
+	// status is written only if it is still the expected one, and the user's
+	// sessions are ended after a write that applied.
+	UpdateStatusIf     func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error)
+	InvalidateSessions func(ctx context.Context, tenantID, userID string) error
 
 	SaveVerificationRecord    func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
 	ConsumeVerificationRecord func(context.Context, string, string, [32]byte, int, int) (EmailVerificationStoreRecord, error)
@@ -400,11 +410,8 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 		return statusErr
 	}
 
-	// Downstream status/session work reads the tenant from context, so hand
-	// it the tenant this record was actually loaded under rather than the
-	// caller's, which may be absent or different for a tenant-carrying
-	// challenge.
-	if err := deps.UpdateStatusAndInvalidate(deps.WithTenant(ctx, tenantID), record.UserID, deps.ActiveStatus); err != nil {
+	outcome, err := activatePendingAccount(ctx, tenantID, user, deps)
+	if err != nil {
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, user.UserID, user.TenantID, "", err, func() map[string]string {
 			return map[string]string{
@@ -415,7 +422,11 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 	}
 
 	deps.MetricInc(deps.Metrics.EmailVerificationSuccess)
-	deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, nil)
+	var meta func() map[string]string
+	if outcome == activationAlreadyActive {
+		meta = func() map[string]string { return map[string]string{"noop": "already_active"} }
+	}
+	deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, meta)
 	return nil
 }
 
@@ -516,11 +527,8 @@ func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code s
 		return statusErr
 	}
 
-	// Downstream status/session work reads the tenant from context, so hand
-	// it the tenant this record was actually loaded under rather than the
-	// caller's, which may be absent or different for a tenant-carrying
-	// challenge.
-	if err := deps.UpdateStatusAndInvalidate(deps.WithTenant(ctx, tenantID), record.UserID, deps.ActiveStatus); err != nil {
+	outcome, err := activatePendingAccount(ctx, tenantID, user, deps)
+	if err != nil {
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, user.UserID, user.TenantID, "", err, func() map[string]string {
 			return map[string]string{
@@ -531,8 +539,77 @@ func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code s
 	}
 
 	deps.MetricInc(deps.Metrics.EmailVerificationSuccess)
-	deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, nil)
+	var meta func() map[string]string
+	if outcome == activationAlreadyActive {
+		meta = func() map[string]string { return map[string]string{"noop": "already_active"} }
+	}
+	deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, true, user.UserID, user.TenantID, "", nil, meta)
 	return nil
+}
+
+type activationOutcome int
+
+const (
+	activationDone activationOutcome = iota
+	// activationAlreadyActive: the account was found Active when it was about
+	// to be activated; nothing was written.
+	activationAlreadyActive
+)
+
+// activatePendingAccount moves the account from pending verification to
+// active, and only from pending: a disable, lock or delete that landed after
+// the account was read must not be undone by the verification that was in
+// flight.
+//
+// With a provider that implements compare-and-set the write is exact. Without
+// one the account is read again immediately before the write and the status is
+// re-checked, which narrows the window to the gap between that read and the
+// write but cannot close it.
+//
+// Downstream status and session work reads the tenant from the context, so it
+// is handed the tenant the verification record was loaded under rather than
+// the caller's, which may be absent or different for a tenant-carrying
+// challenge.
+func activatePendingAccount(ctx context.Context, tenantID string, user EmailVerificationUser, deps EmailVerificationDeps) (activationOutcome, error) {
+	scoped := deps.WithTenant(ctx, tenantID)
+
+	if deps.UpdateStatusIf != nil && deps.InvalidateSessions != nil {
+		applied, err := deps.UpdateStatusIf(scoped, tenantID, user.UserID, deps.PendingStatus, deps.ActiveStatus)
+		if err != nil {
+			return activationDone, err
+		}
+		if applied {
+			return activationDone, deps.InvalidateSessions(scoped, tenantID, user.UserID)
+		}
+		// Refused: the status is no longer pending. Say why.
+		return judgeStatusBeforeActivation(ctx, tenantID, user.UserID, deps)
+	}
+
+	if outcome, err := judgeStatusBeforeActivation(ctx, tenantID, user.UserID, deps); err != nil || outcome == activationAlreadyActive {
+		return outcome, err
+	}
+	return activationDone, deps.UpdateStatusAndInvalidate(scoped, user.UserID, deps.ActiveStatus)
+}
+
+// judgeStatusBeforeActivation reads the account and reports whether it can
+// still be activated: nil with activationDone when it is pending,
+// activationAlreadyActive when it is active, the status error when it is
+// blocking.
+func judgeStatusBeforeActivation(ctx context.Context, tenantID, userID string, deps EmailVerificationDeps) (activationOutcome, error) {
+	fresh, err := deps.GetUserByIDInTenant(ctx, tenantID, userID)
+	if err != nil {
+		return activationDone, deps.Errors.UserNotFound
+	}
+	if fresh.Status == deps.ActiveStatus {
+		return activationAlreadyActive, nil
+	}
+	if statusErr := deps.AccountStatusError(fresh.Status); statusErr != nil {
+		return activationDone, statusErr
+	}
+	if fresh.Status != deps.PendingStatus {
+		return activationDone, deps.Errors.EmailVerificationUnavailable
+	}
+	return activationDone, nil
 }
 
 func normalizeEmailVerificationDeps(deps *EmailVerificationDeps) {
