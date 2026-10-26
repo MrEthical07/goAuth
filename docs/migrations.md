@@ -89,11 +89,11 @@ Part 2 of the audit fixes (the CHANGELOG lists each with its finding ID):
   `ErrDeviceBindingRejected`; detect-only and off are unchanged.
 - **Email verification** reads the account again right before the status write; an
   account blocked meanwhile is returned as its status error and left blocked.
-- `Build` rejects `TOTP.MFALoginChallengeTTL` above 12 hours (the default is 3
-  minutes); the challenge is fenced with a revocation epoch kept 24 hours.
+- The revocation epoch is kept for `max(24h, TOTP.MFALoginChallengeTTL + 1h)` after the
+  last revocation, so `Build` accepts any MFA challenge TTL.
 - `Config.Lint()` raises `refresh_user_recheck_off` (INFO) for every config that has
   not turned on `Security.RecheckUserOnRefresh`.
-- New Redis keys: `aue:<tenant>:<user>` (24 hours, refreshed by each delete-all) and
+- New Redis keys: `aue:<tenant>:<user>` (at least 24 hours, refreshed by each delete-all) and
   `amc:<challenge>:ep` (the MFA challenge's TTL). During a rolling deploy a
   revocation made by a v0.8.0 instance does not move the epoch, so the fence covers
   only revocations made by v0.8.1 instances.

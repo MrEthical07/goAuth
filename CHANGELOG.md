@@ -158,7 +158,7 @@ three follow-ups found while reviewing these fixes (marked below). Part 3
 - **R2-08 (high): a login can no longer store a session after a revocation that
   it raced.** Every delete-all (password change or reset, account disable, TOTP
   change, email change, `LogoutAll`, `InvalidateUserSessions`) now also bumps a
-  per-user revocation epoch (`aue:<tenant>:<user>`, kept for 24 hours). Password
+  per-user revocation epoch (`aue:<tenant>:<user>`, kept for at least 24 hours). Password
   login, MFA confirmation, external sign-in and auto-login read the epoch before
   they read the account, and the session is stored by one script that refuses
   when the epoch moved. On a refusal the account is read once more: a blocking
@@ -276,9 +276,10 @@ three follow-ups found while reviewing these fixes (marked below). Part 3
   `ErrDeviceBindingRejected`. (R2-17)
 - **Email verification**: the account is read again right before the status
   write, and a blocked account is returned as its status error. (R2-13)
-- `Build` rejects `TOTP.MFALoginChallengeTTL` above 12 hours (default 3 minutes): the
-  challenge is fenced with the revocation epoch, which is kept 24 hours after the
-  last revocation. (R2-08)
+- The revocation epoch is kept for `max(24h, TOTP.MFALoginChallengeTTL + 1h)` after the
+  last revocation, computed once at `Build`, so an MFA challenge, which is fenced with
+  the epoch of its password step, never outlives the evidence of a revocation made
+  after it was issued. `Build` accepts any challenge TTL. (R2-08)
 - `Config.Lint()` raises `refresh_user_recheck_off` (INFO) for every config that
   has not enabled the user re-read.
 - Redis traffic: a login adds a `GET aue:*`; every delete-all adds an `INCR` and

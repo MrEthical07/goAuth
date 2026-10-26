@@ -353,3 +353,30 @@ func TestRedisCompat_MFAChallengeEpoch(t *testing.T) {
 		})
 	}
 }
+
+func TestRedisCompat_DeleteAllEpochLifeFollowsTheConfiguredTTL(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			ctx := context.Background()
+
+			def := session.NewStore(rdb, "as", true, false, 0)
+			if err := def.DeleteAllForUser(ctx, "t-ttl", "u-def"); err != nil {
+				t.Fatal(err)
+			}
+			if ttl := rdb.TTL(ctx, "aue:t-ttl:u-def").Val(); ttl <= 23*time.Hour || ttl > 24*time.Hour {
+				t.Fatalf("default epoch TTL = %v, want 24 h", ttl)
+			}
+
+			long := session.NewStore(rdb, "as", true, false, 0).WithRevocationEpochTTL(31 * time.Hour)
+			if err := long.DeleteAllForUser(ctx, "t-ttl", "u-long"); err != nil {
+				t.Fatal(err)
+			}
+			if ttl := rdb.TTL(ctx, "aue:t-ttl:u-long").Val(); ttl <= 30*time.Hour || ttl > 31*time.Hour {
+				t.Fatalf("long epoch TTL = %v, want 31 h", ttl)
+			}
+		})
+	}
+}

@@ -243,6 +243,9 @@ func (b *Builder) Build() (*Engine, error) {
 	if policies := sessionProfilePolicies(cfg.SessionProfiles.Profiles); policies != nil {
 		store.WithProfiles(policies)
 	}
+	// An MFA challenge pins the revocation epoch of its password step for its
+	// whole life, so the epoch has to outlive the longest challenge.
+	store.WithRevocationEpochTTL(cfg.TOTP.MFALoginChallengeTTL + time.Hour)
 
 	engine := &Engine{
 		config:       cloneConfig(cfg),

@@ -190,7 +190,7 @@ created under it.
 | `Algorithm`                 | `string`      | `"SHA1"`  | TOTP hash algorithm |
 | `Skew`                      | `int`         | 1         | Allowed time-step skew |
 | `EnforceReplayProtection`   | `bool`        | `true`    | Reject re-used TOTP codes |
-| `MFALoginChallengeTTL`      | `time.Duration`| 3 min    | MFA challenge lifetime; `Build` rejects more than 12h (the challenge is fenced with a revocation epoch that is kept 24h) |
+| `MFALoginChallengeTTL`      | `time.Duration`| 3 min    | MFA challenge lifetime; the revocation epoch it is fenced with is kept `max(24h, this + 1h)` |
 | `MFALoginMaxAttempts`       | `int`         | 5         | Max MFA confirm attempts |
 | `BackupCodeCount`           | `int`         | 10        | Number of backup codes |
 | `BackupCodeLength`          | `int`         | 10        | Backup code character length |
