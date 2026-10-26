@@ -68,7 +68,8 @@ Part 2 of the audit fixes (the CHANGELOG lists each with its finding ID):
 - **A login that races a revocation is refused instead of storing a session.** A
   password change or reset, a disable, or any logout-all that lands between the read
   of the account and the store makes that login fail with `ErrInvalidCredentials` (or
-  the status error), or retry once under the new epoch if the hash is unchanged.
+  the status error), or retry once under the new epoch if neither the hash nor the account version
+  changed (so a factor enrolled meanwhile makes the user sign in again).
 - **MFA login.** The caps are enforced at the confirmation, not only at the password
   step, so a user holding several challenges gets `ErrSessionLimitExceeded` at the
   confirmation that would pass the cap. `EnforceSingleSession` ends the other

@@ -163,7 +163,8 @@ three follow-ups found while reviewing these fixes (marked below). Part 3
   they read the account, and the session is stored by one script that refuses
   when the epoch moved. On a refusal the account is read once more: a blocking
   status is returned as that status's error, a password hash that is no longer the
-  one that was verified is `ErrInvalidCredentials`, and an unrelated logout-all
+  one that was verified or an account version that moved (a factor enrolled, a
+  role or status changed) is `ErrInvalidCredentials`, and an unrelated logout-all
   retries once under the new epoch. The MFA confirmation is fenced with the epoch
   the password step ran under (stored next to the challenge, `amc:<id>:ep`), so a
   revocation between the two steps refuses the confirmation (`ErrMFALoginInvalid`)
