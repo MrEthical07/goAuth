@@ -89,7 +89,7 @@ func (c *Config) Lint() LintResult
 | `external_signup_passwordless` | INFO | `ExternalAuth.Enabled` with `AllowSignup`: accounts are created without a password (they can set one through password reset) |
 | `external_key_max_stale_long` | WARN | `ExternalAuth.Enabled` with `KeyMaxStale` above 72h: a revoked or leaked provider key stays trusted that long during an outage |
 
-Summary: 15 INFO, 18 WARN, 4 HIGH.
+Summary: 16 INFO, 18 WARN, 4 HIGH.
 
 ### No-op knob warnings
 

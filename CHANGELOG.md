@@ -19,11 +19,11 @@ TTL, no stored format changed).
 ### Security fixes (audit)
 
 The security audit of v0.8.0 (run 2, `R2-xx` below) is fixed in three pull
-requests, shipped together as v0.8.1. **This is part 1 of 3: limiters, brute force and
+requests, shipped together as v0.8.1. **Part 1 of 3: limiters, brute force and
 enumeration** (R2-01, R2-04, R2-05, R2-06, R2-10, R2-14, R2-15, R2-16, R2-18,
 R2-19, R2-21, R2-22, R2-23 and the audit's needs-validation record on unbounded
-identifiers). Parts 2 (session lifecycle and revocation) and 3 (MFA artifacts,
-recovery, docs) follow.
+identifiers). **Part 2 of 3: session lifecycle and revocation** follows part 1
+below. Part 3 (MFA artifacts, recovery, docs) follows.
 
 These are security fixes, so the unchanged-when-unused baselines moved where a
 fix required it; `session/golden_bytes_test.go` is untouched and no session
@@ -146,6 +146,156 @@ that enables nothing new is under **Behavior changes** below.
 - Auto-lockout's lock itself is a provider write that the attempt crossing the
   threshold performs and a wrong password does not; that difference in work is not
   equalized.
+
+### Security fixes (audit), part 2 of 3: session lifecycle and revocation
+
+R2-07, R2-08, R2-09, R2-11, R2-12, R2-13, R2-17, R2-20, R2-27, R2-28, R2-29, plus
+three follow-ups found while reviewing these fixes (marked below). Part 3
+(MFA artifacts, recovery, docs) follows.
+
+#### Fixed
+
+- **R2-08 (high): a login can no longer store a session after a revocation that
+  it raced.** Every delete-all (password change or reset, account disable, TOTP
+  change, email change, `LogoutAll`, `InvalidateUserSessions`) now also bumps a
+  per-user revocation epoch (`aue:<tenant>:<user>`, kept for an hour). Password
+  login, MFA confirmation, external sign-in and auto-login read the epoch before
+  they read the account, and the session is stored by one script that refuses
+  when the epoch moved. On a refusal the account is read once more: a blocking
+  status is returned as that status's error, a password hash that is no longer the
+  one that was verified is `ErrInvalidCredentials`, and an unrelated logout-all
+  retries once under the new epoch. The MFA confirmation is fenced with the epoch
+  the password step ran under (stored next to the challenge, `amc:<id>:ep`), so a
+  revocation between the two steps refuses the confirmation (`ErrMFALoginInvalid`)
+  instead of being read as the epoch to issue under (follow-up, found in review).
+  Residual window: auto-login after `CreateAccount` reads the epoch right after
+  the account is created.
+- **R2-27 (high): the session caps cannot be exceeded by parallel logins.** The
+  per-user, concurrent-login and tenant caps are checked inside the script that
+  stores the session, and they are checked again at the MFA confirmation, which
+  used to store as many sessions as there were challenges. A tenant counter that
+  drifted upwards is reconciled by a compare-and-set against the value read
+  before the scan, so a session saved during the scan stays counted (follow-up,
+  found in review); the password step no longer writes the scan back
+  (follow-up).
+- **R2-28: single-session mode no longer ends the account's sessions at the
+  password step.** With MFA required the other sessions were ended before the
+  second factor was proven. The password step only checks the caps; the other
+  sessions are ended by the script that stores the new one, after everything
+  else passed.
+- **R2-29: the tenant session estimate counts only the tenant's own keys.** The
+  scan pattern is glob-escaped and only keys whose remainder is a session ID are
+  counted, so tenants `a` and `a:b`, or a tenant ID containing `* ? [ ]`, no
+  longer count against each other.
+- **R2-09: revocation reaches the sessions it is meant to.** Password change,
+  password reset, TOTP enable and disable, email change and a blocking account
+  status revoke in the request's tenant and, when it differs, the provider
+  record's. One helper decides; a static test keeps call sites from choosing a
+  tenant themselves.
+- **R2-12: a retried disable, lock or delete revokes.** A blocking target status
+  always runs the revocation, also when the stored status already equals it and
+  also when the provider did not advance the account version.
+- **R2-11 (opt-in): `Security.RecheckUserOnRefresh`.** Refresh re-reads the user
+  through the tenant-scoped lookup and ends the session if the permission, role
+  or account version differs from the session's copy or the status is blocking
+  (`ErrSessionNotFound` or the status error); an unreachable provider is
+  `ErrSystemUnavailable` and nothing is rotated. The docs said the version
+  stamps detect a change in the user record; they only compare the token with
+  the session. They now say so, and that without the flag the application must
+  call `InvalidateUserSessions` on any role, permission or status change. New
+  lint note `refresh_user_recheck_off` (INFO).
+- **R2-17: Refresh applies enforced device binding.** In enforce mode (IP or
+  user agent) Refresh reads the session without changing it and, if the presented
+  token is its current one, applies the check Validate and role switching use
+  before rotating. A mismatch is `ErrDeviceBindingRejected` and rotates nothing;
+  a store outage while reading the session is `ErrSystemUnavailable` (follow-up,
+  found in review). Off and detect-only modes read nothing extra.
+- **R2-20: migrating a legacy session blob cannot undo a refresh rotation.** The
+  rewrite of a pre-v5 blob is one script that compares the stored bytes with the
+  bytes that were read and writes, keeping the TTL, only if they match.
+- **R2-07: the rehash-on-login upgrade cannot overwrite a newer password.**
+  Optional `PasswordHashCASUpdater` (below); without it the user is re-read right
+  before the write and the upgrade is skipped unless the hash is still the verified
+  one (narrows the window, does not close it). The upgrade runs after the session
+  is issued or the MFA challenge created, so a login refused later upgrades
+  nothing.
+- **R2-13: email verification activates only a pending account.** Optional
+  `AccountStatusCASUpdater` (below) for the pending-to-active write; without it
+  the account is read again right before the write and only a pending one is
+  activated. A disable, lock or delete that landed meanwhile is returned as that
+  status's error and left alone.
+
+#### Added
+
+- Optional provider capabilities, detected by type assertion at `Build`:
+  `PasswordHashCASUpdater{CompareAndSwapPasswordHash(ctx, tenantID, userID,
+  expectedOldHash, newHash string) (applied bool, err error)}` and
+  `AccountStatusCASUpdater{UpdateAccountStatusIf(ctx, tenantID, userID string,
+  expected, next AccountStatus) (applied bool, err error)}`.
+- `Security.RecheckUserOnRefresh` (default `false`).
+- `session`: `Store.RevocationEpoch`, `Store.SaveFenced`, `SaveLimits`,
+  `ErrSessionFenced`, `ErrUserSessionLimit`, `ErrTenantSessionLimit`.
+- New Redis keys: `aue:<tenant>:<user>` (revocation epoch; integer; one hour,
+  refreshed on every bump; written by every delete-all), and `amc:<challenge>:ep`
+  (the epoch the password step ran under; the challenge's TTL; written when an
+  MFA challenge is created, deleted with it). The session record, the MFA
+  challenge record and every other stored format are unchanged
+  (`session/golden_bytes_test.go` and `internal/stores/golden_bytes_test.go` are
+  untouched).
+- Lint code `refresh_user_recheck_off` (INFO); the reference is now 38 codes (16
+  INFO, 18 WARN, 4 HIGH).
+- Real-Redis `TestRedisCompat` coverage for the fenced save, the epoch bump, the
+  legacy-schema migration, the tenant-counter reconciliation and the MFA
+  challenge epoch.
+
+#### Behavior changes (nothing new enabled)
+
+- **Login**: after the identifier lookup the account is read once more by ID (the
+  epoch is read first), so a provider sees one extra `GetUserByID` per login; the
+  session is stored by one script (the caps are enforced inside it) instead of a
+  count, a `SET` and a counter increment; a login that raced a password change,
+  a disable or an unrelated logout-all is refused (`ErrInvalidCredentials`, or
+  the status error) or retried once instead of storing a session. (R2-08)
+- **MFA login**: the session caps are enforced at the confirmation
+  (`ErrSessionLimitExceeded`, `ErrTenantSessionLimitExceeded`); the password step
+  does not end sessions in single-session mode; a confirmation after a
+  revocation since the password step is `ErrMFALoginInvalid`. (R2-27, R2-28, R2-08)
+- **Rehash on login** runs after the session is issued (or the MFA challenge is
+  created): a login refused by the session cap, device binding or an MFA outage
+  no longer upgrades the hash, and a hash that changed since it was verified is
+  not replaced. (R2-07)
+- **Account status**: `DisableAccount`, `LockAccount` and `DeleteAccount` revoke
+  the user's sessions on every call, including one whose target status the user
+  already has. (R2-12)
+- **Revocation** after a password change or reset, a TOTP change, an email change
+  or a blocking status also covers the request's tenant when the provider record
+  carries another. (R2-09)
+- **Refresh** with `DeviceBinding.EnforceIPBinding` or
+  `EnforceUserAgentBinding`: a request from another address or agent gets
+  `ErrDeviceBindingRejected`. (R2-17)
+- **Email verification**: the account is read again right before the status
+  write, and a blocked account is returned as its status error. (R2-13)
+- `Config.Lint()` raises `refresh_user_recheck_off` (INFO) for every config that
+  has not enabled the user re-read.
+- Redis traffic: a login adds a `GET aue:*`; every delete-all adds an `INCR` and
+  `PEXPIRE` inside its script; an MFA login adds a `SET` and a `GET` of the
+  challenge's `:ep` companion and a `DEL` with the challenge.
+
+#### Notes
+
+- The fence protects against revocations done by instances that bump the epoch
+  (v0.8.1); during a rolling deploy a revocation made by a v0.8.0 instance does
+  not move it.
+- The compare-and-set that reconciles the tenant counter compares the counter's
+  value, so a save and a delete that cancel out during one scan can still leave a
+  count off by the operations that overlapped it; the counter has always been an
+  estimate that sessions expiring on their own pull away from the truth.
+- The password-hash and status compare-and-set capabilities narrow, and with a
+  provider that implements them close, the windows described above. Without them
+  the re-read leaves a gap between the read and the write.
+- The regression tests fail on the branch the audit was run against and pass
+  here; the tests that need a new option or interface compile there against a
+  stub of it.
 
 ---
 

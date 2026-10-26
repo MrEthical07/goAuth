@@ -423,7 +423,7 @@ engine**:
 - `external_autolink_trusts_active_status` (info) — `ExternalAuth.AutoLinkVerifiedEmail` treats an Active account as email-verified, which legacy or imported accounts may not be; `external_signup_passwordless` (info) — `ExternalAuth.AllowSignup` creates accounts without a password; `external_key_max_stale_long` (warn) — `ExternalAuth.KeyMaxStale` above 72h keeps trusting cached provider keys that long during an outage
 - `*_noop` codes — config knobs that are accepted but never read by the engine (see the field tables above)
 
-The complete code list (37 codes: 15 INFO, 18 WARN, 4 HIGH) lives in
+The complete code list (38 codes: 16 INFO, 18 WARN, 4 HIGH) lives in
 [config_lint.md](config_lint.md).
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)

@@ -56,6 +56,70 @@ each with its finding ID):
   (WARN, `AutoLockoutEnabled` with a non-zero `AutoLockoutDuration`). If you gate
   startup on lint output at INFO or WARN, expect the new codes.
 
+### Session lifecycle and revocation: what changes with nothing enabled
+
+Part 2 of the audit fixes (the CHANGELOG lists each with its finding ID):
+
+- **Login reads the account twice.** After the identifier lookup the account is read
+  again by ID, once the user's revocation epoch (`aue:<tenant>:<user>`) has been
+  read. A provider sees one extra `GetUserByID` (the tenant-scoped one when
+  multi-tenancy is on) per login. The session is then stored by one script that also
+  enforces the per-user, concurrent-login and tenant caps.
+- **A login that races a revocation is refused instead of storing a session.** A
+  password change or reset, a disable, or any logout-all that lands between the read
+  of the account and the store makes that login fail with `ErrInvalidCredentials` (or
+  the status error), or retry once under the new epoch if the hash is unchanged.
+- **MFA login.** The caps are enforced at the confirmation, not only at the password
+  step, so a user holding several challenges gets `ErrSessionLimitExceeded` at the
+  confirmation that would pass the cap. `EnforceSingleSession` ends the other
+  sessions when the new one is stored, no longer at the password step. A
+  confirmation after a revocation (password change, logout-all) since the password
+  step is `ErrMFALoginInvalid`: the user signs in again.
+- **Rehash on login** runs after the session is issued or the MFA challenge is
+  created, so a refused login upgrades nothing; add `PasswordHashCASUpdater` to your
+  provider (below) to make the write exact.
+- **Account status.** `DisableAccount`, `LockAccount` and `DeleteAccount` revoke the
+  user's sessions on every call, also when the user already has that status.
+- **Revocation tenant.** Password change and reset, TOTP changes, email change and
+  blocking status changes revoke in the request's tenant and, when it differs, the
+  provider record's.
+- **Refresh with enforced device binding** (`DeviceBinding.EnforceIPBinding` or
+  `EnforceUserAgentBinding`) rejects a request from another address or agent with
+  `ErrDeviceBindingRejected`; detect-only and off are unchanged.
+- **Email verification** reads the account again right before the status write; an
+  account blocked meanwhile is returned as its status error and left blocked.
+- `Config.Lint()` raises `refresh_user_recheck_off` (INFO) for every config that has
+  not turned on `Security.RecheckUserOnRefresh`.
+- New Redis keys: `aue:<tenant>:<user>` (one hour, refreshed by each delete-all) and
+  `amc:<challenge>:ep` (the MFA challenge's TTL). During a rolling deploy a
+  revocation made by a v0.8.0 instance does not move the epoch, so the fence covers
+  only revocations made by v0.8.1 instances.
+
+### Optional: stop role and permission changes from outliving the session
+
+The version stamps in a session and in its access token are copies taken at login;
+strict `Validate` compares the two, not the user record. Either call
+`InvalidateUserSessions` on every role, permission or status change (required
+unless you do the next), or set `Security.RecheckUserOnRefresh = true`: Refresh then
+re-reads the user (one provider read per refresh) and ends the session if a stamp
+differs or the status is blocking. Your provider must return `ErrUserNotFound` for a
+user that no longer exists; any other error is an outage and Refresh answers
+`ErrSystemUnavailable`.
+
+### Optional: compare-and-set provider capabilities
+
+Two optional interfaces on your `UserProvider`, detected at `Build`:
+
+- `PasswordHashCASUpdater` — `CompareAndSwapPasswordHash(ctx, tenantID, userID,
+  expectedOldHash, newHash) (applied bool, err error)`: `UPDATE ... SET password_hash
+  = $new WHERE id = $id AND password_hash = $expected`, `applied` is whether a row
+  changed. Without it the rehash-on-login upgrade re-reads the user right before the
+  write.
+- `AccountStatusCASUpdater` — `UpdateAccountStatusIf(ctx, tenantID, userID, expected,
+  next AccountStatus) (applied bool, err error)`: the same for the status (advance
+  the account version when it applies). Without it email verification re-reads the
+  account right before the write and only activates a pending one.
+
 ### Optional: per-IP login throttle
 
 Set `Security.LoginIPLimiter = LoginIPLimiterConfig{Enabled: true, MaxAttempts: 20, Cooldown: 15 * time.Minute}`
