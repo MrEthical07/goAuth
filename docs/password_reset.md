@@ -23,7 +23,6 @@ Password reset provides a secure lifecycle for resetting user passwords via toke
 | `ErrPasswordResetRateLimited` | Too many requests |
 | `ErrPasswordResetAttempts` | Max confirmation attempts exceeded |
 | `ErrPasswordPolicy` | New password doesn't meet policy |
-| `ErrPasswordReuse` | New password same as current |
 
 ## Strategies
 
@@ -61,7 +60,7 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 - Challenge tokens are SHA-256 hashed before storage.
 - Rate limiting protects both request and confirm endpoints.
 - All existing sessions are invalidated after successful reset.
-- Password reuse is rejected.
+- Reuse of the current password is **not** checked: confirming a reset applies the password policy to the new password and nothing more (`ChangePassword` is the flow that rejects a new password equal to the current one with `ErrPasswordReuse`). Enforce reuse rules in your own layer if you need them on reset.
 
 ## Edge Cases & Gotchas
 
@@ -86,7 +85,7 @@ Engine.RequestPasswordReset(identifier)
 Engine.ConfirmPasswordReset(challenge, newPassword)
   ├─ PasswordResetLimiter.CheckConfirm
   ├─ PasswordResetStore.Consume (CAS + constant-time compare)
-  ├─ Password policy + reuse check
+  ├─ Password policy (no reuse check)
   ├─ password.Argon2.Hash(newPassword)
   ├─ UserProvider.UpdatePasswordHash
   └─ session.Store.DeleteAllForUser (invalidate sessions)

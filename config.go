@@ -305,8 +305,18 @@ type SecurityConfig struct {
 	// EnableIPBinding is a no-op: the engine never reads it. IP binding is
 	// controlled by DeviceBinding.Enabled with EnforceIPBinding/DetectIPChange.
 	// Enabling it produces the security_ip_binding_noop lint warning.
-	EnableIPBinding           bool
-	EnableUserAgentBinding    bool
+	EnableIPBinding bool
+
+	// EnableUserAgentBinding is a no-op: the engine never reads it. User-agent
+	// binding is controlled by DeviceBinding.Enabled with
+	// EnforceUserAgentBinding/DetectUserAgentChange. Enabling it produces the
+	// security_user_agent_binding_noop lint warning. The default is false (it
+	// used to be true, which suggested a protection that was never active).
+	//
+	// Deprecated: use DeviceBinding.EnforceUserAgentBinding and
+	// DeviceBinding.DetectUserAgentChange.
+	EnableUserAgentBinding bool
+
 	EnableLoginFailureLimiter bool
 
 	// EnableIPSignal is a no-op: the engine never reads it. Enabling it
@@ -998,7 +1008,7 @@ func defaultConfig() Config {
 		Security: SecurityConfig{
 			ProductionMode:               false,
 			EnableIPBinding:              false,
-			EnableUserAgentBinding:       true,
+			EnableUserAgentBinding:       false,
 			EnableLoginFailureLimiter:    true,
 			EnableIPSignal:               false,
 			EnforceRefreshRotation:       true,
@@ -2352,6 +2362,11 @@ func (c *Config) Lint() LintResult {
 	if c.Security.EnableIPBinding {
 		warn(LintWarn, "security_ip_binding_noop",
 			"Security.EnableIPBinding is not read by the engine; IP binding is controlled by DeviceBinding.Enabled with EnforceIPBinding/DetectIPChange")
+	}
+
+	if c.Security.EnableUserAgentBinding {
+		warn(LintWarn, "security_user_agent_binding_noop",
+			"Security.EnableUserAgentBinding is not read by the engine; user-agent binding is controlled by DeviceBinding.Enabled with EnforceUserAgentBinding/DetectUserAgentChange")
 	}
 
 	if c.Security.EnableIPSignal {

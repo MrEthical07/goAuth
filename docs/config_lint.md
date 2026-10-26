@@ -74,6 +74,7 @@ func (c *Config) Lint() LintResult
 | `totp_skew_wide` | WARN | TOTP skew > 1 |
 | `argon2_memory_low` | WARN | Argon2 memory < 64 MB |
 | `security_ip_binding_noop` | WARN | `Security.EnableIPBinding` is set but never read (use `DeviceBinding.*`) |
+| `security_user_agent_binding_noop` | WARN | `Security.EnableUserAgentBinding` is set but never read (use `DeviceBinding.*`) |
 | `security_ip_signal_noop` | WARN | `Security.EnableIPSignal` is set but never read |
 | `cookie_settings_noop` | INFO | `RequireSecureCookies`/`SameSitePolicy`/`CSRFProtection` set; the engine never issues cookies |
 | `cache_lru_noop` | WARN | `Cache.LRUEnabled` is set but no in-memory session cache is implemented |
@@ -89,12 +90,12 @@ func (c *Config) Lint() LintResult
 | `external_signup_passwordless` | INFO | `ExternalAuth.Enabled` with `AllowSignup`: accounts are created without a password (they can set one through password reset) |
 | `external_key_max_stale_long` | WARN | `ExternalAuth.Enabled` with `KeyMaxStale` above 72h: a revoked or leaked provider key stays trusted that long during an outage |
 
-Summary: 16 INFO, 18 WARN, 4 HIGH.
+Summary: 16 INFO, 19 WARN, 4 HIGH.
 
 ### No-op knob warnings
 
 Several config fields are accepted for backward compatibility but are not read
-by the engine (`Security.EnableIPBinding`, `Security.EnableIPSignal`, the
+by the engine (`Security.EnableIPBinding`, `Security.EnableUserAgentBinding`, `Security.EnableIPSignal`, the
 cookie/CSRF knobs, `CacheConfig`, `DatabaseConfig`, `MultiTenant.TenantHeader`,
 `MultiTenant.EnforceIsolation`).
 The `*_noop` lint codes fire when such a knob is enabled so integrators do not
