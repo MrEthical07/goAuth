@@ -40,7 +40,7 @@ goAuth assumes attackers may:
 | **JWT forgery** | Algorithm allowlist (Ed25519/HS256 only) | `kid` required when `VerifyKeys` configured |
 | **Algorithm confusion** | Only configured algorithm accepted | Reject unexpected alg headers |
 | **Clock skew exploitation** | `MaxFutureIAT` cap + `Leeway` ≤ 2 min | `ErrTokenClockSkew` on violations |
-| **Stale tokens** | Version stamps (perm/role/account) in strict mode | Mismatch → session deleted |
+| **Token and session out of step** | Version stamps (perm/role/account) are copied into both the session and the access token at login and refresh; strict `Validate` compares the two | Detects a token and a session that disagree. It does **not** compare either with the user record: a role, permission or status change reaches existing sessions only through `InvalidateUserSessions` or `Security.RecheckUserOnRefresh` (see [session.md](session.md#what-the-version-stamps-detect)) |
 | **Long-lived signing keys** | `JWTConfig.VerifyKeys` overlap rotation ([ops.md §9](ops.md#9-ed25519-key-rotation-runbook)) | Signing kid must match its verify key at `Build()`; unknown/missing `kid` rejected |
 
 ### Session Security
@@ -50,7 +50,7 @@ goAuth assumes attackers may:
 | **Refresh replay** | Atomic Lua CAS rotation | Hash mismatch → session family destroyed |
 | **Session fixation** | New session ID on every login | Unique `crypto/rand` 16-byte IDs |
 | **Session hijacking** | IP + UA binding (enforce or detect) | `ErrDeviceBindingRejected` or anomaly audit |
-| **Stale sessions** | Strict mode + version drift checks | Version mismatch → session deleted |
+| **Stale sessions** | Strict mode (the session must exist in Redis); `Security.RecheckUserOnRefresh` (opt-in) compares the stored stamps with the user's current ones at each refresh | Without the flag, call `InvalidateUserSessions` on every role, permission or status change. Strict `Validate` stays snapshot-based |
 | **Stale role after a role switch** | Atomic session swap; old refresh token dead immediately | Old access token rejected at once on `ModeStrict` routes only; on Hybrid/JWT-only it lives until it expires (≤ `JWT.AccessTTL`) — see [role_switching.md](role_switching.md#revocation-guarantee-per-validation-mode) |
 
 > **Route-mode overrides are not bounded by the engine mode.** An explicit per-route

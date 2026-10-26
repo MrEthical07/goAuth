@@ -170,7 +170,7 @@ func TestEmailChangeOffTouchesNothing(t *testing.T) {
 	_ = env.engine.Logout(env.ctx(), env.sidOf(refresh))
 	_ = env.engine.LogoutAll(env.ctx(), rsUserID)
 
-	if env.cmds.touches("aec") || env.cmds.touches("emailchange") {
+	if env.cmds.touches("aec:") || env.cmds.touches("aeci:") || env.cmds.touches("emailchange") {
 		t.Fatalf("email-change keys were touched with the feature off: %v", env.cmds.names())
 	}
 	if keys := env.keys("aec*"); len(keys) != 0 {

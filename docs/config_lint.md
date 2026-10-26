@@ -52,6 +52,7 @@ func (c *Config) Lint() LintResult
 | `access_ttl_long` | WARN | `JWT.AccessTTL > 10m` |
 | `refresh_ttl_long` | INFO | `JWT.RefreshTTL > 14d` |
 | `iat_not_required` | INFO | `JWT.RequireIAT == false` |
+| `refresh_user_recheck_off` | INFO | `Security.RecheckUserOnRefresh == false`: role, permission and status changes reach existing sessions only through `InvalidateUserSessions` |
 | `signing_hs256` | WARN | `JWT.SigningMethod == "hs256"` |
 | `keyid_missing` | INFO | Ed25519 signing with empty `JWT.KeyID` (tokens carry no `kid`; complicates future key rotation) |
 | `jwtonly_device_binding` | HIGH | JWT-only mode + device binding enabled |
@@ -88,7 +89,7 @@ func (c *Config) Lint() LintResult
 | `external_signup_passwordless` | INFO | `ExternalAuth.Enabled` with `AllowSignup`: accounts are created without a password (they can set one through password reset) |
 | `external_key_max_stale_long` | WARN | `ExternalAuth.Enabled` with `KeyMaxStale` above 72h: a revoked or leaked provider key stays trusted that long during an outage |
 
-Summary: 15 INFO, 18 WARN, 4 HIGH.
+Summary: 16 INFO, 18 WARN, 4 HIGH.
 
 ### No-op knob warnings
 

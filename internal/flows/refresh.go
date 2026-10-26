@@ -29,6 +29,16 @@ const (
 	// RefreshFailureRoleCheck: the re-check could not reach the provider.
 	// Nothing was rotated or deleted.
 	RefreshFailureRoleCheck
+	// RefreshFailureDeviceBinding: device binding is enforced and the request
+	// does not match the session. Nothing was rotated or deleted.
+	RefreshFailureDeviceBinding
+	// RefreshFailureUserChanged: the user's permission, role or account
+	// version differs from the session's copy. The session was deleted.
+	RefreshFailureUserChanged
+	// RefreshFailureUserCheck: a pre-rotation check could not run because the
+	// session store or the user provider was unreachable. Nothing was rotated
+	// or deleted.
+	RefreshFailureUserCheck
 )
 
 // RefreshResult carries either the issued token pair or failure metadata.
@@ -63,6 +73,38 @@ type RefreshRoleRecheck struct {
 	Now           func() time.Time
 }
 
+// RefreshUserState is what the optional user re-read compares with the
+// session's copy.
+type RefreshUserState struct {
+	Status            uint8
+	PermissionVersion uint32
+	RoleVersion       uint32
+	AccountVersion    uint32
+}
+
+// RefreshPreCheck holds the optional checks that run on the stored session
+// before the refresh token is rotated: device binding (only wired when it is
+// enforced) and the re-read of the user (only when Security.RecheckUserOnRefresh
+// is on). A nil RefreshDeps.PreCheck leaves refresh exactly as it was.
+type RefreshPreCheck struct {
+	Peek func(ctx context.Context, tenantID, sessionID string) (*session.Session, error)
+	Now  func() time.Time
+
+	// CheckDevice, when non-nil, applies the device-binding policy to the
+	// session as role switching does.
+	CheckDevice func(ctx context.Context, sess *session.Session) error
+
+	// LookupUser, when non-nil, re-reads the session's user through the
+	// tenant-scoped lookup. UserNotFound is the error it returns for a user
+	// that does not exist; any other error is an outage.
+	LookupUser   func(ctx context.Context, tenantID, userID string) (RefreshUserState, error)
+	UserNotFound error
+
+	// StoreUnavailable is the error the session store returns when Redis cannot
+	// be reached. The checks fail closed on it: the token is not rotated.
+	StoreUnavailable error
+}
+
 // RefreshDeps captures refresh flow dependencies.
 type RefreshDeps struct {
 	TenantIDFromContext       func(context.Context) string
@@ -84,6 +126,9 @@ type RefreshDeps struct {
 	// RoleRecheck, when non-nil, confirms the session's role is still held
 	// before the refresh token is rotated.
 	RoleRecheck *RefreshRoleRecheck
+
+	// PreCheck, when non-nil, runs before RoleRecheck and the rotation.
+	PreCheck *RefreshPreCheck
 }
 
 type replayTracker interface {
@@ -107,6 +152,86 @@ func trackRefreshReuse(
 	if err := store.TrackReplayAnomaly(ctx, sessionID, lifetime()); err != nil && warn != nil {
 		warn("goAuth: replay anomaly tracking failed")
 	}
+}
+
+// runRefreshPreCheck reads the session without mutating it and, only if it
+// exists, is unexpired and the presented token matches its current secret,
+// applies the device-binding policy and re-reads the user. Every other case
+// reports "no decision" so the normal rotation runs unchanged and reuse
+// detection and deletion behave exactly as without the check.
+func runRefreshPreCheck(
+	ctx context.Context,
+	tenantID, sessionID string,
+	providedHash [32]byte,
+	deps RefreshDeps,
+) (RefreshResult, bool) {
+	pc := deps.PreCheck
+	sess, err := pc.Peek(ctx, tenantID, sessionID)
+	if err != nil && pc.StoreUnavailable != nil && errors.Is(err, pc.StoreUnavailable) {
+		// The policy could not be applied; rotating now would skip it.
+		return RefreshResult{
+			Failure:   RefreshFailureUserCheck,
+			Err:       err,
+			TenantID:  tenantID,
+			SessionID: sessionID,
+		}, true
+	}
+	if err != nil || sess == nil {
+		return RefreshResult{}, false
+	}
+	if sess.ExpiresAt <= pc.Now().Unix() {
+		return RefreshResult{}, false
+	}
+	if subtle.ConstantTimeCompare(sess.RefreshHash[:], providedHash[:]) != 1 {
+		return RefreshResult{}, false
+	}
+	fail := func(kind RefreshFailureKind, err error) (RefreshResult, bool) {
+		return RefreshResult{
+			Failure:   kind,
+			Err:       err,
+			TenantID:  sess.TenantID,
+			SessionID: sessionID,
+			UserID:    sess.UserID,
+			Session:   sess,
+		}, true
+	}
+
+	if pc.CheckDevice != nil {
+		if err := pc.CheckDevice(ctx, sess); err != nil {
+			return fail(RefreshFailureDeviceBinding, err)
+		}
+	}
+	if pc.LookupUser == nil {
+		return RefreshResult{}, false
+	}
+
+	user, err := pc.LookupUser(ctx, sess.TenantID, sess.UserID)
+	switch {
+	case err != nil && pc.UserNotFound != nil && errors.Is(err, pc.UserNotFound):
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureUserChanged, err)
+	case err != nil:
+		// A provider outage says nothing about the session: it stays untouched
+		// and the same refresh token works on retry.
+		return fail(RefreshFailureUserCheck, err)
+	}
+	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureAccountStatus, statusErr)
+	}
+	if deps.ShouldRequireVerified != nil &&
+		deps.ShouldRequireVerified() &&
+		user.Status == deps.PendingVerificationStatus {
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureUnverified, errors.New("pending_verification"))
+	}
+	if user.PermissionVersion != sess.PermissionVersion ||
+		user.RoleVersion != sess.RoleVersion ||
+		(user.AccountVersion != 0 && sess.AccountVersion != 0 && user.AccountVersion != sess.AccountVersion) {
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureUserChanged, nil)
+	}
+	return RefreshResult{}, false
 }
 
 // runRefreshRoleRecheck reads the session without mutating it and, only if
@@ -168,6 +293,11 @@ func RunRefresh(ctx context.Context, refreshToken string, deps RefreshDeps) Refr
 		}
 	}
 
+	if deps.PreCheck != nil {
+		if result, decided := runRefreshPreCheck(ctx, tenantID, sessionID, deps.HashRefreshSecret(providedSecret), deps); decided {
+			return result
+		}
+	}
 	if deps.RoleRecheck != nil {
 		if result, decided := runRefreshRoleRecheck(ctx, tenantID, sessionID, deps.HashRefreshSecret(providedSecret), deps); decided {
 			return result

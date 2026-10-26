@@ -359,6 +359,22 @@ type SecurityConfig struct {
 	//	Docs: docs/rate_limiting.md
 	LimiterFailClosed bool
 
+	// RecheckUserOnRefresh makes Refresh re-read the user (through the
+	// tenant-scoped lookup, with its cross-tenant backstop) before it rotates
+	// the token. If the user's PermissionVersion, RoleVersion or AccountVersion
+	// differs from the copy stored in the session, or its status is blocking,
+	// the session is deleted and Refresh returns ErrSessionNotFound; if the
+	// provider cannot be reached Refresh returns ErrSystemUnavailable and
+	// rotates nothing. Off by default: refresh then reads nothing from the
+	// provider, and a role, permission or status change reaches existing
+	// sessions only through InvalidateUserSessions (the version stamps in a
+	// session detect a change only when something compares them with the
+	// user's current ones, which strict Validate does not: it is based on the
+	// session snapshot). Costs one provider read per refresh.
+	//
+	//	Docs: docs/security.md
+	RecheckUserOnRefresh bool
+
 	// LoginIPLimiter is an opt-in per-client-IP throttle on password login,
 	// next to the per-identifier and per-account budgets. It bounds how many
 	// accounts one address can try a guess against. See [LoginIPLimiterConfig].
@@ -1569,6 +1585,11 @@ func (c *Config) Validate() error {
 		if c.TOTP.MFALoginChallengeTTL <= 0 {
 			return errors.New("TOTP MFALoginChallengeTTL must be > 0")
 		}
+		if c.TOTP.MFALoginChallengeTTL > 12*time.Hour {
+			// The revocation epoch a challenge is fenced with is kept 24 hours
+			// after the last revocation; a challenge must not outlive that.
+			return errors.New("TOTP MFALoginChallengeTTL must be <= 12h")
+		}
 		if c.TOTP.MFALoginMaxAttempts <= 0 {
 			return errors.New("TOTP MFALoginMaxAttempts must be > 0")
 		}
@@ -2244,6 +2265,11 @@ func (c *Config) Lint() LintResult {
 	if c.JWT.RefreshTTL > 14*24*time.Hour {
 		warn(LintInfo, "refresh_ttl_long",
 			"JWT RefreshTTL > 14d means long-lived sessions; consider ≤ 7–14d")
+	}
+
+	if !c.Security.RecheckUserOnRefresh {
+		warn(LintInfo, "refresh_user_recheck_off",
+			"Security.RecheckUserOnRefresh is false; a role, permission or status change reaches existing sessions only if the application calls InvalidateUserSessions (or the session is refreshed after it ends)")
 	}
 
 	if !c.JWT.RequireIAT {

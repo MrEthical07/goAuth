@@ -80,7 +80,7 @@ func TestRoleSwitchDisabledMatchesV062(t *testing.T) {
 	}
 
 	var access, refresh, access2 string
-	step("login", []string{"script", "script", "del", "del", "scard", "multi", "set", "sadd", "incr", "exec", "del"}, func() {
+	step("login", []string{"script", "get", "script", "del", "del", "scard", "script", "del"}, func() {
 		access, refresh = env.login()
 	})
 	step("refresh", []string{"script"}, func() {
@@ -169,7 +169,7 @@ func TestRoleSwitchEnabledAddsOnlyTheDocumentedCalls(t *testing.T) {
 
 	log.reset()
 	access, refresh := env.login()
-	if got, want := log.normalized(), []string{"script", "script", "del", "del", "scard", "multi", "set", "sadd", "incr", "exec", "del"}; !reflect.DeepEqual(got, want) {
+	if got, want := log.normalized(), []string{"script", "get", "script", "del", "del", "scard", "script", "del"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("login with role switching enabled used %v, want the unchanged %v", got, want)
 	}
 	if n := env.up.callCount(); n != 0 {

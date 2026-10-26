@@ -62,8 +62,8 @@ func newProfileLoginDeps(resolve SessionProfileResolver) *profileLoginDeps {
 			SessionProfileConflict: errProfileConflict,
 		},
 	}
-	p.deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user LoginUserRecord, tenantID string, rememberMe bool) (string, string, error) {
-		return RunIssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, p.deps)
+	p.deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user LoginUserRecord, tenantID string, rememberMe bool, epoch int64) (string, string, error) {
+		return RunIssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, epoch, p.deps)
 	}
 	return p
 }
@@ -132,7 +132,7 @@ func TestLoginWithoutResolverIsLegacy(t *testing.T) {
 // so any session-creating path is covered.
 func TestIssueSessionTokensResolvesProfileItself(t *testing.T) {
 	p := newProfileLoginDeps(fixedResolver("web", SessionProfileOK))
-	if _, _, err := RunIssueLoginSessionTokens(context.Background(), "alice", LoginUserRecord{UserID: "u1", Role: "member"}, "t1", false, p.deps); err != nil {
+	if _, _, err := RunIssueLoginSessionTokens(context.Background(), "alice", LoginUserRecord{UserID: "u1", Role: "member"}, "t1", false, 0, p.deps); err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 	if p.saved[0].Profile != "web" {
@@ -140,7 +140,7 @@ func TestIssueSessionTokensResolvesProfileItself(t *testing.T) {
 	}
 
 	rejecting := newProfileLoginDeps(fixedResolver("", SessionProfileConflict))
-	_, _, err := RunIssueLoginSessionTokens(context.Background(), "alice", LoginUserRecord{UserID: "u1", Role: "member"}, "t1", false, rejecting.deps)
+	_, _, err := RunIssueLoginSessionTokens(context.Background(), "alice", LoginUserRecord{UserID: "u1", Role: "member"}, "t1", false, 0, rejecting.deps)
 	if !errors.Is(err, errProfileConflict) || len(rejecting.saved) != 0 {
 		t.Fatalf("issue = %v, sessions %d", err, len(rejecting.saved))
 	}
@@ -173,7 +173,7 @@ func TestConfirmLoginMFAProfileConflictConsumesNothing(t *testing.T) {
 		VerifyTOTPCode:            func([]byte, string, time.Time) (bool, int64, error) { return true, 1, nil },
 		UpdateTOTPLastUsedCounter: func(context.Context, string, int64) error { return nil },
 		VerifyBackupCodeInTenant:  func(context.Context, string, string, string) error { return nil },
-		IssueLoginSessionTokens: func(context.Context, string, LoginUserRecord, string, bool) (string, string, error) {
+		IssueLoginSessionTokens: func(context.Context, string, LoginUserRecord, string, bool, int64) (string, string, error) {
 			issued++
 			return "a", "r", nil
 		},

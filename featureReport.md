@@ -316,8 +316,8 @@ ok      github.com/MrEthical07/goAuth   6.693s
 | 14 | Rate limiting | **Works** | `internal/limiters/` (7 files), `internal/rate/limiter.go` | 7 domains, fail-closed, per-IP + per-identifier |
 | 15 | Replay protection | **Works** | Lua CAS scripts, `security_invariants_test.go` | Refresh + MFA + Reset + Verification — all replay-tested |
 | 16 | Device binding | **Works** | `engine_device_binding_test.go` (8 tests) | IP + UA fingerprint, enforce or detect-only |
-| 17 | Role drift control | **Works** | `internal/flows/validate.go`, `security_invariants_test.go` | Version stamps in session + JWT, strict rejects on mismatch |
-| 18 | Permission drift control | **Works** | `internal/flows/validate.go`, `security_invariants_test.go` | Permission mismatch now also deletes session (consistent with role/account) |
+| 17 | Role drift control | **Works, snapshot only** | `internal/flows/validate.go`, `security_invariants_test.go` | Strict `Validate` compares the token's stamps with the session's copy, not with the user record; a role change reaches sessions through `InvalidateUserSessions` or the opt-in `Security.RecheckUserOnRefresh` |
+| 18 | Permission drift control | **Works, snapshot only** | `internal/flows/validate.go`, `security_invariants_test.go` | Same as 17: a token/session mismatch deletes the session; a change in the user record is seen only through `InvalidateUserSessions` or `Security.RecheckUserOnRefresh` |
 | 19 | MFA (TOTP + backup codes) | **Works** | `engine_totp_test.go` (7), `engine_backup_codes_test.go` (11), `totp_rfc_test.go` (7) | SHA1/256/512, RFC vectors, replay protection, hashed backup codes |
 | 20 | Auditing | **Works** | `internal/audit/`, `audit_test.go` (7 tests) | Async dispatch, no-secret test, all flows covered |
 | 21 | Metrics + exporters | **Works** | `internal/metrics/`, `metrics_test.go` (6), `metrics_bench_test.go` (9) | Lock-free padded counters, Prometheus + OTel, no PII |
@@ -739,7 +739,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 - `jwt/manager.go` — `AccessClaims` carries `rv` claim
 - `internal/flows/validate.go` — strict mode version comparison
 
-**Behavior:** Role version mismatch → session deleted + validation failure. Forces re-login to pick up new role assignments.
+**Behavior:** Strict `Validate` compares the access token's role version with the session's copy; a mismatch deletes the session. Both were copied from the same place at login or refresh, so this does not notice that the user's role changed afterwards. To make a role change take effect, call `InvalidateUserSessions`, or turn on `Security.RecheckUserOnRefresh`, which makes `Refresh` compare the session's stamps with the user's current ones and end the session on a difference.
 
 **Tests:** `TestSecurityInvariantPermissionVersionDriftBlockedInStrictMode` (covers role drift)
 
@@ -754,7 +754,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 **Where implemented:**
 - `session/model.go` — `PermissionVersion` (uint32) embedded in session
 - `jwt/manager.go` — `AccessClaims` carries `pv` claim
-- `internal/flows/validate.go` — version mismatch → **session deletion** (consistent with role/account drift)
+- `internal/flows/validate.go` — token/session version mismatch → **session deletion** (consistent with role/account drift); a change in the user record is seen only through `InvalidateUserSessions` or `Security.RecheckUserOnRefresh`
 
 **Tests:** `TestSecurityInvariantPermissionVersionDriftBlockedInStrictMode`
 
@@ -939,7 +939,7 @@ ok      github.com/MrEthical07/goAuth   6.693s
 | **Refresh replay** | Atomic CAS rotation + session deletion on mismatch | `rotateRefreshLua`, `TestRefreshConcurrencySingleWinner` |
 | **Token substitution / alg confusion** | Algorithm allowlist (only configured alg accepted) | `jwt/manager.go`, `TestParseAccessRejectsWrongAlgorithm` |
 | **Stale sessions** | Strict mode + store revocation (session must exist in Redis) | `TestValidationModeStrictRejectsRevokedSession` |
-| **Privilege drift** | Version stamps (perm/role/account) in session + JWT, strict compare | `TestSecurityInvariantPermissionVersionDriftBlockedInStrictMode` |
+| **Privilege drift** | Version stamps (perm/role/account) in session + JWT, strict compare of the two (snapshot); `InvalidateUserSessions` or opt-in `Security.RecheckUserOnRefresh` for changes in the user record | `TestSecurityInvariantPermissionVersionDriftBlockedInStrictMode`, `TestRefreshRechecksTheUserWhenAsked` |
 | **Timing attacks** | `crypto/subtle.ConstantTimeCompare` in password verify, TOTP, reset, email verify | Multiple implementations |
 | **Secret leakage** | Audit payload sanitization, no PII in metrics | `TestAuditNoSecretsInEvents`, `TestBackupCodeNotLeakedInAuditEvents` |
 | **User enumeration** | Fake challenges for unknown users (password reset, email verify) | `TestPasswordResetRequestEnumerationSafe`, `TestEmailVerificationEnumerationSafeNoRecordWrite` |

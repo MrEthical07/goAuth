@@ -139,8 +139,9 @@ func (s Service) IssueLoginSessionTokens(
 	user LoginUserRecord,
 	tenantID string,
 	rememberMe bool,
+	epoch int64,
 ) (string, string, error) {
-	return RunIssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, s.deps.Login)
+	return RunIssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, epoch, s.deps.Login)
 }
 
 func (s Service) RequestPasswordReset(ctx context.Context, identifier string) (string, error) {

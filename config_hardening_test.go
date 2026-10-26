@@ -95,6 +95,8 @@ func TestBuildConfigImmutabilityAgainstExternalMutation(t *testing.T) {
 func TestSecurityReportReflectsPosture(t *testing.T) {
 	cfg := accountTestConfig()
 	cfg.Security.ProductionMode = true
+	// ProductionMode refuses the cheap hash the test config uses.
+	cfg.Password = defaultConfig().Password
 	cfg.JWT.PrivateKey = []byte("01234567890123456789012345678901")
 	cfg.ValidationMode = ModeStrict
 	cfg.SessionHardening.MaxSessionsPerUser = 2

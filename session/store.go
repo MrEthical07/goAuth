@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal/clock"
@@ -69,8 +70,11 @@ var deleteSessionLua = redis.NewScript(deleteSessionScript)
 // It reads the set, deletes every session key that still exists together with
 // its proof key, lowers the counter by the number of keys it actually deleted
 // (never below zero; the counter key is removed at zero) and clears the set. A
-// kept session stays in the set and in the count. It returns the number of
-// sessions deleted. Because a script runs without interleaving, a session saved
+// kept session stays in the set and in the count. It also bumps the user's
+// revocation epoch ("aue:<tenant>:<user>", derived from the set key, 24 hours
+// TTL refreshed on every bump) so that a login that read the account before
+// this ran cannot save its session afterwards (see SaveFenced). It returns the
+// number of sessions deleted. Because a script runs without interleaving, a session saved
 // before it started is deleted and one saved after it finished is untouched,
 // and the counter always equals the sessions left.
 //
@@ -78,6 +82,8 @@ var deleteSessionLua = redis.NewScript(deleteSessionScript)
 // the rotation and swap scripts, it touches keys in more than one hash slot.
 const deleteAllForUserScript = `
 local keep = ARGV[3]
+redis.call("INCR", "aue:" .. string.sub(KEYS[1], 4))
+redis.call("PEXPIRE", "aue:" .. string.sub(KEYS[1], 4), 86400000)
 local members = redis.call("SMEMBERS", KEYS[1])
 local deleted = 0
 for _, sid in ipairs(members) do
@@ -106,6 +112,87 @@ return deleted
 `
 
 var deleteAllForUserLua = redis.NewScript(deleteAllForUserScript)
+
+// saveFencedScript stores a new session only if the user's revocation epoch is
+// still the one the caller read before it read the account, and enforces the
+// session caps in the same step, so neither a revocation nor a parallel login
+// can slip between the check and the write.
+//
+// KEYS: session, the user's session set, the tenant counter, the epoch.
+// ARGV: the encoded session, its TTL in ms, the expected epoch, the session ID,
+// the per-user cap, the per-tenant cap, the concurrent-login cap (0 = none),
+// "1" to end the user's other sessions first (single-session mode), the session
+// key prefix ("<prefix>:<tenant>:") and the MFA-proof key prefix ("asa:<tenant>:").
+//
+// It returns 0 when the epoch moved, 1 when a per-user cap is reached, 2 when
+// the tenant cap is reached and 3 when the session was stored. Single-session
+// mode ends the other sessions only once the epoch check has passed, and does
+// not bump the epoch: a login replacing the user's sessions is not a
+// revocation that other in-flight logins must be fenced against.
+const saveFencedScript = `
+local epoch = tonumber(redis.call("GET", KEYS[4]) or "0") or 0
+if epoch ~= tonumber(ARGV[3]) then
+  return 0
+end
+if ARGV[8] == "1" then
+  local deleted = 0
+  for _, sid in ipairs(redis.call("SMEMBERS", KEYS[2])) do
+    if redis.call("DEL", ARGV[9] .. sid) == 1 then
+      deleted = deleted + 1
+    end
+    redis.call("DEL", ARGV[10] .. sid)
+  end
+  redis.call("DEL", KEYS[2])
+  if deleted > 0 then
+    local count = tonumber(redis.call("GET", KEYS[3]) or "0") or 0
+    if count <= deleted then
+      redis.call("DEL", KEYS[3])
+    else
+      redis.call("DECRBY", KEYS[3], deleted)
+    end
+  end
+end
+local n = redis.call("SCARD", KEYS[2])
+local concurrent = tonumber(ARGV[7])
+if concurrent > 0 and n >= concurrent then
+  return 1
+end
+local perUser = tonumber(ARGV[5])
+if perUser > 0 and n >= perUser then
+  return 1
+end
+local perTenant = tonumber(ARGV[6])
+if perTenant > 0 then
+  local count = tonumber(redis.call("GET", KEYS[3]) or "0") or 0
+  if count >= perTenant then
+    return 2
+  end
+end
+redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+redis.call("SADD", KEYS[2], ARGV[4])
+redis.call("INCR", KEYS[3])
+return 3
+`
+
+var saveFencedLua = redis.NewScript(saveFencedScript)
+
+// migrateSchemaScript rewrites a pre-v5 session blob as v5 only if the stored
+// value is still the bytes the caller read, keeping the TTL. KEYS[1] = the
+// session, ARGV[1] = the bytes read, ARGV[2] = the v5 blob. A deleted key, a
+// rotated refresh hash or any other change makes the compare fail and nothing
+// is written. It returns 1 when it wrote.
+const migrateSchemaScript = `
+if redis.call("PTTL", KEYS[1]) <= 0 then
+  return 0
+end
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+redis.call("SET", KEYS[1], ARGV[2], "KEEPTTL")
+return 1
+`
+
+var migrateSchemaLua = redis.NewScript(migrateSchemaScript)
 
 const rotateRefreshScript = `
 local function read_be64(s, i)
@@ -448,6 +535,10 @@ func (s *Store) tenantCountKey(tenantID string) string {
 	return "ast:" + normalizeTenantID(tenantID) + ":count"
 }
 
+func (s *Store) epochKey(tenantID, userID string) string {
+	return "aue:" + normalizeTenantID(tenantID) + ":" + userID
+}
+
 func (s *Store) replayKey(sessionID string) string {
 	return "arp:" + sessionID
 }
@@ -490,6 +581,134 @@ func (s *Store) Save(ctx context.Context, sess *Session, ttl time.Duration) erro
 	return nil
 }
 
+// ErrSessionFenced is returned by [Store.SaveFenced] when the user's sessions
+// were revoked after the caller read the epoch: the session was not stored.
+var ErrSessionFenced = errors.New("session issuance fenced by a revocation")
+
+// ErrUserSessionLimit is returned by [Store.SaveFenced] when the user already
+// holds the most sessions the limits allow.
+var ErrUserSessionLimit = errors.New("user session limit reached")
+
+// ErrTenantSessionLimit is returned by [Store.SaveFenced] when the tenant
+// already holds the most sessions the limits allow.
+var ErrTenantSessionLimit = errors.New("tenant session limit reached")
+
+// SaveLimits are the session caps [Store.SaveFenced] enforces atomically with
+// the write. A zero cap is no cap.
+type SaveLimits struct {
+	MaxPerUser       int
+	MaxPerTenant     int
+	ConcurrentLogins int
+	// SingleSession ends the user's other sessions in the same step as the
+	// write, after every check has passed.
+	SingleSession bool
+}
+
+// RevocationEpoch returns the user's revocation epoch: a counter that every
+// revocation of the user's sessions (delete-all, so password change, reset,
+// status changes and the rest) bumps, kept for 24 hours after the last bump,
+// far longer than a login or an MFA challenge (capped at 12 hours by Build) can
+// be in flight: an expired key reads as 0, which is only safe if no login still
+// holds an older epoch. A login reads it before it reads the account and hands
+// it to [Store.SaveFenced], which refuses to store the session if it has moved.
+func (s *Store) RevocationEpoch(ctx context.Context, tenantID, userID string) (int64, error) {
+	epoch, err := s.redis.Get(ctx, s.epochKey(tenantID, userID)).Int64()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	return epoch, nil
+}
+
+// SaveFenced stores a new session like [Store.Save], but only if the user's
+// revocation epoch is still epoch (see [Store.RevocationEpoch]) and the session
+// caps in limits allow it, all in one script. It returns [ErrSessionFenced],
+// [ErrUserSessionLimit] or [ErrTenantSessionLimit] when it stored nothing.
+//
+// The tenant counter can drift when sessions expire on their own, so a tenant
+// refusal reconciles it with a scan of the tenant's keys and tries once more.
+//
+//	Performance: 1 Lua EVALSHA (plus a scan when the tenant cap looks reached).
+//	Docs: docs/session.md
+func (s *Store) SaveFenced(ctx context.Context, sess *Session, ttl time.Duration, epoch int64, limits SaveLimits) error {
+	data, err := Encode(sess)
+	if err != nil {
+		return err
+	}
+
+	single := "0"
+	if limits.SingleSession {
+		single = "1"
+	}
+	run := func() (int64, error) {
+		return saveFencedLua.Run(
+			ctx,
+			s.redis,
+			[]string{
+				s.key(sess.TenantID, sess.SessionID),
+				s.userKey(sess.TenantID, sess.UserID),
+				s.tenantCountKey(sess.TenantID),
+				s.epochKey(sess.TenantID, sess.UserID),
+			},
+			data,
+			ttl.Milliseconds(),
+			epoch,
+			sess.SessionID,
+			limits.MaxPerUser,
+			limits.MaxPerTenant,
+			limits.ConcurrentLogins,
+			single,
+			s.key(sess.TenantID, ""),
+			s.assuranceKey(sess.TenantID, ""),
+		).Int64()
+	}
+
+	status, err := run()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	// The counter says the tenant is full. It can have drifted upwards (sessions
+	// that expired on their own never decrement it), so it is reconciled with a
+	// scan, but only if nothing moved it since it was read: a session saved or
+	// deleted during the scan changes the counter, the correction is dropped and
+	// the save is judged against the live counter instead.
+	for attempt := 0; status == 2 && attempt < 3; attempt++ {
+		observed, obsErr := s.redis.Get(ctx, s.tenantCountKey(sess.TenantID)).Result()
+		if obsErr != nil && !errors.Is(obsErr, redis.Nil) {
+			break
+		}
+		actual, scanErr := s.EstimateActiveSessions(ctx, sess.TenantID)
+		if scanErr != nil {
+			break
+		}
+		swapped, casErr := s.reconcileTenantCount(ctx, sess.TenantID, observed, actual)
+		if casErr != nil {
+			break
+		}
+		if status, err = run(); err != nil {
+			return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+		}
+		if swapped {
+			break
+		}
+	}
+
+	switch status {
+	case 3:
+		return nil
+	case 0:
+		return ErrSessionFenced
+	case 1:
+		return ErrUserSessionLimit
+	case 2:
+		return ErrTenantSessionLimit
+	default:
+		return fmt.Errorf("%w: unknown save script status", ErrRedisUnavailable)
+	}
+}
+
 // Get retrieves a session by tenant and session ID. Returns the decoded
 // [Session] or an error if not found or Redis is unavailable.
 //
@@ -524,7 +743,7 @@ func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Du
 		return nil, redis.Nil
 	}
 
-	if err := s.maybeMigrateSessionSchema(ctx, key, sess); err != nil {
+	if err := s.maybeMigrateSessionSchema(ctx, key, sess, data); err != nil {
 		return nil, err
 	}
 
@@ -637,6 +856,31 @@ func (s *Store) SetTenantSessionCount(ctx context.Context, tenantID string, coun
 	return nil
 }
 
+// reconcileTenantScript sets the tenant counter to ARGV[2] (deletes it when
+// that is not positive) only if it still holds ARGV[1] ("" for no counter).
+var reconcileTenantScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current then current = "" end
+if current ~= ARGV[1] then return 0 end
+if tonumber(ARGV[2]) <= 0 then
+  redis.call("DEL", KEYS[1])
+else
+  redis.call("SET", KEYS[1], ARGV[2])
+end
+return 1
+`)
+
+// reconcileTenantCount applies a scanned session count to the tenant counter if
+// the counter still holds the value observed before the scan. It reports
+// whether the counter was written.
+func (s *Store) reconcileTenantCount(ctx context.Context, tenantID, observed string, actual int) (bool, error) {
+	res, err := reconcileTenantScript.Run(ctx, s.redis, []string{s.tenantCountKey(tenantID)}, observed, actual).Int64()
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	return res == 1, nil
+}
+
 // ActiveSessionCount returns the number of tracked session IDs for a user in a tenant.
 func (s *Store) ActiveSessionCount(ctx context.Context, tenantID, userID string) (int, error) {
 	count, err := s.redis.SCard(ctx, s.userKey(tenantID, userID)).Result()
@@ -687,7 +931,7 @@ func (s *Store) GetReadOnly(ctx context.Context, tenantID, sessionID string) (*S
 		}
 		return sess, nil
 	}
-	if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionID), sess); err != nil {
+	if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionID), sess, data); err != nil {
 		return nil, err
 	}
 
@@ -745,7 +989,7 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 			sessions = append(sessions, sess)
 			continue
 		}
-		if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionIDs[i]), sess); err != nil {
+		if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionIDs[i]), sess, data); err != nil {
 			return nil, err
 		}
 
@@ -778,7 +1022,8 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 // EstimateActiveSessions scans tenant session keys and counts matches.
 // This is an admin-only O(n) operation and must not be used in request hot paths.
 func (s *Store) EstimateActiveSessions(ctx context.Context, tenantID string) (int, error) {
-	pattern := s.prefix + ":" + normalizeTenantID(tenantID) + ":*"
+	base := s.key(tenantID, "")
+	pattern := escapeGlob(base) + "*"
 	var (
 		cursor uint64
 		total  int
@@ -789,7 +1034,14 @@ func (s *Store) EstimateActiveSessions(ctx context.Context, tenantID string) (in
 		if err != nil {
 			return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 		}
-		total += len(keys)
+		for _, k := range keys {
+			// A session ID has no ':'. A longer remainder belongs to a tenant
+			// whose ID extends this one ("a" and "a:b"), whose keys also
+			// match the pattern.
+			if !strings.Contains(strings.TrimPrefix(k, base), ":") {
+				total++
+			}
+		}
 		cursor = next
 		if cursor == 0 {
 			break
@@ -797,6 +1049,23 @@ func (s *Store) EstimateActiveSessions(ctx context.Context, tenantID string) (in
 	}
 
 	return total, nil
+}
+
+// escapeGlob escapes the characters that are special in a Redis glob pattern,
+// so a tenant ID is matched literally.
+func escapeGlob(s string) string {
+	if !strings.ContainsAny(s, "\\*?[]") {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '*', '?', '[', ']':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // Ping returns a point-in-time Redis availability check and latency.
@@ -888,20 +1157,17 @@ func (s *Store) nextSlidingTTL(remainingAbsolute time.Duration) (time.Duration, 
 	return nextTTL, nil
 }
 
-func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess *Session) error {
+// maybeMigrateSessionSchema lifts a pre-v5 record to v5. original is the exact
+// bytes the caller read. The rewrite is one script that compares the stored
+// value with them and writes only if they are unchanged: a delete in between
+// leaves the session deleted, and a refresh rotation in between leaves the
+// rotated hash in place instead of restoring the one that was rotated out.
+func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess *Session, original []byte) error {
 	// Only records older than the legacy current version are migrated, and
 	// only up to it. A v5 record stays v5 and a v6 (profile) record is never
 	// rewritten: Encode would drop or misplace the profile, and v5 -> v6 is
 	// not a migration.
 	if sess == nil || sess.SchemaVersion >= CurrentSchemaVersion {
-		return nil
-	}
-
-	pttl, err := s.redis.PTTL(ctx, key).Result()
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-	}
-	if pttl <= 0 {
 		return nil
 	}
 
@@ -911,12 +1177,7 @@ func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess 
 		return err
 	}
 
-	// XX: the read and this write are not atomic. If the session was deleted
-	// in between (logout, refresh-reuse revocation, a role switch), a plain
-	// SET would write the stale blob back and resurrect a session that was
-	// just revoked, along with its old refresh hash.
-	err = s.redis.SetArgs(ctx, key, encoded, redis.SetArgs{Mode: "XX", TTL: pttl}).Err()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	if err := migrateSchemaLua.Run(ctx, s.redis, []string{key}, original, encoded).Err(); err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	return nil
@@ -1017,7 +1278,7 @@ func (s *Store) RotateRefreshHash(
 			return nil, decErr
 		}
 		sess.SessionID = sessionID
-		if err := s.maybeMigrateSessionSchema(ctx, key, sess); err != nil {
+		if err := s.maybeMigrateSessionSchema(ctx, key, sess, blob); err != nil {
 			return nil, err
 		}
 		return sess, nil

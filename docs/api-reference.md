@@ -277,6 +277,8 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `KeyBuilder` | type | Interface for generating Redis key prefixes. |
 | `UserProvider` | type | Unified user-store adapter used by the engine. |
 | `TenantAwareUserProvider` | interface | Optional `UserProvider` capability: tenant-scoped user lookup (required when `MultiTenant.Enabled`). |
+| `PasswordHashCASUpdater` | interface | Optional `UserProvider` capability: `CompareAndSwapPasswordHash(ctx, tenantID, userID, expectedOldHash, newHash) (applied bool, err error)`; makes the rehash-on-login upgrade exact. |
+| `AccountStatusCASUpdater` | interface | Optional `UserProvider` capability: `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)`; used for the pending-to-active write of email verification. |
 | `TenantAwarePasswordUpdater` | interface | Optional `UserProvider` capability: `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)`; used instead of `UpdatePasswordHash` by `ChangePassword`, password-reset confirm and rehash-on-login when `MultiTenant.Enabled`. |
 | `RoleSwitchProvider` | interface | Optional `UserProvider` capability for `SwitchRole` (see above). |
 | `ExternalIdentityProvider` | interface | Optional `UserProvider` capability for external sign-in (see External Identity above). |
@@ -368,7 +370,9 @@ Redis-backed session storage with binary encoding.
 | `GetReadOnly` | method | Fetches a session without refresh-hash verification. |
 | `GetManyReadOnly` | method | Batch-fetches multiple sessions by ID. |
 | `Delete` | method | Removes a single session from Redis. |
-| `DeleteAllForUser` | method | Removes all sessions for a user (and optional tenant). |
+| `DeleteAllForUser` | method | Removes all sessions for a user (and optional tenant) and bumps the user's revocation epoch. |
+| `RevocationEpoch` | method | The user's revocation epoch (`aue:<tenant>:<user>`), 0 if nobody revoked within the last hour. |
+| `SaveFenced` | method | Stores a session only if the epoch is still the one read, enforcing the `SaveLimits` caps and the single-session purge in the same step; `ErrSessionFenced`, `ErrUserSessionLimit`, `ErrTenantSessionLimit`. |
 | `RotateRefreshHash` | method | Atomically replaces the refresh hash on an existing session. |
 | `SwapSession` | method | Atomically replaces one session with another (role switch): same checks as `RotateRefreshHash`, keeps the absolute lifetime, moves the assurance. |
 | `WithProfiles` | method | Installs the session profile table (`map[string]ProfilePolicy`); the engine calls it at Build. |

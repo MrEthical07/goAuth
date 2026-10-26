@@ -315,6 +315,16 @@ func (b *Builder) Build() (*Engine, error) {
 		WindowMode:  windowMode,
 	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
+	// Optional: only a provider that can compare-and-swap a password hash opts
+	// in; without it the upgrade re-reads the user before it writes.
+	if cas, ok := b.userProvider.(PasswordHashCASUpdater); ok {
+		engine.passwordCAS = cas
+	}
+	// Optional: only a provider that can compare-and-set the status opts in;
+	// without it email verification re-reads the account before it writes.
+	if cas, ok := b.userProvider.(AccountStatusCASUpdater); ok {
+		engine.statusCAS = cas
+	}
 	if cfg.MultiTenant.Enabled {
 		// Without a tenant-scoped lookup the engine would resolve
 		// identifiers across every tenant, so credentials from one tenant

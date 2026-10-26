@@ -177,6 +177,54 @@ type TenantAwarePasswordUpdater interface {
 	UpdatePasswordHashInTenant(ctx context.Context, tenantID, userID, newHash string) error
 }
 
+// PasswordHashCASUpdater is an optional capability interface a [UserProvider]
+// can additionally implement so the rehash-on-login upgrade
+// ([PasswordConfig.UpgradeOnLogin]) cannot overwrite a password that changed
+// after the login read the account. It is detected via type assertion at
+// [Builder.Build].
+//
+// CompareAndSwapPasswordHash must store newHash only if the user's current
+// hash is exactly expectedOldHash, in one atomic step (UPDATE ... WHERE
+// password_hash = $expected), and report whether it did. A hash that no longer
+// matches is (false, nil), not an error: a password change or reset that
+// landed since the login read the account stays in force and the upgrade is
+// skipped. tenantID is the tenant the engine resolved itself.
+//
+// Without it the engine re-reads the user immediately before the write and
+// skips the upgrade unless the hash is still the verified one. That narrows the
+// window to the gap between the re-read and the write; it cannot close it.
+// The upgrade runs after the session has been issued (or the MFA challenge
+// created), so a login that is refused afterwards upgrades nothing.
+//
+//	Docs: docs/password.md
+type PasswordHashCASUpdater interface {
+	CompareAndSwapPasswordHash(ctx context.Context, tenantID, userID, expectedOldHash, newHash string) (applied bool, err error)
+}
+
+// AccountStatusCASUpdater is an optional capability interface a [UserProvider]
+// can additionally implement so email verification cannot undo a status change
+// that landed after the verification was read. It is detected via type
+// assertion at [Builder.Build].
+//
+// UpdateAccountStatusIf must store next only if the account's current status
+// is exactly expected, in one atomic step (UPDATE ... WHERE status =
+// $expected), and report whether it did. Like [UserProvider.UpdateAccountStatus]
+// it must advance the account version when it applies. A status that no longer
+// matches is (false, nil), not an error. tenantID is the tenant the engine
+// resolved itself.
+//
+// The engine uses it for the pending-verification to active transition that
+// confirming an email address performs; a disabled, locked or deleted account
+// is then never made active again by a verification that was in flight when it
+// was blocked. Without it the engine reads the account again immediately before
+// the write and transitions only from pending-verification, which narrows the
+// window to the gap between that read and the write but cannot close it.
+//
+//	Docs: docs/email_verification.md
+type AccountStatusCASUpdater interface {
+	UpdateAccountStatusIf(ctx context.Context, tenantID, userID string, expected, next AccountStatus) (applied bool, err error)
+}
+
 // RoleSwitchProvider is an optional capability interface a [UserProvider]
 // can additionally implement to enable [Engine.SwitchRole]. It is detected
 // via type assertion at [Builder.Build]; when [Config.RoleSwitch] is enabled

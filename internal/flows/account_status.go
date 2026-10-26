@@ -21,6 +21,11 @@ type UpdateAccountStatusDeps struct {
 	ErrAccountVersionNotAdvanced error
 	ErrUnauthorized              error
 	ErrSessionInvalidationFailed error
+
+	// ActiveStatus is the one status whose transition does not end the user's
+	// sessions; every other target (disabled, locked, deleted) is blocking and
+	// always revokes. The zero value is the engine's active status.
+	ActiveStatus uint8
 }
 
 func RunUpdateAccountStatusAndInvalidate(
@@ -36,13 +41,34 @@ func RunUpdateAccountStatusAndInvalidate(
 		return deps.ErrUserNotFound
 	}
 
+	blocking := status != deps.ActiveStatus
+	tenantOf := func(rec AccountStatusRecord) string {
+		if rec.TenantID != "" {
+			return rec.TenantID
+		}
+		return deps.TenantIDFromContext(ctx)
+	}
+	revoke := func(rec AccountStatusRecord) error {
+		if err := deps.LogoutAllInTenant(ctx, tenantOf(rec), userID); err != nil {
+			return errors.Join(deps.ErrSessionInvalidationFailed, err)
+		}
+		return nil
+	}
+
 	current, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.ErrUserNotFound
 	}
 
 	if current.Status == status {
-		return nil
+		if !blocking {
+			return nil
+		}
+		// A blocking status the provider already holds: an earlier call may
+		// have committed it and then failed before the sessions were revoked
+		// (or the host wrote it itself). A nil return must mean the user's
+		// sessions are gone, so revoking is part of every call.
+		return revoke(current)
 	}
 
 	updated, err := deps.UpdateAccountStatus(ctx, userID, status)
@@ -50,20 +76,18 @@ func RunUpdateAccountStatusAndInvalidate(
 		return err
 	}
 	if updated.AccountVersion <= current.AccountVersion {
+		if blocking {
+			// The status is committed; revoke before reporting the failure.
+			_ = revoke(updated)
+		}
 		return deps.ErrAccountVersionNotAdvanced
 	}
 	if updated.Status != status {
+		if blocking {
+			_ = revoke(updated)
+		}
 		return deps.ErrUnauthorized
 	}
 
-	tenantID := deps.TenantIDFromContext(ctx)
-	if updated.TenantID != "" {
-		tenantID = updated.TenantID
-	}
-
-	if err := deps.LogoutAllInTenant(ctx, tenantID, userID); err != nil {
-		return errors.Join(deps.ErrSessionInvalidationFailed, err)
-	}
-
-	return nil
+	return revoke(updated)
 }

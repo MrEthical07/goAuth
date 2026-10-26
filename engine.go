@@ -66,6 +66,8 @@ type Engine struct {
 	verifyTOTPFn          func(secret []byte, code string, now time.Time) (bool, int64, error)
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
+	passwordCAS           PasswordHashCASUpdater
+	statusCAS             AccountStatusCASUpdater
 	roleSwitchProvider    RoleSwitchProvider
 	roleSwitchLimiter     *limiters.RoleSwitchLimiter
 	externalProvider      ExternalIdentityProvider
@@ -427,6 +429,8 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 		return "", "", mapToAuthError(ErrRefreshReuse)
 	case internalflows.RefreshFailureRoleRevoked, internalflows.RefreshFailureRoleCheck:
 		return "", "", mapToAuthError(e.refreshRoleCheckFailure(ctx, result))
+	case internalflows.RefreshFailureDeviceBinding, internalflows.RefreshFailureUserChanged, internalflows.RefreshFailureUserCheck:
+		return "", "", mapToAuthError(e.refreshPreCheckFailure(ctx, result))
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, e.refreshNotFoundMeta(result.Err))
@@ -763,6 +767,35 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 	return mapToAuthErrorOrNil(err)
 }
 
+// sessionRevocationTenants lists the tenants a user's sessions may live under
+// when the user is revoked on the strength of an account record: the tenant of
+// the request context, which is where a login stores its session, and the
+// tenant the record carries when that is set and different (the provider's
+// record tenant and the request's tenant agree only when multi-tenancy is on;
+// auto-login account creation stores sessions under the record tenant).
+func sessionRevocationTenants(ctx context.Context, recordTenant string) []string {
+	ctxTenant := tenantIDFromContext(ctx)
+	if recordTenant == "" || tenantIDFromToken(recordTenant) == tenantIDFromToken(ctxTenant) {
+		return []string{ctxTenant}
+	}
+	return []string{ctxTenant, recordTenant}
+}
+
+// revokeUserSessions ends every session of userID after a change that must
+// end them (password change or reset, TOTP enable or disable, a blocking
+// account status). It is the only place that decides which tenants to revoke
+// in: the context tenant AND, if it differs and is non-empty, the record's.
+// Every such revocation goes through it; a static test keeps it that way.
+func (e *Engine) revokeUserSessions(ctx context.Context, recordTenant, userID string) error {
+	var errs []error
+	for _, tenant := range sessionRevocationTenants(ctx, recordTenant) {
+		if err := e.LogoutAllInTenant(ctx, tenant, userID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // InvalidateUserSessions is an alias for [Engine.LogoutAll]. It destroys
 // every session for the user in the current tenant.
 //
@@ -909,12 +942,14 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		return mapToAuthError(err)
 	}
 
+	// Only for the audit trail: the revocation itself covers the context
+	// tenant and the record's (see revokeUserSessions).
 	invalidateTenant := tenantIDFromContext(ctx)
 	if user.TenantID != "" {
 		invalidateTenant = user.TenantID
 	}
 
-	if err := e.LogoutAllInTenant(ctx, invalidateTenant, userID); err != nil {
+	if err := e.revokeUserSessions(ctx, user.TenantID, userID); err != nil {
 		e.warn("goAuth: session invalidation failed after password change")
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, invalidateTenant, "", ErrSessionInvalidationFailed, func() map[string]string {
 			return map[string]string{
@@ -1086,6 +1121,7 @@ func (e *Engine) initFlowDeps() {
 			RefreshHashMismatch:       session.ErrRefreshHashMismatch,
 			RedisNil:                  redis.Nil,
 			RoleRecheck:               e.refreshRoleRecheck(),
+			PreCheck:                  e.refreshPreCheck(),
 		},
 		Validate: internalflows.ValidateDeps{
 			ParseAccess: e.jwtManager.ParseAccess,
@@ -1177,22 +1213,23 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 		return ErrUserNotFound
 	}
 
-	if h.EnforceSingleSession {
-		if err := e.sessionStore.DeleteAllForUser(ctx, tenantID, userID); err != nil {
+	// Read-only: this runs at the password step, before the second factor, so
+	// it must not end anything. With EnforceSingleSession the user's other
+	// sessions are ended when the new one is stored (see saveSessionFenced),
+	// so they do not count here; the caps are enforced again, atomically with
+	// the write, at that point.
+	if !h.EnforceSingleSession {
+		currentUserSessions, err := e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
+		if err != nil {
 			return err
 		}
-	}
 
-	currentUserSessions, err := e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
-	if err != nil {
-		return err
-	}
-
-	if h.ConcurrentLoginLimit > 0 && currentUserSessions >= h.ConcurrentLoginLimit {
-		return ErrSessionLimitExceeded
-	}
-	if h.MaxSessionsPerUser > 0 && currentUserSessions >= h.MaxSessionsPerUser {
-		return ErrSessionLimitExceeded
+		if h.ConcurrentLoginLimit > 0 && currentUserSessions >= h.ConcurrentLoginLimit {
+			return ErrSessionLimitExceeded
+		}
+		if h.MaxSessionsPerUser > 0 && currentUserSessions >= h.MaxSessionsPerUser {
+			return ErrSessionLimitExceeded
+		}
 	}
 	if h.MaxSessionsPerTenant > 0 {
 		tenantSessions, err := e.sessionStore.TenantSessionCount(ctx, tenantID)
@@ -1201,13 +1238,13 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 		}
 
 		if tenantSessions >= h.MaxSessionsPerTenant {
-			// Counter can drift when sessions expire naturally; reconcile before denying.
-			actual, scanErr := e.sessionStore.EstimateActiveSessions(ctx, tenantID)
-			if scanErr == nil {
+			// The counter can drift when sessions expire naturally, so it is
+			// checked against a scan before denying. The counter itself is
+			// corrected where the session is stored, by a compare-and-set that
+			// cannot lose a session saved meanwhile; writing the scan here
+			// would.
+			if actual, scanErr := e.sessionStore.EstimateActiveSessions(ctx, tenantID); scanErr == nil {
 				tenantSessions = actual
-				if setErr := e.sessionStore.SetTenantSessionCount(ctx, tenantID, actual); setErr != nil {
-					e.warn("goAuth: tenant session counter reconciliation failed")
-				}
 			}
 		}
 		if tenantSessions >= h.MaxSessionsPerTenant {
@@ -1216,6 +1253,45 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	}
 
 	return nil
+}
+
+// sessionSaveLimits are the session caps enforced atomically with a login
+// session's write.
+func (e *Engine) sessionSaveLimits() session.SaveLimits {
+	h := e.config.SessionHardening
+	return session.SaveLimits{
+		MaxPerUser:       h.MaxSessionsPerUser,
+		MaxPerTenant:     h.MaxSessionsPerTenant,
+		ConcurrentLogins: h.ConcurrentLoginLimit,
+		SingleSession:    h.EnforceSingleSession,
+	}
+}
+
+// readRevocationEpoch reads the user's revocation epoch. Every session-issuing
+// path calls it before it reads the account.
+func (e *Engine) readRevocationEpoch(ctx context.Context, tenantID, userID string) (int64, error) {
+	if e.sessionStore == nil {
+		return 0, ErrEngineNotReady
+	}
+	return e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
+}
+
+// saveSessionFenced stores a login session only if the user's sessions have not
+// been revoked since epoch was read, enforcing the session caps (and ending the
+// user's other sessions in single-session mode) in the same step. Cap refusals
+// come back as the public session-limit errors.
+func (e *Engine) saveSessionFenced(ctx context.Context, sess *session.Session, ttl time.Duration, epoch int64) error {
+	if e.sessionStore == nil {
+		return ErrEngineNotReady
+	}
+	err := e.sessionStore.SaveFenced(ctx, sess, ttl, epoch, e.sessionSaveLimits())
+	switch {
+	case errors.Is(err, session.ErrUserSessionLimit):
+		return ErrSessionLimitExceeded
+	case errors.Is(err, session.ErrTenantSessionLimit):
+		return ErrTenantSessionLimitExceeded
+	}
+	return err
 }
 
 func tenantIDFromToken(tid string) string {
@@ -1389,6 +1465,8 @@ func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
 			}
 			return e.sessionStore.Save(ctx, sess, ttl)
 		}
+		deps.ReadEpoch = e.readRevocationEpoch
+		deps.SaveSessionFenced = e.saveSessionFenced
 	}
 
 	return deps
@@ -1402,6 +1480,7 @@ func (e *Engine) accountStatusFlowDeps() internalflows.UpdateAccountStatusDeps {
 		ErrAccountVersionNotAdvanced: ErrAccountVersionNotAdvanced,
 		ErrUnauthorized:              ErrUnauthorized,
 		ErrSessionInvalidationFailed: ErrSessionInvalidationFailed,
+		ActiveStatus:                 uint8(AccountActive),
 	}
 
 	if e != nil && e.userProvider != nil {
@@ -1429,7 +1508,7 @@ func (e *Engine) accountStatusFlowDeps() internalflows.UpdateAccountStatusDeps {
 		}
 	}
 	if e != nil {
-		deps.LogoutAllInTenant = e.LogoutAllInTenant
+		deps.LogoutAllInTenant = e.revokeUserSessions
 	}
 
 	return deps
@@ -2282,6 +2361,7 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		VerificationTTL:     cfg.EmailVerification.VerificationTTL,
 		MaxAttempts:         cfg.EmailVerification.MaxAttempts,
 		ActiveStatus:        uint8(AccountActive),
+		PendingStatus:       uint8(AccountPendingVerification),
 		TenantIDFromContext: tenantIDFromContext,
 		Now:                 time.Now,
 		AccountStatusError: func(status uint8) error {
@@ -2378,6 +2458,17 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		deps.WithTenant = WithTenantID
 		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
 			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
+		}
+		if e.statusCAS != nil {
+			deps.UpdateStatusIf = func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error) {
+				return e.statusCAS.UpdateAccountStatusIf(ctx, tenantID, userID, AccountStatus(expected), AccountStatus(next))
+			}
+			deps.InvalidateSessions = func(ctx context.Context, tenantID, userID string) error {
+				if err := e.revokeUserSessions(ctx, tenantID, userID); err != nil {
+					return errors.Join(ErrSessionInvalidationFailed, err)
+				}
+				return nil
+			}
 		}
 	}
 	if e == nil || e.userProvider == nil {
@@ -2834,9 +2925,10 @@ func (e *Engine) issueLoginSessionTokensForResult(
 	user UserRecord,
 	tenantID string,
 	rememberMe bool,
+	epoch int64,
 ) (string, string, error) {
 	e.ensureFlowDeps()
-	return e.flows.IssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID, rememberMe)
+	return e.flows.IssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID, rememberMe, epoch)
 }
 
 func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
@@ -2922,6 +3014,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.PasswordNeedsUpgrade = e.passwordHash.NeedsUpgrade
 		deps.HashPassword = e.passwordHash.Hash
 	}
+	if e != nil && e.passwordCAS != nil {
+		deps.CompareAndSwapPasswordHash = e.passwordCAS.CompareAndSwapPasswordHash
+	}
 	if e != nil && e.totp != nil {
 		deps.VerifyTOTPCode = e.verifyTOTP
 	}
@@ -2940,8 +3035,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	if e != nil {
 		deps.VerifyBackupCodeInTenant = e.VerifyBackupCodeInTenant
 		deps.CreateMFALoginChallenge = e.createMFALoginChallenge
-		deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user internalflows.LoginUserRecord, tenantID string, rememberMe bool) (string, string, error) {
-			return e.issueLoginSessionTokensForResult(ctx, username, fromFlowLoginUser(user), tenantID, rememberMe)
+		deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user internalflows.LoginUserRecord, tenantID string, rememberMe bool, epoch int64) (string, string, error) {
+			return e.issueLoginSessionTokensForResult(ctx, username, fromFlowLoginUser(user), tenantID, rememberMe, epoch)
 		}
 		deps.EnforceSessionHardening = e.enforceSessionHardeningOnLogin
 	}
@@ -2971,6 +3066,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			}, ttl)
 		}
 		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete
+		deps.SaveMFAChallengeEpoch = e.mfaLoginStore.SaveEpoch
+		deps.GetMFAChallengeEpoch = e.mfaLoginStore.Epoch
 		deps.ReserveMFAAttempt = e.mfaLoginStore.ReserveAttempt
 		deps.ReleaseMFAAttempt = func(ctx context.Context, challengeID string) {
 			_ = e.mfaLoginStore.ReleaseAttempt(ctx, challengeID)
@@ -3002,6 +3099,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			}
 			return e.sessionStore.Save(ctx, sess, ttl)
 		}
+		deps.ReadEpoch = e.readRevocationEpoch
+		deps.SaveSessionFenced = e.saveSessionFenced
 	}
 
 	return deps
@@ -3423,7 +3522,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 		deps.ConsumeResetRecord = e.consumeResetRecord
 	}
 	if e != nil {
-		deps.LogoutAllInTenant = e.LogoutAllInTenant
+		deps.LogoutAllInTenant = e.revokeUserSessions
 		deps.VerifyTOTPForUser = func(ctx context.Context, user internalflows.PasswordResetUser, code string) error {
 			return e.verifyTOTPForUser(ctx, UserRecord{
 				UserID:   user.UserID,
@@ -3773,7 +3872,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 		deps.UpdateTOTPLastUsedCounter = e.userProvider.UpdateTOTPLastUsedCounter
 	}
 	if e != nil {
-		deps.LogoutAllInTenant = e.LogoutAllInTenant
+		deps.LogoutAllInTenant = e.revokeUserSessions
 	}
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret

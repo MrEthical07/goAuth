@@ -109,7 +109,37 @@ func (s *MFALoginChallengeStore) Delete(ctx context.Context, challengeID string)
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}
+	_ = s.redis.Del(ctx, s.epochKey(challengeID)).Err()
 	return n > 0, nil
+}
+
+// epochKey names the companion of a challenge that carries the user's
+// revocation epoch as it was when the password step passed. It is a separate
+// key so the challenge's binary record keeps its format.
+func (s *MFALoginChallengeStore) epochKey(challengeID string) string {
+	return s.key(challengeID) + ":ep"
+}
+
+// SaveEpoch records the revocation epoch the password step ran under, for the
+// life of the challenge.
+func (s *MFALoginChallengeStore) SaveEpoch(ctx context.Context, challengeID string, epoch int64, ttl time.Duration) error {
+	if err := s.redis.Set(ctx, s.epochKey(challengeID), epoch, ttl).Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
+	}
+	return nil
+}
+
+// Epoch returns the epoch recorded by SaveEpoch. ok is false for a challenge
+// created without one (by an earlier version).
+func (s *MFALoginChallengeStore) Epoch(ctx context.Context, challengeID string) (epoch int64, ok bool, err error) {
+	epoch, err = s.redis.Get(ctx, s.epochKey(challengeID)).Int64()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
+	}
+	return epoch, true, nil
 }
 
 // reserveAttemptScript claims one attempt of a challenge and leaves the rest
