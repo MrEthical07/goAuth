@@ -3094,8 +3094,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			}, ttl)
 		}
 		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete
-		deps.SaveMFAChallengeEpoch = e.mfaLoginStore.SaveEpoch
-		deps.GetMFAChallengeEpoch = e.mfaLoginStore.Epoch
+		deps.SaveMFAChallengeContext = e.mfaLoginStore.SaveContext
+		deps.GetMFAChallengeContext = e.mfaLoginStore.Context
 		deps.ReserveMFAAttempt = e.mfaLoginStore.ReserveAttempt
 		deps.ReleaseMFAAttempt = func(ctx context.Context, challengeID string) {
 			_ = e.mfaLoginStore.ReleaseAttempt(ctx, challengeID)

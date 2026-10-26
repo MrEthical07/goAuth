@@ -332,22 +332,22 @@ func TestRedisCompat_MFAChallengeEpoch(t *testing.T) {
 			store := stores.NewMFALoginChallengeStore(rdb, "amc")
 			ctx := context.Background()
 
-			if _, ok, err := store.Epoch(ctx, "c1"); err != nil || ok {
+			if _, _, ok, err := store.Context(ctx, "c1"); err != nil || ok {
 				t.Fatalf("no epoch yet: ok=%v err=%v", ok, err)
 			}
 			if err := store.Save(ctx, "c1", &stores.MFALoginChallenge{UserID: "u1", TenantID: "0", ExpiresAt: time.Now().Add(time.Minute).Unix()}, time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.SaveEpoch(ctx, "c1", 7, time.Minute); err != nil {
+			if err := store.SaveContext(ctx, "c1", 7, 2, time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if epoch, ok, err := store.Epoch(ctx, "c1"); err != nil || !ok || epoch != 7 {
-				t.Fatalf("epoch = %d ok=%v err=%v", epoch, ok, err)
+			if epoch, adv, ok, err := store.Context(ctx, "c1"); err != nil || !ok || epoch != 7 || adv != 2 {
+				t.Fatalf("epoch = %d advertised = %d ok=%v err=%v", epoch, adv, ok, err)
 			}
 			if deleted, err := store.Delete(ctx, "c1"); err != nil || !deleted {
 				t.Fatalf("delete = %v, %v", deleted, err)
 			}
-			if _, ok, _ := store.Epoch(ctx, "c1"); ok {
+			if _, _, ok, _ := store.Context(ctx, "c1"); ok {
 				t.Fatal("the epoch outlived its challenge")
 			}
 		})

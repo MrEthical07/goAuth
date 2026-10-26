@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -109,37 +111,52 @@ func (s *MFALoginChallengeStore) Delete(ctx context.Context, challengeID string)
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}
-	_ = s.redis.Del(ctx, s.epochKey(challengeID)).Err()
+	_ = s.redis.Del(ctx, s.contextKey(challengeID)).Err()
 	return n > 0, nil
 }
 
-// epochKey names the companion of a challenge that carries the user's
-// revocation epoch as it was when the password step passed. It is a separate
-// key so the challenge's binary record keeps its format.
-func (s *MFALoginChallengeStore) epochKey(challengeID string) string {
+// contextKey names the companion of a challenge that carries what the password
+// step knew: the user's revocation epoch and the factors it advertised. It is a
+// separate key so the challenge's binary record keeps its format.
+func (s *MFALoginChallengeStore) contextKey(challengeID string) string {
 	return s.key(challengeID) + ":ep"
 }
 
-// SaveEpoch records the revocation epoch the password step ran under, for the
-// life of the challenge.
-func (s *MFALoginChallengeStore) SaveEpoch(ctx context.Context, challengeID string, epoch int64, ttl time.Duration) error {
-	if err := s.redis.Set(ctx, s.epochKey(challengeID), epoch, ttl).Err(); err != nil {
+// SaveContext records the revocation epoch the password step ran under and the
+// bit set of factors it advertised (zero: unknown), for the life of the
+// challenge. The value is "<epoch>:<advertised>".
+func (s *MFALoginChallengeStore) SaveContext(ctx context.Context, challengeID string, epoch int64, advertised uint8, ttl time.Duration) error {
+	value := strconv.FormatInt(epoch, 10) + ":" + strconv.Itoa(int(advertised))
+	if err := s.redis.Set(ctx, s.contextKey(challengeID), value, ttl).Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}
 	return nil
 }
 
-// Epoch returns the epoch recorded by SaveEpoch. ok is false for a challenge
-// created without one (by an earlier version).
-func (s *MFALoginChallengeStore) Epoch(ctx context.Context, challengeID string) (epoch int64, ok bool, err error) {
-	epoch, err = s.redis.Get(ctx, s.epochKey(challengeID)).Int64()
+// Context returns what SaveContext recorded. ok is false for a challenge created
+// without one (by an earlier version); a value without an advertised set (the
+// epoch alone) reads as advertised == 0.
+func (s *MFALoginChallengeStore) Context(ctx context.Context, challengeID string) (epoch int64, advertised uint8, ok bool, err error) {
+	raw, err := s.redis.Get(ctx, s.contextKey(challengeID)).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return 0, false, nil
+			return 0, 0, false, nil
 		}
-		return 0, false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
+		return 0, 0, false, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}
-	return epoch, true, nil
+	epochPart, advPart, hasAdv := strings.Cut(raw, ":")
+	epoch, err = strconv.ParseInt(epochPart, 10, 64)
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("%w: malformed challenge context", ErrMFALoginChallengeBackend)
+	}
+	if hasAdv {
+		n, perr := strconv.ParseUint(advPart, 10, 8)
+		if perr != nil {
+			return 0, 0, false, fmt.Errorf("%w: malformed challenge context", ErrMFALoginChallengeBackend)
+		}
+		advertised = uint8(n)
+	}
+	return epoch, advertised, true, nil
 }
 
 // reserveAttemptScript claims one attempt of a challenge and leaves the rest

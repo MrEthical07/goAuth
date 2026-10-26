@@ -246,13 +246,16 @@ type LoginDeps struct {
 	RecordAssurance func(ctx context.Context, tenantID, refreshToken, method string, rememberMe bool)
 
 	CreateMFALoginChallenge func(context.Context, string, string, bool) (string, error)
-	// SaveMFAChallengeEpoch and GetMFAChallengeEpoch carry the user's
-	// revocation epoch from the password step to the confirmation, so a
-	// revocation that lands between them refuses the confirmation instead of
-	// being read as the epoch to issue under. When unset, or for a challenge
-	// stored without one, the confirmation reads the epoch itself.
-	SaveMFAChallengeEpoch func(ctx context.Context, challengeID string, epoch int64, ttl time.Duration) error
-	GetMFAChallengeEpoch  func(ctx context.Context, challengeID string) (int64, bool, error)
+	// SaveMFAChallengeContext and GetMFAChallengeContext carry what the password
+	// step knew to the confirmation: the user's revocation epoch, so a
+	// revocation that lands between the two refuses the confirmation instead of
+	// being read as the epoch to issue under, and the factors the challenge
+	// advertised (AdvertisesTOTP, AdvertisesWebAuthn), so a factor the user
+	// enrolled meanwhile is not accepted for a challenge that never offered it.
+	// When unset, or for a challenge stored without them, the confirmation reads
+	// the epoch itself and accepts any enrolled factor, as before.
+	SaveMFAChallengeContext func(ctx context.Context, challengeID string, epoch int64, advertised uint8, ttl time.Duration) error
+	GetMFAChallengeContext  func(ctx context.Context, challengeID string) (epoch int64, advertised uint8, found bool, err error)
 	// IssueLoginSessionTokens issues the session and tokens. epoch is the
 	// revocation epoch read before the account was read; the session is stored
 	// only if it has not moved (session.ErrSessionFenced otherwise).
@@ -759,12 +762,12 @@ func runCompleteLogin(
 	}
 	if len(mfaTypes) > 0 {
 		challengeID, err := deps.CreateMFALoginChallenge(ctx, user.UserID, tenantID, opts.RememberMe)
-		if err == nil && deps.SaveMFAChallengeEpoch != nil {
+		if err == nil && deps.SaveMFAChallengeContext != nil {
 			ttl := deps.MFALoginChallengeTTL
 			if ttl <= 0 {
 				ttl = 3 * time.Minute
 			}
-			if saveErr := deps.SaveMFAChallengeEpoch(ctx, challengeID, opts.Epoch, ttl); saveErr != nil {
+			if saveErr := deps.SaveMFAChallengeContext(ctx, challengeID, opts.Epoch, advertisedFactors(mfaTypes), ttl); saveErr != nil {
 				if deps.DeleteMFAChallenge != nil {
 					_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
 				}
@@ -897,14 +900,15 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	// the epoch here, before the account, as the password step does.
 	var epoch int64
 	pinnedEpoch := false
-	if deps.GetMFAChallengeEpoch != nil {
-		stored, found, epochErr := deps.GetMFAChallengeEpoch(ctx, challengeID)
+	var advertised uint8
+	if deps.GetMFAChallengeContext != nil {
+		stored, adv, found, epochErr := deps.GetMFAChallengeContext(ctx, challengeID)
 		if epochErr != nil {
 			deps.MetricInc(deps.Metrics.MFALoginFailure)
 			deps.EmitAudit(ctx, deps.Events.MFAFailure, false, record.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
 			return nil, deps.Errors.MFALoginUnavailable
 		}
-		epoch, pinnedEpoch = stored, found
+		epoch, pinnedEpoch, advertised = stored, found, adv
 	}
 	if !pinnedEpoch && deps.ReadEpoch != nil {
 		var epochErr error
@@ -965,6 +969,15 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	}
 	fail := func(cause error) (*LoginResult, error) {
 		return runFailLoginMFAAttempt(ctx, challengeID, user.UserID, record.TenantID, attempt, cause, deps)
+	}
+
+	// A factor the challenge did not offer is not accepted, even one the user
+	// enrolled after the password step: it counts as a wrong answer.
+	if !challengeAllowsFactor(advertised, mfaType) {
+		if claimErr := claim(); claimErr != nil {
+			return nil, claimErr
+		}
+		return fail(deps.Errors.MFALoginInvalid)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(mfaType)) {
@@ -1132,6 +1145,45 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		AccessToken:  access,
 		RefreshToken: refresh,
 	}, nil
+}
+
+// Factors a challenge can advertise, as the bit set stored with it.
+const (
+	AdvertisesTOTP     uint8 = 1 << 0
+	AdvertisesWebAuthn uint8 = 1 << 1
+)
+
+// advertisedFactors maps the factor names the password step offered to the bit
+// set stored with the challenge.
+func advertisedFactors(mfaTypes []string) uint8 {
+	var set uint8
+	for _, t := range mfaTypes {
+		switch t {
+		case "totp":
+			set |= AdvertisesTOTP
+		case "webauthn":
+			set |= AdvertisesWebAuthn
+		}
+	}
+	return set
+}
+
+// challengeAllowsFactor reports whether a confirmation of the given type is
+// within what the challenge advertised. A challenge that recorded nothing
+// (advertised == 0) allows everything, as challenges always did. A backup code
+// is the fallback of TOTP, so it is allowed when TOTP was offered.
+func challengeAllowsFactor(advertised uint8, mfaType string) bool {
+	if advertised == 0 {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(mfaType)) {
+	case "", "totp", "backup":
+		return advertised&AdvertisesTOTP != 0
+	case "webauthn":
+		return advertised&AdvertisesWebAuthn != 0
+	default:
+		return true // unknown types are refused by the switch below
+	}
 }
 
 // loginAssuranceMethod maps the login confirmation type to the factor name

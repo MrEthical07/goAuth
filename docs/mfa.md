@@ -56,6 +56,7 @@ type LoginResult struct {
 argument carries the raw assertion response JSON for webauthn — see
 [webauthn.md](webauthn.md)). When a user has both WebAuthn credentials and TOTP,
 `MFATypes` lists both and `MFAType` prefers `"webauthn"` (phishing-resistant first).
+A confirmation is accepted only for a factor the challenge **advertised**: the password step stores the offered factors next to the challenge (`amc:<challenge>:ep`, which also carries the revocation epoch) and `ConfirmLoginMFAWithType` counts any other type as a wrong answer (`ErrMFALoginInvalid`, one attempt). `"backup"` is the fallback of `"totp"` and is allowed whenever TOTP was advertised. A factor the user enrolled after the password step therefore does not answer a challenge that never offered it. A challenge created without that record (by an earlier version) accepts any enrolled factor, as before.
 
 ### Session profiles
 
