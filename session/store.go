@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/MrEthical07/goAuth/internal/clock"
@@ -796,7 +797,8 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 // EstimateActiveSessions scans tenant session keys and counts matches.
 // This is an admin-only O(n) operation and must not be used in request hot paths.
 func (s *Store) EstimateActiveSessions(ctx context.Context, tenantID string) (int, error) {
-	pattern := s.prefix + ":" + normalizeTenantID(tenantID) + ":*"
+	base := s.key(tenantID, "")
+	pattern := escapeGlob(base) + "*"
 	var (
 		cursor uint64
 		total  int
@@ -807,7 +809,14 @@ func (s *Store) EstimateActiveSessions(ctx context.Context, tenantID string) (in
 		if err != nil {
 			return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 		}
-		total += len(keys)
+		for _, k := range keys {
+			// A session ID has no ':'. A longer remainder belongs to a tenant
+			// whose ID extends this one ("a" and "a:b"), whose keys also
+			// match the pattern.
+			if !strings.Contains(strings.TrimPrefix(k, base), ":") {
+				total++
+			}
+		}
 		cursor = next
 		if cursor == 0 {
 			break
@@ -815,6 +824,23 @@ func (s *Store) EstimateActiveSessions(ctx context.Context, tenantID string) (in
 	}
 
 	return total, nil
+}
+
+// escapeGlob escapes the characters that are special in a Redis glob pattern,
+// so a tenant ID is matched literally.
+func escapeGlob(s string) string {
+	if !strings.ContainsAny(s, "\\*?[]") {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '*', '?', '[', ']':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // Ping returns a point-in-time Redis availability check and latency.
