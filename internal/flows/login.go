@@ -246,6 +246,13 @@ type LoginDeps struct {
 	RecordAssurance func(ctx context.Context, tenantID, refreshToken, method string, rememberMe bool)
 
 	CreateMFALoginChallenge func(context.Context, string, string, bool) (string, error)
+	// SaveMFAChallengeEpoch and GetMFAChallengeEpoch carry the user's
+	// revocation epoch from the password step to the confirmation, so a
+	// revocation that lands between them refuses the confirmation instead of
+	// being read as the epoch to issue under. When unset, or for a challenge
+	// stored without one, the confirmation reads the epoch itself.
+	SaveMFAChallengeEpoch func(ctx context.Context, challengeID string, epoch int64, ttl time.Duration) error
+	GetMFAChallengeEpoch  func(ctx context.Context, challengeID string) (int64, bool, error)
 	// IssueLoginSessionTokens issues the session and tokens. epoch is the
 	// revocation epoch read before the account was read; the session is stored
 	// only if it has not moved (session.ErrSessionFenced otherwise).
@@ -752,6 +759,18 @@ func runCompleteLogin(
 	}
 	if len(mfaTypes) > 0 {
 		challengeID, err := deps.CreateMFALoginChallenge(ctx, user.UserID, tenantID, opts.RememberMe)
+		if err == nil && deps.SaveMFAChallengeEpoch != nil {
+			ttl := deps.MFALoginChallengeTTL
+			if ttl <= 0 {
+				ttl = 3 * time.Minute
+			}
+			if saveErr := deps.SaveMFAChallengeEpoch(ctx, challengeID, opts.Epoch, ttl); saveErr != nil {
+				if deps.DeleteMFAChallenge != nil {
+					_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
+				}
+				err = deps.Errors.MFALoginUnavailable
+			}
+		}
 		if err != nil {
 			deps.MetricInc(deps.Metrics.MFALoginFailure)
 			deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, tenantID, "", err, nil)
@@ -774,7 +793,7 @@ func runCompleteLogin(
 		}, nil
 	}
 
-	access, refresh, err := issueFenced(ctx, username, user, tenantID, opts.RememberMe, opts.Epoch, verifiedHash, deps)
+	access, refresh, err := issueFenced(ctx, username, user, tenantID, opts.RememberMe, opts.Epoch, verifiedHash, false, deps)
 	if err != nil {
 		return nil, err
 	}
@@ -873,9 +892,21 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, deps.Errors.MFALoginInvalid
 	}
 
-	// The epoch is read before the account, as at the password step.
+	// The epoch is the one the password step ran under, so a revocation after
+	// that step refuses this confirmation. A challenge stored without one reads
+	// the epoch here, before the account, as the password step does.
 	var epoch int64
-	if deps.ReadEpoch != nil {
+	pinnedEpoch := false
+	if deps.GetMFAChallengeEpoch != nil {
+		stored, found, epochErr := deps.GetMFAChallengeEpoch(ctx, challengeID)
+		if epochErr != nil {
+			deps.MetricInc(deps.Metrics.MFALoginFailure)
+			deps.EmitAudit(ctx, deps.Events.MFAFailure, false, record.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
+			return nil, deps.Errors.MFALoginUnavailable
+		}
+		epoch, pinnedEpoch = stored, found
+	}
+	if !pinnedEpoch && deps.ReadEpoch != nil {
 		var epochErr error
 		if epoch, epochErr = deps.ReadEpoch(ctx, record.TenantID, record.UserID); epochErr != nil {
 			deps.MetricInc(deps.Metrics.MFALoginFailure)
@@ -1074,7 +1105,7 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	if identifier == "" {
 		identifier = user.UserID
 	}
-	access, refresh, err := issueFenced(ctx, identifier, user, record.TenantID, record.RememberMe, epoch, "", deps)
+	access, refresh, err := issueFenced(ctx, identifier, user, record.TenantID, record.RememberMe, epoch, "", pinnedEpoch, deps)
 	if err != nil {
 		deps.MetricInc(deps.Metrics.MFALoginFailure)
 		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", err, nil)
@@ -1548,6 +1579,7 @@ func issueFenced(
 	rememberMe bool,
 	epoch int64,
 	verifiedHash string,
+	pinnedEpoch bool,
 	deps LoginDeps,
 ) (string, string, error) {
 	access, refresh, err := deps.IssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, epoch)
@@ -1564,6 +1596,11 @@ func issueFenced(
 			}
 		})
 		return "", "", cause
+	}
+	if pinnedEpoch {
+		// The password was verified before the revocation and nothing here can
+		// tell whether it still holds; the user signs in again.
+		return refuse("revoked_since_password_step", deps.Errors.MFALoginInvalid)
 	}
 	if deps.ReadEpoch == nil || deps.GetUserByID == nil {
 		return refuse("revoked_during_login", deps.Errors.InvalidCredentials)

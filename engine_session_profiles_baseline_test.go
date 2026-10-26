@@ -577,21 +577,23 @@ const spbV070Transcript = `
   cmd del rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19
   cmd scard au:0:u1
   cmd set amc:<id6> challenge:02000000000000000000000002753100013000 ex 180
+  cmd set amc:<id6>:ep 2 ex 180
   challenge ttl=180000ms bytes=02000000000000000000000002753100013000
 == mfa wrong code
   err AUTH_MFA_INVALID_CODE/AUTH_VALIDATION
   cmd get amc:<id6>
-  cmd get aue:0:u1
+  cmd get amc:<id6>:ep
   cmd script keys=[amc:<id6>] argv=[5 <ts>]
   cmd script keys=[rl:totp:fail:0:u1] argv=[5 60000]
   challenge after failure bytes=02000100000000000000000002753100013000
 == mfa login step 2
   cmd get amc:<id6>
-  cmd get aue:0:u1
+  cmd get amc:<id6>:ep
   cmd script keys=[amc:<id6>] argv=[5 <ts>]
   cmd script keys=[rl:totp:fail:0:u1] argv=[5 60000]
   cmd del rl:totp:fail:0:u1
   cmd del amc:<id6>
+  cmd del amc:<id6>:ep
   cmd script keys=[as:0:<id7> au:0:u1 ast:0:count aue:0:u1] argv=[blob:050275310130077465616368657200000001000000010000000200080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s 604800000 2 <id7> 0 0 0 0 as:0: asa:0:]
   cmd del rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:9beb1edd8c46a76b1eb950557175f686f7daf96bab8f8a05beb186f887287053
   mfa session ttl=604800000ms blob=050275310130077465616368657200000001000000010000000200080000000000000001eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 lifetime=604800s

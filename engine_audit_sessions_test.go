@@ -558,3 +558,80 @@ func TestEveryEngineRevocationGoesThroughTheSharedHelper(t *testing.T) {
 		}
 	}
 }
+
+// FAILED-BEFORE (R2-08, MFA step): the confirmation read the revocation epoch
+// when it ran, so a password change between the password step and the
+// confirmation was invisible to the fence and the session it stored survived.
+func TestMFAConfirmAfterARevocationSincePasswordStepStoresNoSession(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		revoke func(e *Engine) error
+	}{
+		{"password change", func(e *Engine) error {
+			return e.ChangePassword(context.Background(), "u1", "correct-password-123", "another-password-456")
+		}},
+		{"logout all", func(e *Engine) error { return e.LogoutAll(context.Background(), "u1") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := mfaLoginConfig()
+			up := newHardeningUserProvider(t)
+			engine, _ := newAuditEngine(t, cfg, up)
+			secret := enableUserTOTP(t, engine, "u1", cfg)
+
+			challenge := mfaChallenge(t, engine)
+			if err := tc.revoke(engine); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if _, err := engine.ConfirmLoginMFA(context.Background(), challenge, codeForNow(t, secret, cfg.TOTP)); err == nil {
+				t.Fatal("the confirmation stored a session after the revocation")
+			}
+			if n := activeSessions(t, engine); n != 0 {
+				t.Fatalf("user holds %d sessions, want 0", n)
+			}
+		})
+	}
+}
+
+// A challenge stored without an epoch (created by an earlier version) reads the
+// epoch when it is confirmed, as before.
+func TestMFAConfirmOfAChallengeWithoutAStoredEpochStillWorks(t *testing.T) {
+	cfg := mfaLoginConfig()
+	up := newHardeningUserProvider(t)
+	engine, mr := newAuditEngine(t, cfg, up)
+	secret := enableUserTOTP(t, engine, "u1", cfg)
+
+	challenge := mfaChallenge(t, engine)
+	removed := 0
+	for _, key := range mr.Keys() {
+		if strings.HasSuffix(key, ":ep") && strings.Contains(key, challenge) {
+			mr.Del(key)
+			removed++
+		}
+	}
+	if removed != 1 {
+		t.Fatalf("expected one stored epoch for the challenge, found %d", removed)
+	}
+	if _, err := engine.ConfirmLoginMFA(context.Background(), challenge, codeForNow(t, secret, cfg.TOTP)); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if n := activeSessions(t, engine); n != 1 {
+		t.Fatalf("user holds %d sessions, want 1", n)
+	}
+}
+
+func TestMFAChallengeEpochIsRemovedWithTheChallenge(t *testing.T) {
+	cfg := mfaLoginConfig()
+	up := newHardeningUserProvider(t)
+	engine, mr := newAuditEngine(t, cfg, up)
+	secret := enableUserTOTP(t, engine, "u1", cfg)
+
+	challenge := mfaChallenge(t, engine)
+	if _, err := engine.ConfirmLoginMFA(context.Background(), challenge, codeForNow(t, secret, cfg.TOTP)); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	for _, key := range mr.Keys() {
+		if strings.Contains(key, challenge) {
+			t.Fatalf("challenge key %q survived its confirmation", key)
+		}
+	}
+}
