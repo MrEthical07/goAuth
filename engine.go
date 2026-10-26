@@ -2534,6 +2534,15 @@ func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID strin
 	if err != nil {
 		return internalflows.PasswordResetStoreRecord{}, err
 	}
+	// A newer request, or a reset that completed since this one was issued,
+	// superseded the record: the secret was right, the code is dead.
+	current, pointerErr := e.resetStore.IsCurrent(ctx, tenantID, record.UserID, resetID)
+	if pointerErr != nil {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
+	}
+	if !current {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
+	}
 	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
 	if markerErr != nil {
 		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
@@ -3536,6 +3545,8 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 			}, nil
 		}
 		deps.ConsumeResetRecord = e.consumeResetRecord
+		deps.SupersedeResets = e.resetStore.SetCurrent
+		deps.InvalidateResets = e.resetStore.InvalidateOutstanding
 	}
 	if e != nil {
 		deps.LogoutAllInTenant = e.revokeUserSessions
