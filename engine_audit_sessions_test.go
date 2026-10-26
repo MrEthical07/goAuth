@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Regression tests for the session-lifecycle findings of the v0.8.0 security
@@ -326,5 +328,136 @@ func TestSingleSessionPasswordLoginStillReplacesThePreviousSession(t *testing.T)
 	}
 	if _, err := engine.Validate(ctx, second, ModeStrict); err != nil {
 		t.Fatalf("the new session does not validate: %v", err)
+	}
+}
+
+// failOnceOnKey makes the first Redis command that names key fail, like a
+// transient outage in the middle of a revocation.
+type failOnceOnKey struct {
+	key   string
+	armed atomic.Bool
+}
+
+func (h *failOnceOnKey) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *failOnceOnKey) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		for _, a := range cmd.Args() {
+			if s, ok := a.(string); ok && s == h.key && h.armed.CompareAndSwap(true, false) {
+				return errors.New("transient redis failure")
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *failOnceOnKey) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func requireSessionRevoked(t *testing.T, engine *Engine, access, refresh string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := engine.Validate(ctx, access, ModeStrict); err == nil {
+		t.Fatal("the old access token still validates strictly")
+	}
+	if _, _, err := engine.Refresh(ctx, refresh); err == nil {
+		t.Fatal("the old refresh token still rotates")
+	}
+}
+
+// FAILED-BEFORE (R2-12): DisableAccount committed the status and then failed to
+// revoke the sessions; the retry saw the status already in place, returned nil
+// and never revoked them.
+func TestRetriedDisableAfterAFailedRevocationRevokesTheSessions(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.ValidationMode = ModeStrict
+	up := newHardeningUserProvider(t)
+	engine, rdb, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	ctx := context.Background()
+
+	access, refresh, err := engine.Login(ctx, "alice", "correct-password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := &failOnceOnKey{key: "au:0:u1"}
+	hook.armed.Store(true)
+	rdb.AddHook(hook)
+
+	if err := engine.DisableAccount(ctx, "u1"); !errors.Is(err, ErrSessionInvalidationFailed) {
+		t.Fatalf("first DisableAccount: %v, want ErrSessionInvalidationFailed", err)
+	}
+	if up.users["u1"].Status != AccountDisabled {
+		t.Fatalf("the status was not committed: %d", up.users["u1"].Status)
+	}
+	if err := engine.DisableAccount(ctx, "u1"); err != nil {
+		t.Fatalf("retried DisableAccount: %v", err)
+	}
+	requireSessionRevoked(t, engine, access, refresh)
+}
+
+// FAILED-BEFORE (R2-12): a provider that commits the status without advancing
+// the account version made DisableAccount fail before it revoked anything.
+func TestDisableRevokesEvenWhenTheProviderDoesNotAdvanceTheVersion(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.ValidationMode = ModeStrict
+	up := newHardeningUserProvider(t)
+	up.skipStatusVersionBump = true
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	ctx := context.Background()
+
+	access, refresh, err := engine.Login(ctx, "alice", "correct-password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.DisableAccount(ctx, "u1"); !errors.Is(err, ErrAccountVersionNotAdvanced) {
+		t.Fatalf("DisableAccount: %v, want ErrAccountVersionNotAdvanced", err)
+	}
+	requireSessionRevoked(t, engine, access, refresh)
+}
+
+// FAILED-BEFORE (R2-12): a status the host wrote itself before the call.
+func TestDisableOfAnAlreadyDisabledAccountStillRevokes(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.ValidationMode = ModeStrict
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	ctx := context.Background()
+
+	access, refresh, err := engine.Login(ctx, "alice", "correct-password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := up.users["u1"]
+	user.Status = AccountDisabled
+	up.users["u1"] = user
+
+	if err := engine.DisableAccount(ctx, "u1"); err != nil {
+		t.Fatalf("DisableAccount: %v", err)
+	}
+	requireSessionRevoked(t, engine, access, refresh)
+}
+
+// Enabling an account that is already active remains a no-op.
+func TestEnableOfAnActiveAccountIsStillANoOp(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.ValidationMode = ModeStrict
+	up := newHardeningUserProvider(t)
+	engine, _, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+	ctx := context.Background()
+
+	access, _, err := engine.Login(ctx, "alice", "correct-password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.EnableAccount(ctx, "u1"); err != nil {
+		t.Fatalf("EnableAccount: %v", err)
+	}
+	if _, err := engine.Validate(ctx, access, ModeStrict); err != nil {
+		t.Fatalf("a no-op enable ended the session: %v", err)
 	}
 }

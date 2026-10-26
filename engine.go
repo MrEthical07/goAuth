@@ -1444,6 +1444,7 @@ func (e *Engine) accountStatusFlowDeps() internalflows.UpdateAccountStatusDeps {
 		ErrAccountVersionNotAdvanced: ErrAccountVersionNotAdvanced,
 		ErrUnauthorized:              ErrUnauthorized,
 		ErrSessionInvalidationFailed: ErrSessionInvalidationFailed,
+		ActiveStatus:                 uint8(AccountActive),
 	}
 
 	if e != nil && e.userProvider != nil {
