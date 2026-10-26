@@ -386,7 +386,16 @@ func newTestRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 		t.Fatalf("miniredis.Run failed: %v", err)
 	}
 
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	// The server is in process: a refused connection means a test closed it on
+	// purpose to simulate an outage, and retrying (go-redis defaults to 3
+	// command retries and 5 dial attempts with backoff) only makes each such
+	// test take seconds, which adds up under the race detector.
+	client := redis.NewClient(&redis.Options{
+		Addr:               mr.Addr(),
+		MaxRetries:         -1,
+		DialerRetries:      1,
+		DialerRetryTimeout: time.Millisecond,
+	})
 	return mr, client
 }
 
