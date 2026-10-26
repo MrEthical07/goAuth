@@ -177,6 +177,30 @@ type TenantAwarePasswordUpdater interface {
 	UpdatePasswordHashInTenant(ctx context.Context, tenantID, userID, newHash string) error
 }
 
+// PasswordHashCASUpdater is an optional capability interface a [UserProvider]
+// can additionally implement so the rehash-on-login upgrade
+// ([PasswordConfig.UpgradeOnLogin]) cannot overwrite a password that changed
+// after the login read the account. It is detected via type assertion at
+// [Builder.Build].
+//
+// CompareAndSwapPasswordHash must store newHash only if the user's current
+// hash is exactly expectedOldHash, in one atomic step (UPDATE ... WHERE
+// password_hash = $expected), and report whether it did. A hash that no longer
+// matches is (false, nil), not an error: a password change or reset that
+// landed since the login read the account stays in force and the upgrade is
+// skipped. tenantID is the tenant the engine resolved itself.
+//
+// Without it the engine re-reads the user immediately before the write and
+// skips the upgrade unless the hash is still the verified one. That narrows the
+// window to the gap between the re-read and the write; it cannot close it.
+// The upgrade runs after the session has been issued (or the MFA challenge
+// created), so a login that is refused afterwards upgrades nothing.
+//
+//	Docs: docs/password.md
+type PasswordHashCASUpdater interface {
+	CompareAndSwapPasswordHash(ctx context.Context, tenantID, userID, expectedOldHash, newHash string) (applied bool, err error)
+}
+
 // RoleSwitchProvider is an optional capability interface a [UserProvider]
 // can additionally implement to enable [Engine.SwitchRole]. It is detected
 // via type assertion at [Builder.Build]; when [Config.RoleSwitch] is enabled

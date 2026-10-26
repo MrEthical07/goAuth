@@ -66,6 +66,7 @@ type Engine struct {
 	verifyTOTPFn          func(secret []byte, code string, now time.Time) (bool, int64, error)
 	tenantProvider        TenantAwareUserProvider
 	passwordUpdater       TenantAwarePasswordUpdater
+	passwordCAS           PasswordHashCASUpdater
 	roleSwitchProvider    RoleSwitchProvider
 	roleSwitchLimiter     *limiters.RoleSwitchLimiter
 	externalProvider      ExternalIdentityProvider
@@ -2999,6 +3000,9 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.VerifyPassword = e.verifyHash
 		deps.PasswordNeedsUpgrade = e.passwordHash.NeedsUpgrade
 		deps.HashPassword = e.passwordHash.Hash
+	}
+	if e != nil && e.passwordCAS != nil {
+		deps.CompareAndSwapPasswordHash = e.passwordCAS.CompareAndSwapPasswordHash
 	}
 	if e != nil && e.totp != nil {
 		deps.VerifyTOTPCode = e.verifyTOTP
