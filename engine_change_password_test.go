@@ -87,6 +87,8 @@ func (m *mockUserProvider) GetUserByID(userID string) (UserRecord, error) {
 // MultiTenant.Enabled is set. Both scan by tenant rather than using the
 // tenant-blind byIdentifier index.
 func (m *mockUserProvider) GetUserByIdentifierInTenant(ctx context.Context, tenantID, identifier string) (UserRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.getByIdentifierCalls++
 
 	for _, user := range m.users {
@@ -99,6 +101,8 @@ func (m *mockUserProvider) GetUserByIdentifierInTenant(ctx context.Context, tena
 }
 
 func (m *mockUserProvider) GetUserByIDInTenant(ctx context.Context, tenantID, userID string) (UserRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.getByIDCalls++
 
 	user, ok := m.users[userID]
@@ -110,6 +114,8 @@ func (m *mockUserProvider) GetUserByIDInTenant(ctx context.Context, tenantID, us
 }
 
 func (m *mockUserProvider) UpdatePasswordHash(userID string, newHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.updatePasswordCalls++
 
 	if m.updateErr != nil {
@@ -127,6 +133,8 @@ func (m *mockUserProvider) UpdatePasswordHash(userID string, newHash string) err
 }
 
 func (m *mockUserProvider) CreateUser(ctx context.Context, input CreateUserInput) (UserRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.createCalls++
 
 	if m.createErr != nil {
@@ -172,6 +180,8 @@ func (m *mockUserProvider) CreateUser(ctx context.Context, input CreateUserInput
 }
 
 func (m *mockUserProvider) UpdateAccountStatus(ctx context.Context, userID string, status AccountStatus) (UserRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.updateStatusCalls++
 
 	if m.statusErr != nil {
