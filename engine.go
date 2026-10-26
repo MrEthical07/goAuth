@@ -430,7 +430,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 	case internalflows.RefreshFailureRoleRevoked, internalflows.RefreshFailureRoleCheck:
 		return "", "", mapToAuthError(e.refreshRoleCheckFailure(ctx, result))
 	case internalflows.RefreshFailureDeviceBinding, internalflows.RefreshFailureUserChanged, internalflows.RefreshFailureUserCheck:
-		return "", "", e.refreshPreCheckFailure(ctx, result)
+		return "", "", mapToAuthError(e.refreshPreCheckFailure(ctx, result))
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, e.refreshNotFoundMeta(result.Err))
