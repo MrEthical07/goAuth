@@ -77,7 +77,6 @@ func TestConfigValidateEmailChangeAccepts(t *testing.T) {
 			c.VerificationTTL = 24 * time.Hour
 			c.MaxAttempts = 50
 		},
-		"uuid with a minute": func(c *EmailChangeConfig) { c.Strategy = VerificationUUID; c.VerificationTTL = time.Minute },
 		"otp at its limits": func(c *EmailChangeConfig) {
 			c.Strategy = VerificationOTP
 			c.OTPDigits = 10

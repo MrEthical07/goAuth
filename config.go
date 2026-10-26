@@ -631,9 +631,12 @@ type EmailChangeConfig struct {
 	// Enabled turns the feature on. Default: false.
 	Enabled bool
 
-	// Strategy is the code format sent to the new address, one of the email
-	// verification strategies. The zero value is VerificationToken, the same
-	// default as EmailVerification.
+	// Strategy is the code format sent to the new address: VerificationToken
+	// or VerificationOTP. The zero value is VerificationToken, the same default
+	// as EmailVerification. VerificationUUID is rejected by Build: in that
+	// strategy the secret is the identifier itself, so the VerificationID,
+	// which the host may hand to the browser, would reveal the Code that is
+	// supposed to prove the new address.
 	Strategy VerificationStrategyType
 
 	// OTPDigits is the code length in OTP mode (6 to 10). Zero selects 6.
@@ -694,7 +697,9 @@ func (c *Config) validateEmailChange() error {
 		return nil
 	}
 	switch e.Strategy {
-	case VerificationToken, VerificationOTP, VerificationUUID:
+	case VerificationToken, VerificationOTP:
+	case VerificationUUID:
+		return errors.New("EmailChange Strategy VerificationUUID is not supported: its Code is the VerificationID; use VerificationToken (the default) or VerificationOTP")
 	default:
 		return errors.New("EmailChange Strategy is invalid")
 	}

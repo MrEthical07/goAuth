@@ -25,7 +25,7 @@ type ConfirmEmailChangeOptions struct{ KeepSessionID string }
 type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoked bool }
 ```
 
-`userID` for Request and Cancel comes from the session, never from the request body. `VerificationID` is `<tenant>:<id>`: it carries the tenant, is safe to log, and may be handed to the browser. `Code` is a secret: send it to the new address, never log it. goAuth never writes it to the audit trail or its own logs.
+`userID` for Request and Cancel comes from the session, never from the request body. `VerificationID` is `<tenant>:<id>`: it carries the tenant, is safe to log, and may be handed to the browser; nothing about `Code` can be derived from it (which is why `VerificationUUID` is not available for email change). `Code` is a secret: send it to the new address, never log it. goAuth never writes it to the audit trail or its own logs.
 
 ### Request
 
@@ -111,7 +111,7 @@ goAuth has no public "recent MFA" accessor (the assurance it keeps per session s
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `Enabled` | `false` | Turns the three methods on. Requires `EmailChangeProvider`. |
-| `Strategy` | `VerificationToken` | Code format, the email-verification strategies (`VerificationToken`, `VerificationUUID`, `VerificationOTP`). The zero value is the same default as `EmailVerification`. |
+| `Strategy` | `VerificationToken` | Code format: `VerificationToken` or `VerificationOTP`. `VerificationUUID` is rejected by `Build` (its Code is the VerificationID, which you may hand to the browser). The zero value is the same default as `EmailVerification`. |
 | `OTPDigits` | 6 | Code length in OTP mode, 6 to 10. |
 | `VerificationTTL` | 15m | Challenge lifetime, 1m to 24h; at most 15m in OTP mode. |
 | `MaxAttempts` | 5 | Confirm attempts per challenge, at most 65535; at most 5 in OTP mode. |
