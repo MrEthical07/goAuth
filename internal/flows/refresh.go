@@ -35,8 +35,9 @@ const (
 	// RefreshFailureUserChanged: the user's permission, role or account
 	// version differs from the session's copy. The session was deleted.
 	RefreshFailureUserChanged
-	// RefreshFailureUserCheck: the user re-read could not reach the provider.
-	// Nothing was rotated or deleted.
+	// RefreshFailureUserCheck: a pre-rotation check could not run because the
+	// session store or the user provider was unreachable. Nothing was rotated
+	// or deleted.
 	RefreshFailureUserCheck
 )
 
@@ -98,6 +99,10 @@ type RefreshPreCheck struct {
 	// that does not exist; any other error is an outage.
 	LookupUser   func(ctx context.Context, tenantID, userID string) (RefreshUserState, error)
 	UserNotFound error
+
+	// StoreUnavailable is the error the session store returns when Redis cannot
+	// be reached. The checks fail closed on it: the token is not rotated.
+	StoreUnavailable error
 }
 
 // RefreshDeps captures refresh flow dependencies.
@@ -162,6 +167,15 @@ func runRefreshPreCheck(
 ) (RefreshResult, bool) {
 	pc := deps.PreCheck
 	sess, err := pc.Peek(ctx, tenantID, sessionID)
+	if err != nil && pc.StoreUnavailable != nil && errors.Is(err, pc.StoreUnavailable) {
+		// The policy could not be applied; rotating now would skip it.
+		return RefreshResult{
+			Failure:   RefreshFailureUserCheck,
+			Err:       err,
+			TenantID:  tenantID,
+			SessionID: sessionID,
+		}, true
+	}
 	if err != nil || sess == nil {
 		return RefreshResult{}, false
 	}

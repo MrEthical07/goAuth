@@ -206,8 +206,9 @@ func (e *Engine) refreshPreCheck() *internalflows.RefreshPreCheck {
 		return nil
 	}
 	pc := &internalflows.RefreshPreCheck{
-		Peek: e.sessionStore.Peek,
-		Now:  clock.Now,
+		Peek:             e.sessionStore.Peek,
+		Now:              clock.Now,
+		StoreUnavailable: session.ErrRedisUnavailable,
 	}
 	if enforceDevice {
 		pc.CheckDevice = e.validateDeviceBinding
@@ -251,7 +252,7 @@ func (e *Engine) refreshPreCheckFailure(ctx context.Context, result internalflow
 		return mapToAuthError(ErrSessionNotFound)
 	}
 	e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrSystemUnavailable, func() map[string]string {
-		return map[string]string{"reason": "user_check_unavailable"}
+		return map[string]string{"reason": "refresh_check_unavailable"}
 	})
 	return mapToAuthError(ErrSystemUnavailable)
 }

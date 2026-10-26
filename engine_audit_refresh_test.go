@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+
+	"github.com/MrEthical07/goAuth/internal"
 )
 
 // Regression tests for the refresh findings of the v0.8.0 security audit
@@ -247,6 +249,38 @@ func TestRefreshEnforcesDeviceBinding(t *testing.T) {
 			t.Fatalf("a spent token: %v, want ErrRefreshReuse", err)
 		}
 	})
+}
+
+// With binding enforced, a refresh whose device check cannot read the session
+// is refused, not rotated without the check.
+func TestRefreshWithEnforcedBindingFailsClosedWhenTheSessionCannotBeRead(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.DeviceBinding.Enabled = true
+	cfg.DeviceBinding.EnforceIPBinding = true
+	cfg.DeviceBinding.DetectIPChange = true
+	up := newHardeningUserProvider(t)
+	engine, rdb, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	_, refresh, err := engine.Login(boundDevice(), "alice", "correct-password-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, _, err := internal.DecodeRefreshToken(refresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := &failOnceOnKey{key: "as:0:" + sid}
+	hook.armed.Store(true)
+	rdb.AddHook(hook)
+
+	if _, _, err := engine.Refresh(otherAddress(), refresh); !errors.Is(err, ErrSystemUnavailable) {
+		t.Fatalf("refresh with an unreadable session: %v, want ErrSystemUnavailable", err)
+	}
+	// Nothing was rotated: the owner's token still works.
+	if _, _, err := engine.Refresh(boundDevice(), refresh); err != nil {
+		t.Fatalf("from the bound device afterwards: %v", err)
+	}
 }
 
 func boundDevice() context.Context {
