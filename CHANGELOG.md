@@ -7,14 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.1] - Unreleased
+## [0.8.1] - 2026-10-26
 
-Patch release (SemVer) with the fixes for the security audit of v0.8.0. No
-exported signature changed and `gorelease -base=v0.8.0` reports no
-incompatible change; the API additions are listed under each fix. **Upgrading
-from v0.8.0:** read the "Behavior changes" lists below and
-`docs/migrations.md`; v0.8.0 and v0.8.1 can share a Redis (new keys expire by
-TTL, no stored format changed).
+**Security release. Upgrading from v0.8.0 is recommended, and v0.8.0 is retracted**
+(`retract v0.8.0` in `go.mod`: MFA-login TOTP guessing was not limited per account;
+fixed in v0.8.1). It contains the fixes for the second security audit of v0.8.0
+(findings `R2-xx`), delivered as three pull requests. No exported signature changed:
+`gorelease -base=v0.8.0` reports only compatible changes, and every capability the
+fixes add is optional (new interfaces are detected by type assertion, new
+configuration keeps today's behavior unless a line below says otherwise).
+v0.8.0 and v0.8.1 can share a Redis during a rolling deploy; no stored format
+changed (read the notes under part 2 for what the revocation fence covers while
+both versions run).
+
+### Behavior changes when upgrading from v0.8.0
+
+What an application that enables nothing new sees, old → new, with the finding that
+causes it. The same changes are explained, with their reasons, in the three parts
+below and in `docs/migrations.md`.
+
+*Login and brute force (part 1)*
+
+- A correct password sent after `MaxLoginAttempts` wrong ones: accepted → refused with
+  `ErrLoginRateLimited`, before the password is evaluated. (R2-05)
+- Auto-lockout, if enabled: the attempt that reaches the threshold is answered
+  `ErrAccountLocked` → `ErrInvalidCredentials` (the lock is still applied); wrong
+  passwords rewrote a Disabled, Deleted or PendingVerification account to Locked →
+  they leave its status alone. (R2-14, R2-16)
+- MFA login: wrong TOTP codes were counted only inside the disposable challenge →
+  also against the per-account TOTP budget `VerifyTOTP` uses (5 per minute by default),
+  across challenges; the fifth wrong code destroys the challenge and answers
+  `ErrTOTPRateLimited`. (R2-01)
+- `RequestPasswordReset`, `RequestEmailVerification`, `CreateAccount`: an over-length
+  identifier (more than 320 bytes) was looked up and hashed → an invalid request; a
+  registered identifier answered faster than an unknown one → every branch takes the
+  same randomized 20–40 ms; a request refused only by the per-account budget answers
+  the rate-limit error. Their limiter keys became digests, so their counters restart
+  at zero. (R2-19, R2-23, R2-04, R2-21)
+- Login: an identifier over 320 bytes or a password over the hasher's limit was
+  evaluated → refused with `ErrInvalidCredentials` before any lookup. `Build` hashes one
+  throwaway password with your Argon2 settings. (R2-23, R2-18)
+
+*Sessions and revocation (part 2)*
+
+- Login read the account once → reads it a second time by ID (one extra
+  `GetUserByID` per login), and a login that raced a password change, a disable or a
+  logout-all is refused (`ErrInvalidCredentials` or the status error) or retried once
+  instead of storing a session. (R2-08)
+- MFA login: the session caps were checked at the password step only → also at the
+  confirmation (`ErrSessionLimitExceeded`); single-session mode ended the other
+  sessions at the password step → when the new session is stored; a confirmation after
+  a revocation since the password step: accepted → `ErrMFALoginInvalid`. (R2-27, R2-28, R2-08)
+- Rehash on login ran before the login was known to succeed and overwrote a newer
+  password → runs after the session is issued and skips a hash that changed. (R2-07)
+- `DisableAccount`, `LockAccount`, `DeleteAccount` skipped revocation when the user
+  already had that status → revoke on every call. (R2-12)
+- Password change and reset, TOTP changes, email change and blocking statuses revoked in
+  one tenant → in the request's tenant and the provider record's. (R2-09)
+- Refresh with enforced device binding ignored it → `ErrDeviceBindingRejected`. (R2-17)
+- Email verification could re-enable a blocked account → it activates only a pending
+  one. (R2-13)
+- Strict `Validate` was documented as noticing role and permission changes → the
+  documentation now says it compares the token with the session only; opt in to
+  `Security.RecheckUserOnRefresh` or call `InvalidateUserSessions`. (R2-11)
+
+*MFA artifacts, recovery and configuration (part 3)*
+
+- `GenerateBackupCodes` worked for any caller whose user had no codes on file →
+  needs an enabled authenticator and works without a TOTP code only in the 10 minutes
+  after a successful `ConfirmTOTPSetup`, once; otherwise
+  `ErrBackupCodeRegenerationRequiresTOTP`. `RegenerateBackupCodes` for a user
+  without TOTP succeeded → `ErrTOTPNotConfigured`. A backup code counts as a factor
+  (login, role-switch step-up) only for a user with an enabled authenticator. (R2-02)
+- `DisableTOTP` left the user's backup codes on file → removes them.
+- `EmailChange.Strategy = VerificationUUID` built → `Build` returns an error. (R2-03)
+- Each `RequestPasswordReset` left the earlier codes valid, and a completed reset left
+  the others valid → only the newest code is valid and a completed reset invalidates
+  every outstanding one. (R2-25)
+- A staged email change survived password reset, password change and `LogoutAll` →
+  every successful revocation of all of a user's sessions cancels it (audit event
+  `email_change_cancelled`, reason `recovery`). (R2-26)
+- The MFA confirmation accepted any factor the user had enrolled → only a factor the
+  challenge advertised (a backup code is the fallback of TOTP).
+- `Security.EnableUserAgentBinding` defaulted to true and did nothing → defaults to
+  false, is deprecated, and `Config.Lint()` warns when it is set.
+- `Config.Lint()` also raises `login_ip_limiter_disabled` and `refresh_user_recheck_off`
+  (both INFO) for every config that has not enabled those options. Redis traffic:
+  see the Redis keys listed in each part.
+
+### If you use…
+
+- **`EmailChange` with `Strategy: VerificationUUID`**: `Build` now fails. In that
+  strategy the code mailed to the new address was the id part of the
+  `VerificationID` you may hand to the browser. Use `VerificationToken` (the default) or
+  `VerificationOTP`; challenges already pending are discarded by the change of strategy
+  (the user requests a new one).
+- **`GenerateBackupCodes` outside the 10 minutes after `ConfirmTOTPSetup`** (for
+  example a "show my backup codes" button in account settings, or a first generation
+  for a user who enrolled before upgrading): it now returns
+  `ErrBackupCodeRegenerationRequiresTOTP`. Call it right after `ConfirmTOTPSetup`, or
+  ask the user for a TOTP code and call `RegenerateBackupCodes(ctx, userID, totpCode)`.
+- Optional, no action needed: `PasswordHashCASUpdater`, `AccountStatusCASUpdater`
+  and `Security.RecheckUserOnRefresh` (see `docs/migrations.md`).
 
 ### Security fixes (audit)
 
@@ -23,7 +117,7 @@ requests, shipped together as v0.8.1. **Part 1 of 3: limiters, brute force and
 enumeration** (R2-01, R2-04, R2-05, R2-06, R2-10, R2-14, R2-15, R2-16, R2-18,
 R2-19, R2-21, R2-22, R2-23 and the audit's needs-validation record on unbounded
 identifiers). **Part 2 of 3: session lifecycle and revocation** follows part 1
-below. Part 3 (MFA artifacts, recovery, docs) follows.
+below, and **part 3 of 3: MFA artifacts, recovery and docs** follows part 2.
 
 These are security fixes, so the unchanged-when-unused baselines moved where a
 fix required it; `session/golden_bytes_test.go` is untouched and no session
@@ -150,8 +244,7 @@ that enables nothing new is under **Behavior changes** below.
 ### Security fixes (audit), part 2 of 3: session lifecycle and revocation
 
 R2-07, R2-08, R2-09, R2-11, R2-12, R2-13, R2-17, R2-20, R2-27, R2-28, R2-29, plus
-three follow-ups found while reviewing these fixes (marked below). Part 3
-(MFA artifacts, recovery, docs) follows.
+three follow-ups found while reviewing these fixes (marked below).
 
 #### Fixed
 
@@ -301,6 +394,85 @@ three follow-ups found while reviewing these fixes (marked below). Part 3
 - The regression tests fail on the branch the audit was run against and pass
   here; the tests that need a new option or interface compile there against a
   stub of it.
+
+### Security fixes (audit), part 3 of 3: MFA artifacts, recovery and docs
+
+R2-02, R2-03, R2-25, R2-26, the backup codes that survived `DisableTOTP`, the MFA
+confirmation that accepted an unadvertised factor, and the documentation the audit
+found wrong. Also folds in one change from the review of part 2 (the revocation
+epoch's life).
+
+#### Fixed
+
+- **R2-02 (medium): a session holder could mint backup codes and use them as a
+  second factor.** `GenerateBackupCodes` needed no proof and no enrolled factor, and
+  the `backup_code` step-up did not require an enabled TOTP record the way the `totp`
+  branch does. Backup codes are now a recovery artifact of an enabled authenticator:
+  the step-up and the login accept them only for a user who has one; Generate and
+  Regenerate return `ErrTOTPNotConfigured` for a user who does not (Regenerate used to
+  succeed for them); Generate works without a TOTP code only in the 10 minutes after
+  `ConfirmTOTPSetup`, once (a tenant-scoped, single-use marker); otherwise it returns
+  `ErrBackupCodeRegenerationRequiresTOTP`. A user who enrolled before upgrading and
+  has no codes uses `RegenerateBackupCodes` with a TOTP code.
+- **`DisableTOTP` removes the user's backup codes** (and the pending marker): a set
+  minted for one authenticator no longer works for the next. A failure to clear is
+  returned as `ErrTOTPUnavailable` after the sessions have been revoked, and audited.
+- **R2-03: the change-email Code no longer equals the VerificationID.** `Build` rejects
+  `EmailChange.Strategy = VerificationUUID` with an error that names `VerificationToken`
+  and `VerificationOTP`. A test checks that for each allowed strategy the Code cannot be
+  read from the VerificationID.
+- **R2-25: one valid reset code per account.** A per-(tenant, user) pointer names the
+  newest reset record: a new `RequestPasswordReset` supersedes the codes of earlier
+  requests (after its own record is stored, so a failed request leaves the user's code
+  alone), and a completed reset supersedes every code issued before it. Anyone who can
+  request a reset can supersede a waiting code; the request limiters bound that and the
+  owner gets a new mail.
+- **R2-26: recovery cancels a staged email change.** Every successful revocation of all
+  of a user's sessions (password reset or change, `LogoutAll`, `LogoutAllInTenant`,
+  `InvalidateUserSessions`, and the flows that end with one) cancels the user's pending
+  email change while `EmailChange` is enabled, in the request's tenant, the caller's and
+  the user's own. It is audited as `email_change_cancelled` (reason `recovery`); a
+  failure neither fails the revocation nor goes unnoticed (logged, and
+  `email_change_failure` with stage `cancel`, reason `recovery`), and the challenge then
+  expires with its TTL.
+- **The MFA confirmation accepts only a factor the challenge advertised.** The password
+  step stores the factors it offered next to the challenge (its record is unchanged, so
+  the golden-bytes tests are untouched); any other type is a wrong answer. A challenge
+  from an earlier version accepts any enrolled factor, as before.
+- **The revocation epoch is kept for `max(24h, TOTP.MFALoginChallengeTTL + 1h)`**, so
+  `Build` accepts any challenge TTL (part 2 had rejected more than 12 hours).
+- **Documentation corrected:** `docs/mfa.md` no longer says `GenerateBackupCodes`
+  replaces codes; `docs/email_change.md` no longer suggests the VerificationID may
+  reveal the Code; password-reset confirmation does not check password reuse (the docs
+  said it did; the check is not added); `Security.EnableUserAgentBinding` was never read
+  (see Added).
+
+#### Added
+
+- Redis keys: `abg:<tenant>:<user>` (the first-generation marker: 10 minutes, written by
+  `ConfirmTOTPSetup`, consumed by `GenerateBackupCodes`, removed by `DisableTOTP`);
+  `aprg:<tenant>:<user>` (the newest reset ID, or a tombstone after a completed reset;
+  `PasswordReset.ResetTTL`, written by `RequestPasswordReset` and by a completed
+  reset). The value of `amc:<challenge>:ep` is now `<epoch>:<factors>`.
+- Audit event `email_change_cancelled`.
+- Lint code `security_user_agent_binding_noop` (WARN); the reference is now 39 codes
+  (16 INFO, 19 WARN, 4 HIGH). `Security.EnableUserAgentBinding` is deprecated and now
+  defaults to false.
+- `session.DefaultRevocationEpochTTL` and `Store.WithRevocationEpochTTL`.
+- `go.mod`: `retract v0.8.0`.
+
+#### Behavior changes (nothing new enabled)
+
+Listed above under "Behavior changes when upgrading from v0.8.0" (part 3).
+
+#### Notes
+
+- The regression tests fail on the branch the audit was run against and pass here; the
+  tests that need a new option, constant or method compile there against a stub of it.
+- Backup codes minted by an earlier version for an account without TOTP stay on file
+  but prove nothing until the user enrols an authenticator; `DisableTOTP` removes them.
+- A reset code issued by a v0.8.0 instance while a v0.8.1 instance already wrote the
+  pointer for that user is refused; the user requests another.
 
 ---
 
