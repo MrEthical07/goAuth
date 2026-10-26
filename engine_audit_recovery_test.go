@@ -158,3 +158,35 @@ func TestBackupSetupGrantIsScopedAndRevoked(t *testing.T) {
 		t.Fatal("the default tenant spelled \"\" and \"0\" must be one tenant")
 	}
 }
+
+// FAILED-BEFORE (R2-02 follow-on): backup codes outlived DisableTOTP, so a code
+// minted for the old authenticator worked once the user enrolled a new one.
+func TestDisableTOTPClearsTheBackupCodes(t *testing.T) {
+	env := newRSEnv(t, rsConfig(func(c *Config) { c.TOTP.RequireForLogin = true }))
+	env.enableTOTP()
+	codes, err := env.engine.GenerateBackupCodes(env.ctx(), rsUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.engine.DisableTOTP(env.ctx(), rsUserID); err != nil {
+		t.Fatalf("DisableTOTP: %v", err)
+	}
+	if left, _ := env.up.GetBackupCodes(env.ctx(), rsUserID); len(left) != 0 {
+		t.Fatalf("%d backup codes survived DisableTOTP", len(left))
+	}
+
+	// A new authenticator, later: the old codes must not come back to life.
+	secret := env.enableTOTP()
+	if err := env.engine.VerifyBackupCode(env.ctx(), rsUserID, codes[0]); !errors.Is(err, ErrBackupCodeInvalid) {
+		t.Fatalf("a code from before the disable: %v, want ErrBackupCodeInvalid", err)
+	}
+	if _, _, err := env.engine.LoginWithBackupCode(env.ctx(), rsIdentifier, rsPassword, codes[1]); err == nil {
+		t.Fatal("a code from before the disable logged in")
+	}
+	// The new enrolment hands out a fresh set the normal way.
+	if _, err := env.engine.GenerateBackupCodes(env.ctx(), rsUserID); err != nil {
+		t.Fatalf("Generate after re-enrolment: %v", err)
+	}
+	_ = secret
+}

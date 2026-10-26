@@ -3886,6 +3886,9 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 		deps.DisableTOTP = e.userProvider.DisableTOTP
 		deps.MarkTOTPVerified = e.userProvider.MarkTOTPVerified
 		deps.UpdateTOTPLastUsedCounter = e.userProvider.UpdateTOTPLastUsedCounter
+		deps.ClearBackupCodes = func(ctx context.Context, userID string) error {
+			return e.userProvider.ReplaceBackupCodes(ctx, userID, nil)
+		}
 	}
 	if e != nil {
 		deps.LogoutAllInTenant = e.revokeUserSessions
@@ -3894,6 +3897,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 		deps.GrantBackupCodeSetup = func(ctx context.Context, tenantID, userID string) error {
 			return e.backupGrants.Grant(ctx, tenantID, userID, backupSetupGrantTTL)
 		}
+		deps.RevokeBackupCodeSetup = e.backupGrants.Revoke
 	}
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret
