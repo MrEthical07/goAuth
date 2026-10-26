@@ -37,3 +37,5 @@ require (
 )
 
 retract v0.6.1 // Tagged in error: identical to v0.6.0 and missing the tenant-scoping fix; use v0.6.2.
+
+retract v0.8.0 // MFA-login TOTP guessing was not limited per account; fixed in v0.8.1
