@@ -71,7 +71,7 @@ var deleteSessionLua = redis.NewScript(deleteSessionScript)
 // its proof key, lowers the counter by the number of keys it actually deleted
 // (never below zero; the counter key is removed at zero) and clears the set. A
 // kept session stays in the set and in the count. It also bumps the user's
-// revocation epoch ("aue:<tenant>:<user>", derived from the set key, one hour
+// revocation epoch ("aue:<tenant>:<user>", derived from the set key, 24 hours
 // TTL refreshed on every bump) so that a login that read the account before
 // this ran cannot save its session afterwards (see SaveFenced). It returns the
 // number of sessions deleted. Because a script runs without interleaving, a session saved
@@ -83,7 +83,7 @@ var deleteSessionLua = redis.NewScript(deleteSessionScript)
 const deleteAllForUserScript = `
 local keep = ARGV[3]
 redis.call("INCR", "aue:" .. string.sub(KEYS[1], 4))
-redis.call("PEXPIRE", "aue:" .. string.sub(KEYS[1], 4), 3600000)
+redis.call("PEXPIRE", "aue:" .. string.sub(KEYS[1], 4), 86400000)
 local members = redis.call("SMEMBERS", KEYS[1])
 local deleted = 0
 for _, sid in ipairs(members) do
@@ -606,9 +606,11 @@ type SaveLimits struct {
 
 // RevocationEpoch returns the user's revocation epoch: a counter that every
 // revocation of the user's sessions (delete-all, so password change, reset,
-// status changes and the rest) bumps, kept for an hour after the last bump. A
-// login reads it before it reads the account and hands it to
-// [Store.SaveFenced], which refuses to store the session if it has moved.
+// status changes and the rest) bumps, kept for 24 hours after the last bump,
+// far longer than a login or an MFA challenge (capped at 12 hours by Build) can
+// be in flight: an expired key reads as 0, which is only safe if no login still
+// holds an older epoch. A login reads it before it reads the account and hands
+// it to [Store.SaveFenced], which refuses to store the session if it has moved.
 func (s *Store) RevocationEpoch(ctx context.Context, tenantID, userID string) (int64, error) {
 	epoch, err := s.redis.Get(ctx, s.epochKey(tenantID, userID)).Int64()
 	if err != nil {

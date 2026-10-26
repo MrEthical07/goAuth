@@ -41,8 +41,8 @@ func TestRevocationEpochIsBumpedByEveryDeleteAllAndExpires(t *testing.T) {
 	if epoch, _ := store.RevocationEpoch(ctx, "t-1", "u-1"); epoch != 2 {
 		t.Fatalf("epoch after a delete-all that keeps a session = %d, want 2", epoch)
 	}
-	if ttl := rdb.TTL(ctx, "aue:t-1:u-1").Val(); ttl <= 59*time.Minute || ttl > time.Hour {
-		t.Fatalf("epoch TTL = %v, want about an hour", ttl)
+	if ttl := rdb.TTL(ctx, "aue:t-1:u-1").Val(); ttl <= 23*time.Hour+59*time.Minute || ttl > 24*time.Hour {
+		t.Fatalf("epoch TTL = %v, want about 24 hours", ttl)
 	}
 	// Other users and other tenants are not affected.
 	for _, other := range [][2]string{{"t-1", "u-2"}, {"t-2", "u-1"}} {

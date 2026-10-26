@@ -37,7 +37,7 @@ func TestRedisCompat_FencedSaveAndEpoch(t *testing.T) {
 			store := session.NewStore(rdb, "as", true, false, 0)
 			ctx := context.Background()
 
-			// Delete-all bumps the epoch and keeps it for about an hour; other
+			// Delete-all bumps the epoch and keeps it for about 24 hours; other
 			// users and the default tenant spelling are separate.
 			if epoch, err := store.RevocationEpoch(ctx, "t-f", "u-f"); err != nil || epoch != 0 {
 				t.Fatalf("fresh epoch = %d, %v", epoch, err)
@@ -51,8 +51,8 @@ func TestRedisCompat_FencedSaveAndEpoch(t *testing.T) {
 			if epoch, _ := store.RevocationEpoch(ctx, "t-f", "u-f"); epoch != 2 {
 				t.Fatalf("epoch after two delete-alls = %d, want 2", epoch)
 			}
-			if ttl := rdb.TTL(ctx, "aue:t-f:u-f").Val(); ttl <= 59*time.Minute || ttl > time.Hour {
-				t.Fatalf("epoch TTL = %v, want about an hour", ttl)
+			if ttl := rdb.TTL(ctx, "aue:t-f:u-f").Val(); ttl <= 23*time.Hour+59*time.Minute || ttl > 24*time.Hour {
+				t.Fatalf("epoch TTL = %v, want about 24 hours", ttl)
 			}
 			if epoch, _ := store.RevocationEpoch(ctx, "t-f", "u-other"); epoch != 0 {
 				t.Fatalf("another user's epoch = %d", epoch)

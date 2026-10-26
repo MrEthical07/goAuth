@@ -1585,6 +1585,11 @@ func (c *Config) Validate() error {
 		if c.TOTP.MFALoginChallengeTTL <= 0 {
 			return errors.New("TOTP MFALoginChallengeTTL must be > 0")
 		}
+		if c.TOTP.MFALoginChallengeTTL > 12*time.Hour {
+			// The revocation epoch a challenge is fenced with is kept 24 hours
+			// after the last revocation; a challenge must not outlive that.
+			return errors.New("TOTP MFALoginChallengeTTL must be <= 12h")
+		}
 		if c.TOTP.MFALoginMaxAttempts <= 0 {
 			return errors.New("TOTP MFALoginMaxAttempts must be > 0")
 		}
