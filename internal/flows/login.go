@@ -12,6 +12,10 @@ import (
 // LoginOptions carries per-login options threaded from the public API.
 type LoginOptions struct {
 	RememberMe bool
+	// Epoch is the user's revocation epoch, read before the account was read.
+	// RunCompleteLogin callers that resolve the account themselves (external
+	// sign-in) set it; the password and MFA flows read it themselves.
+	Epoch int64
 }
 
 // LoginResult is the flow-local login response shape.
@@ -242,8 +246,22 @@ type LoginDeps struct {
 	RecordAssurance func(ctx context.Context, tenantID, refreshToken, method string, rememberMe bool)
 
 	CreateMFALoginChallenge func(context.Context, string, string, bool) (string, error)
-	IssueLoginSessionTokens func(context.Context, string, LoginUserRecord, string, bool) (string, string, error)
-	EnforceSessionHardening func(context.Context, string, string) error
+	// IssueLoginSessionTokens issues the session and tokens. epoch is the
+	// revocation epoch read before the account was read; the session is stored
+	// only if it has not moved (session.ErrSessionFenced otherwise).
+	IssueLoginSessionTokens func(ctx context.Context, username string, user LoginUserRecord, tenantID string, rememberMe bool, epoch int64) (string, string, error)
+
+	// ReadEpoch returns the user's revocation epoch. Every path that issues a
+	// session reads it BEFORE it reads the account, so a password change or
+	// status change that lands in between is caught when the session is saved.
+	// Nil means no fence.
+	ReadEpoch func(ctx context.Context, tenantID, userID string) (int64, error)
+
+	// CompareAndSwapPasswordHash, when the provider offers it, replaces
+	// expectedOld with next only if the stored hash is still expectedOld.
+	// Without it the rehash re-reads the account right before the write.
+	CompareAndSwapPasswordHash func(ctx context.Context, tenantID, userID, expectedOld, next string) (bool, error)
+	EnforceSessionHardening    func(context.Context, string, string) error
 
 	// WebAuthn second-factor hooks (nil when the feature is disabled).
 	HasWebAuthnCredentials   func(context.Context, string) (bool, error)
@@ -257,7 +275,10 @@ type LoginDeps struct {
 	HashBindingValue   func(string) [32]byte
 	SessionLifetime    func(rememberMe bool) time.Duration
 	SaveSession        func(context.Context, *session.Session, time.Duration) error
-	IssueAccessToken   func(*session.Session) (string, error)
+	// SaveSessionFenced stores the session only if the revocation epoch is
+	// still epoch and the session caps allow it; nil falls back to SaveSession.
+	SaveSessionFenced func(ctx context.Context, sess *session.Session, ttl time.Duration, epoch int64) error
+	IssueAccessToken  func(*session.Session) (string, error)
 
 	// Session profiles; all three are nil unless profiles are configured, and
 	// a nil ResolveSessionProfile leaves every login exactly as it was.
@@ -434,6 +455,28 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		user = LoginUserRecord{}
 		err = errTenantMismatch
 	}
+	// The revocation epoch is read BEFORE the account is read again, so a
+	// password change or status change that lands after this point moves the
+	// epoch and the session is not stored (see issueFenced). The first lookup
+	// is by identifier and only yields the user ID; the record the rest of the
+	// login trusts is the one read after the epoch.
+	var epoch int64
+	if err == nil && deps.ReadEpoch != nil && deps.GetUserByID != nil {
+		var epochErr error
+		if epoch, epochErr = deps.ReadEpoch(ctx, tenantID, user.UserID); epochErr != nil {
+			return nil, deps.Errors.SystemUnavailable
+		}
+		fresh, getErr := deps.GetUserByID(ctx, user.UserID)
+		switch {
+		case getErr != nil:
+			user, err = LoginUserRecord{}, getErr
+		case deps.EnforceTenantMatch && tenantID != "" && fresh.TenantID != tenantID:
+			deps.Warn("goAuth: tenant-scoped lookup returned a user from another tenant; check the TenantAwareUserProvider implementation")
+			user, err = LoginUserRecord{}, errTenantMismatch
+		default:
+			user = fresh
+		}
+	}
 	if err != nil {
 		// Perform a dummy password verification so unknown identifiers cost
 		// the same as wrong passwords; returning immediately would let an
@@ -541,26 +584,56 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		deps.ReleaseLoginIPRate(ctx, clientIP)
 	}
 
-	return runCompleteLogin(ctx, username, user, tenantID, opts, deps, func() {
+	opts.Epoch = epoch
+	return runCompleteLogin(ctx, username, user, tenantID, opts, deps, user.PasswordHash, func() {
 		if deps.PasswordUpgradeOnLogin {
-			if needsUpgrade, err := deps.PasswordNeedsUpgrade(user.PasswordHash); err == nil && needsUpgrade {
-				if upgradedHash, err := deps.HashPassword(password); err == nil {
-					var updateErr error
-					if deps.UpdatePasswordHashInTenant != nil {
-						updateErr = deps.UpdatePasswordHashInTenant(ctx, tenantID, user.UserID, upgradedHash)
-					} else {
-						updateErr = deps.UpdatePasswordHash(user.UserID, upgradedHash)
-					}
-					if updateErr != nil {
-						deps.Warn("goAuth: password hash upgrade update failed")
-					}
-				} else {
-					deps.Warn("goAuth: password hash upgrade generation failed")
-				}
-			}
+			upgradePasswordHash(ctx, tenantID, user, password, deps)
 		}
 		password = ""
 	})
+}
+
+// upgradePasswordHash re-hashes a password that was just verified with the
+// current Argon2 parameters. It runs after the login succeeded (the session is
+// issued, or the MFA challenge is created), and never replaces a hash that is
+// not the one that was verified: a password change or reset that landed since
+// the account was read must stay in force. With a provider that implements
+// compare-and-swap that is exact; without one the account is re-read right
+// before the write, which narrows the window to that read-to-write gap but
+// cannot close it.
+func upgradePasswordHash(ctx context.Context, tenantID string, user LoginUserRecord, password string, deps LoginDeps) {
+	needsUpgrade, err := deps.PasswordNeedsUpgrade(user.PasswordHash)
+	if err != nil || !needsUpgrade {
+		return
+	}
+	upgraded, err := deps.HashPassword(password)
+	if err != nil {
+		deps.Warn("goAuth: password hash upgrade generation failed")
+		return
+	}
+
+	if deps.CompareAndSwapPasswordHash != nil {
+		if _, err := deps.CompareAndSwapPasswordHash(ctx, tenantID, user.UserID, user.PasswordHash, upgraded); err != nil {
+			deps.Warn("goAuth: password hash upgrade update failed")
+		}
+		return
+	}
+
+	if deps.GetUserByID != nil {
+		fresh, err := deps.GetUserByID(ctx, user.UserID)
+		if err != nil || fresh.PasswordHash != user.PasswordHash {
+			return
+		}
+	}
+	var updateErr error
+	if deps.UpdatePasswordHashInTenant != nil {
+		updateErr = deps.UpdatePasswordHashInTenant(ctx, tenantID, user.UserID, upgraded)
+	} else {
+		updateErr = deps.UpdatePasswordHash(user.UserID, upgraded)
+	}
+	if updateErr != nil {
+		deps.Warn("goAuth: password hash upgrade update failed")
+	}
 }
 
 // RunCompleteLogin finishes a login whose primary factor the caller already
@@ -575,15 +648,18 @@ func RunCompleteLogin(ctx context.Context, username string, user LoginUserRecord
 		deps.EnforceSessionHardening == nil {
 		return nil, deps.Errors.EngineNotReady
 	}
-	return runCompleteLogin(ctx, username, user, deps.TenantIDFromContext(ctx), opts, deps, nil)
+	return runCompleteLogin(ctx, username, user, deps.TenantIDFromContext(ctx), opts, deps, "", nil)
 }
 
 // runCompleteLogin is the part of a login that follows the primary factor,
 // shared by every way of authenticating so that they cannot drift apart. The
 // caller has resolved the session profile and consumed its limiters.
-// afterAccountChecks, when set, runs once the account is known to be usable
-// and before anything is issued; the password path uses it for the
-// rehash-on-login upgrade.
+// verifiedHash is the password hash that was verified ("" when no password
+// was); a revocation during the login is checked against it. afterLogin, when
+// set, runs once the login has succeeded -- the session is issued, or the MFA
+// challenge is created -- and never earlier; the password path uses it for the
+// rehash-on-login upgrade, so a login that is refused later does not rewrite
+// the stored hash.
 func runCompleteLogin(
 	ctx context.Context,
 	username string,
@@ -591,7 +667,8 @@ func runCompleteLogin(
 	tenantID string,
 	opts LoginOptions,
 	deps LoginDeps,
-	afterAccountChecks func(),
+	verifiedHash string,
+	afterLogin func(),
 ) (*LoginResult, error) {
 	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
 		deps.MetricInc(deps.Metrics.LoginFailure)
@@ -613,10 +690,6 @@ func runCompleteLogin(
 			}
 		})
 		return nil, deps.Errors.AccountUnverified
-	}
-
-	if afterAccountChecks != nil {
-		afterAccountChecks()
 	}
 
 	if deps.DeviceBindingEnabled {
@@ -690,6 +763,9 @@ func runCompleteLogin(
 				"identifier": username,
 			}
 		})
+		if afterLogin != nil {
+			afterLogin()
+		}
 		return &LoginResult{
 			MFARequired: true,
 			MFAType:     mfaTypes[0],
@@ -698,13 +774,16 @@ func runCompleteLogin(
 		}, nil
 	}
 
-	access, refresh, err := deps.IssueLoginSessionTokens(ctx, username, user, tenantID, opts.RememberMe)
+	access, refresh, err := issueFenced(ctx, username, user, tenantID, opts.RememberMe, opts.Epoch, verifiedHash, deps)
 	if err != nil {
 		return nil, err
 	}
 	// Reset lockout counter on successful login.
 	if deps.AutoLockoutEnabled && deps.ResetLockoutCounter != nil {
 		_ = deps.ResetLockoutCounter(ctx, user.UserID)
+	}
+	if afterLogin != nil {
+		afterLogin()
 	}
 	return &LoginResult{
 		AccessToken:  access,
@@ -794,6 +873,16 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 		return nil, deps.Errors.MFALoginInvalid
 	}
 
+	// The epoch is read before the account, as at the password step.
+	var epoch int64
+	if deps.ReadEpoch != nil {
+		var epochErr error
+		if epoch, epochErr = deps.ReadEpoch(ctx, record.TenantID, record.UserID); epochErr != nil {
+			deps.MetricInc(deps.Metrics.MFALoginFailure)
+			deps.EmitAudit(ctx, deps.Events.MFAFailure, false, record.UserID, record.TenantID, "", deps.Errors.MFALoginUnavailable, nil)
+			return nil, deps.Errors.MFALoginUnavailable
+		}
+	}
 	user, err := deps.GetUserByID(ctx, record.UserID)
 	if err != nil {
 		_, _ = deps.DeleteMFAChallenge(ctx, challengeID)
@@ -985,7 +1074,7 @@ func RunConfirmLoginMFAWithType(ctx context.Context, challengeID, code, mfaType 
 	if identifier == "" {
 		identifier = user.UserID
 	}
-	access, refresh, err := deps.IssueLoginSessionTokens(ctx, identifier, user, record.TenantID, record.RememberMe)
+	access, refresh, err := issueFenced(ctx, identifier, user, record.TenantID, record.RememberMe, epoch, "", deps)
 	if err != nil {
 		deps.MetricInc(deps.Metrics.MFALoginFailure)
 		deps.EmitAudit(ctx, deps.Events.MFAFailure, false, user.UserID, record.TenantID, "", err, nil)
@@ -1199,6 +1288,7 @@ func RunIssueLoginSessionTokens(
 	user LoginUserRecord,
 	tenantID string,
 	rememberMe bool,
+	epoch int64,
 	deps LoginDeps,
 ) (string, string, error) {
 	if deps.Now == nil {
@@ -1226,7 +1316,7 @@ func RunIssueLoginSessionTokens(
 		deps.EncodeRefreshToken == nil ||
 		deps.HashBindingValue == nil ||
 		deps.SessionLifetime == nil ||
-		deps.SaveSession == nil ||
+		(deps.SaveSession == nil && deps.SaveSessionFenced == nil) ||
 		deps.IssueAccessToken == nil {
 		return "", "", deps.Errors.EngineNotReady
 	}
@@ -1346,7 +1436,17 @@ func RunIssueLoginSessionTokens(
 		Profile:           plan.profile,
 	}
 
-	if err := deps.SaveSession(ctx, sess, plan.ttl); err != nil {
+	var saveErr error
+	if deps.SaveSessionFenced != nil {
+		saveErr = deps.SaveSessionFenced(ctx, sess, plan.ttl, epoch)
+	} else {
+		saveErr = deps.SaveSession(ctx, sess, plan.ttl)
+	}
+	if errors.Is(saveErr, session.ErrSessionFenced) {
+		// The caller decides what a revocation during the login means.
+		return "", "", saveErr
+	}
+	if err := saveErr; err != nil {
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
@@ -1425,6 +1525,72 @@ func (d LoginDeps) loginRateRefusal(ctx context.Context, err error, userID, tena
 	d.EmitAudit(ctx, d.Events.LoginRateLimited, false, userID, tenantID, "", d.Errors.LoginRateLimited, meta)
 	d.EmitRateLimit(ctx, "login", tenantID, meta)
 	return d.Errors.LoginRateLimited
+}
+
+// issueFenced issues the session. If the user's sessions were revoked after the
+// revocation epoch was read (a password change, a reset, a disable that landed
+// while the login was in flight), the session is not stored and the account is
+// read ONCE more:
+//
+//   - a blocking status is returned as that status error;
+//   - for a password login, a password hash that is not the one that was
+//     verified is ErrInvalidCredentials;
+//   - otherwise the revocation was unrelated to this login (a logout-all, an
+//     email change that kept another session) and the session is stored on the
+//     account as just read, under the epoch read before that read.
+//
+// A second refusal ends the login with ErrInvalidCredentials.
+func issueFenced(
+	ctx context.Context,
+	username string,
+	user LoginUserRecord,
+	tenantID string,
+	rememberMe bool,
+	epoch int64,
+	verifiedHash string,
+	deps LoginDeps,
+) (string, string, error) {
+	access, refresh, err := deps.IssueLoginSessionTokens(ctx, username, user, tenantID, rememberMe, epoch)
+	if !errors.Is(err, session.ErrSessionFenced) {
+		return access, refresh, err
+	}
+
+	refuse := func(reason string, cause error) (string, string, error) {
+		deps.MetricInc(deps.Metrics.LoginFailure)
+		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", cause, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(username),
+				"reason":     reason,
+			}
+		})
+		return "", "", cause
+	}
+	if deps.ReadEpoch == nil || deps.GetUserByID == nil {
+		return refuse("revoked_during_login", deps.Errors.InvalidCredentials)
+	}
+	next, err := deps.ReadEpoch(ctx, tenantID, user.UserID)
+	if err != nil {
+		return refuse("revoked_during_login", deps.Errors.SystemUnavailable)
+	}
+	fresh, err := deps.GetUserByID(ctx, user.UserID)
+	if err != nil || (deps.EnforceTenantMatch && tenantID != "" && fresh.TenantID != tenantID) {
+		return refuse("revoked_during_login", deps.Errors.InvalidCredentials)
+	}
+	if statusErr := deps.AccountStatusError(fresh.Status); statusErr != nil {
+		return refuse("revoked_during_login", statusErr)
+	}
+	if deps.RequireVerified && fresh.Status == deps.PendingVerificationStatus {
+		return refuse("revoked_during_login", deps.Errors.AccountUnverified)
+	}
+	if verifiedHash != "" && fresh.PasswordHash != verifiedHash {
+		return refuse("password_changed_during_login", deps.Errors.InvalidCredentials)
+	}
+
+	access, refresh, err = deps.IssueLoginSessionTokens(ctx, username, fresh, tenantID, rememberMe, next)
+	if errors.Is(err, session.ErrSessionFenced) {
+		return refuse("revoked_during_login", deps.Errors.InvalidCredentials)
+	}
+	return access, refresh, err
 }
 
 // isLoginLimiterOutage reports whether a login limiter hook failed because the

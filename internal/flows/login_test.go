@@ -16,7 +16,7 @@ func timingTestDeps(verifyCalls *int) LoginDeps {
 			*verifyCalls++
 			return false, nil
 		},
-		IssueLoginSessionTokens: func(context.Context, string, LoginUserRecord, string, bool) (string, string, error) {
+		IssueLoginSessionTokens: func(context.Context, string, LoginUserRecord, string, bool, int64) (string, string, error) {
 			return "", "", errors.New("unexpected token issuance")
 		},
 		EnforceSessionHardening: func(context.Context, string, string) error { return nil },

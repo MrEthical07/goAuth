@@ -51,7 +51,7 @@ func assuranceTestDeps(calls *[]assuranceCall) LoginDeps {
 			}
 			return errInvalid
 		},
-		IssueLoginSessionTokens: func(context.Context, string, LoginUserRecord, string, bool) (string, string, error) {
+		IssueLoginSessionTokens: func(context.Context, string, LoginUserRecord, string, bool, int64) (string, string, error) {
 			return "access", "refresh-token", nil
 		},
 		RecordAssurance: func(_ context.Context, tenantID, refreshToken, method string, rememberMe bool) {

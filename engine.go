@@ -1177,22 +1177,23 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 		return ErrUserNotFound
 	}
 
-	if h.EnforceSingleSession {
-		if err := e.sessionStore.DeleteAllForUser(ctx, tenantID, userID); err != nil {
+	// Read-only: this runs at the password step, before the second factor, so
+	// it must not end anything. With EnforceSingleSession the user's other
+	// sessions are ended when the new one is stored (see saveSessionFenced),
+	// so they do not count here; the caps are enforced again, atomically with
+	// the write, at that point.
+	if !h.EnforceSingleSession {
+		currentUserSessions, err := e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
+		if err != nil {
 			return err
 		}
-	}
 
-	currentUserSessions, err := e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
-	if err != nil {
-		return err
-	}
-
-	if h.ConcurrentLoginLimit > 0 && currentUserSessions >= h.ConcurrentLoginLimit {
-		return ErrSessionLimitExceeded
-	}
-	if h.MaxSessionsPerUser > 0 && currentUserSessions >= h.MaxSessionsPerUser {
-		return ErrSessionLimitExceeded
+		if h.ConcurrentLoginLimit > 0 && currentUserSessions >= h.ConcurrentLoginLimit {
+			return ErrSessionLimitExceeded
+		}
+		if h.MaxSessionsPerUser > 0 && currentUserSessions >= h.MaxSessionsPerUser {
+			return ErrSessionLimitExceeded
+		}
 	}
 	if h.MaxSessionsPerTenant > 0 {
 		tenantSessions, err := e.sessionStore.TenantSessionCount(ctx, tenantID)
@@ -1216,6 +1217,45 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	}
 
 	return nil
+}
+
+// sessionSaveLimits are the session caps enforced atomically with a login
+// session's write.
+func (e *Engine) sessionSaveLimits() session.SaveLimits {
+	h := e.config.SessionHardening
+	return session.SaveLimits{
+		MaxPerUser:       h.MaxSessionsPerUser,
+		MaxPerTenant:     h.MaxSessionsPerTenant,
+		ConcurrentLogins: h.ConcurrentLoginLimit,
+		SingleSession:    h.EnforceSingleSession,
+	}
+}
+
+// readRevocationEpoch reads the user's revocation epoch. Every session-issuing
+// path calls it before it reads the account.
+func (e *Engine) readRevocationEpoch(ctx context.Context, tenantID, userID string) (int64, error) {
+	if e.sessionStore == nil {
+		return 0, ErrEngineNotReady
+	}
+	return e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
+}
+
+// saveSessionFenced stores a login session only if the user's sessions have not
+// been revoked since epoch was read, enforcing the session caps (and ending the
+// user's other sessions in single-session mode) in the same step. Cap refusals
+// come back as the public session-limit errors.
+func (e *Engine) saveSessionFenced(ctx context.Context, sess *session.Session, ttl time.Duration, epoch int64) error {
+	if e.sessionStore == nil {
+		return ErrEngineNotReady
+	}
+	err := e.sessionStore.SaveFenced(ctx, sess, ttl, epoch, e.sessionSaveLimits())
+	switch {
+	case errors.Is(err, session.ErrUserSessionLimit):
+		return ErrSessionLimitExceeded
+	case errors.Is(err, session.ErrTenantSessionLimit):
+		return ErrTenantSessionLimitExceeded
+	}
+	return err
 }
 
 func tenantIDFromToken(tid string) string {
@@ -1389,6 +1429,8 @@ func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
 			}
 			return e.sessionStore.Save(ctx, sess, ttl)
 		}
+		deps.ReadEpoch = e.readRevocationEpoch
+		deps.SaveSessionFenced = e.saveSessionFenced
 	}
 
 	return deps
@@ -2834,9 +2876,10 @@ func (e *Engine) issueLoginSessionTokensForResult(
 	user UserRecord,
 	tenantID string,
 	rememberMe bool,
+	epoch int64,
 ) (string, string, error) {
 	e.ensureFlowDeps()
-	return e.flows.IssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID, rememberMe)
+	return e.flows.IssueLoginSessionTokens(ctx, username, toFlowLoginUser(user), tenantID, rememberMe, epoch)
 }
 
 func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
@@ -2940,8 +2983,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	if e != nil {
 		deps.VerifyBackupCodeInTenant = e.VerifyBackupCodeInTenant
 		deps.CreateMFALoginChallenge = e.createMFALoginChallenge
-		deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user internalflows.LoginUserRecord, tenantID string, rememberMe bool) (string, string, error) {
-			return e.issueLoginSessionTokensForResult(ctx, username, fromFlowLoginUser(user), tenantID, rememberMe)
+		deps.IssueLoginSessionTokens = func(ctx context.Context, username string, user internalflows.LoginUserRecord, tenantID string, rememberMe bool, epoch int64) (string, string, error) {
+			return e.issueLoginSessionTokensForResult(ctx, username, fromFlowLoginUser(user), tenantID, rememberMe, epoch)
 		}
 		deps.EnforceSessionHardening = e.enforceSessionHardeningOnLogin
 	}
@@ -3002,6 +3045,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			}
 			return e.sessionStore.Save(ctx, sess, ttl)
 		}
+		deps.ReadEpoch = e.readRevocationEpoch
+		deps.SaveSessionFenced = e.saveSessionFenced
 	}
 
 	return deps

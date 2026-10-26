@@ -469,12 +469,28 @@ func (e *Engine) loginWithExternalIdentity(ctx context.Context, provider, idToke
 		return nil, e.externalLoginFail(ctx, tenantID, provider, res.user.UserID, reason, err)
 	}
 
+	// The revocation epoch is read before the account is read again, so a
+	// password change or status change that lands in between is caught when
+	// the session is stored.
+	epoch, err := e.readRevocationEpoch(ctx, tenantID, res.user.UserID)
+	if err != nil {
+		return nil, e.externalLoginFail(ctx, tenantID, provider, res.user.UserID, externalReasonUnavailable, ErrSystemUnavailable)
+	}
+	fresh, err := e.lookupUserByID(ctx, res.user.UserID)
+	switch {
+	case errors.Is(err, ErrUserNotFound):
+		return nil, e.externalLoginFail(ctx, tenantID, provider, res.user.UserID, externalReasonUserNotFound, ErrExternalAccountNotFound)
+	case err != nil:
+		return nil, e.externalLoginFail(ctx, tenantID, provider, res.user.UserID, externalReasonLookupFailed, ErrSystemUnavailable)
+	}
+	res.user = fresh
+
 	e.ensureFlowDeps()
 	identifier := res.user.Identifier
 	if identifier == "" {
 		identifier = res.user.UserID
 	}
-	flowResult, err := e.flows.CompleteLogin(ctx, identifier, toFlowLoginUser(res.user), internalflows.LoginOptions{RememberMe: opts.RememberMe})
+	flowResult, err := e.flows.CompleteLogin(ctx, identifier, toFlowLoginUser(res.user), internalflows.LoginOptions{RememberMe: opts.RememberMe, Epoch: epoch})
 	if err != nil {
 		// The shared tail has already audited and counted the failure.
 		return nil, err

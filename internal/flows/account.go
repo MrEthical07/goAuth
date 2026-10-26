@@ -126,6 +126,12 @@ type AccountSessionDeps struct {
 	SaveSession        func(context.Context, *session.Session, time.Duration) error
 	IssueAccessToken   func(*session.Session) (string, error)
 
+	// ReadEpoch and SaveSessionFenced fence the auto-login session against a
+	// revocation of the new account's sessions, and apply the session caps
+	// atomically with the write. Nil falls back to SaveSession.
+	ReadEpoch         func(ctx context.Context, tenantID, userID string) (int64, error)
+	SaveSessionFenced func(ctx context.Context, sess *session.Session, ttl time.Duration, epoch int64) error
+
 	// Session profiles; nil unless profiles are configured.
 	ResolveSessionProfile  SessionProfileResolver
 	SessionProfileLifetime SessionProfileLifetime
@@ -430,8 +436,20 @@ func RunIssueAccountSessionTokens(ctx context.Context, user AccountUserRecord, r
 		Profile:           plan.profile,
 	}
 
-	if err := deps.SaveSession(ctx, sess, plan.ttl); err != nil {
-		return "", "", err
+	var saveErr error
+	if deps.SaveSessionFenced != nil && deps.ReadEpoch != nil {
+		// The account was created a moment ago, so there is no earlier read
+		// to fence against; a revocation from here on is still caught.
+		epoch, err := deps.ReadEpoch(ctx, tenantID, user.UserID)
+		if err != nil {
+			return "", "", err
+		}
+		saveErr = deps.SaveSessionFenced(ctx, sess, plan.ttl, epoch)
+	} else {
+		saveErr = deps.SaveSession(ctx, sess, plan.ttl)
+	}
+	if saveErr != nil {
+		return "", "", saveErr
 	}
 	deps.MetricInc(deps.SessionCreatedMetric)
 
