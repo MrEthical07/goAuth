@@ -23,9 +23,9 @@ const (
 func weakHashOf(t *testing.T, pw string) string {
 	t.Helper()
 	h, err := password.NewArgon2(password.Config{
-		Memory:      32768,
-		Time:        2,
-		Parallelism: 2,
+		Memory:      8 * 1024,
+		Time:        1,
+		Parallelism: 1,
 		SaltLength:  16,
 		KeyLength:   32,
 	})

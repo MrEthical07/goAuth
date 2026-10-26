@@ -48,6 +48,13 @@ func accountTestConfig() Config {
 	cfg.Account.AllowDuplicateIdentifierAcrossTenants = false
 	cfg.Security.MaxLoginAttempts = 5
 	cfg.Security.LoginCooldownDuration = time.Minute
+	// Every login and password change in the suite hashes a password. The
+	// default cost (64 MB, 3 passes, 2 lanes) is what makes the race job slow
+	// on a small runner; the tests are about what the engine does with a hash,
+	// not about its cost, so they use a cheap one (newTestHasher matches).
+	cfg.Password.Memory = 8 * 1024
+	cfg.Password.Time = 2
+	cfg.Password.Parallelism = 1
 	return cfg
 }
 

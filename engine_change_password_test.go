@@ -366,9 +366,9 @@ func newTestHasher(t *testing.T) *password.Argon2 {
 	t.Helper()
 
 	h, err := password.NewArgon2(password.Config{
-		Memory:      65536,
-		Time:        3,
-		Parallelism: 2,
+		Memory:      8 * 1024,
+		Time:        2,
+		Parallelism: 1,
 		SaltLength:  16,
 		KeyLength:   32,
 	})
