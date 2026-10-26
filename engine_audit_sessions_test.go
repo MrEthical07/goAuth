@@ -655,3 +655,53 @@ func TestLoginReconcilesADriftedTenantCounter(t *testing.T) {
 		t.Fatalf("tenant counter = %d, want 1", n)
 	}
 }
+
+// beforeSaveHook runs fn once, just before the session-save script reaches
+// Redis: after the login has made every decision about the account.
+type beforeSaveHook struct {
+	fn    func()
+	fired atomic.Bool
+}
+
+func (h *beforeSaveHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *beforeSaveHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if name := strings.ToLower(cmd.Name()); name != "evalsha" && name != "eval" {
+			return next(ctx, cmd)
+		}
+		for _, a := range cmd.Args() {
+			if s, ok := a.(string); ok && strings.HasPrefix(s, "aue:") && h.fired.CompareAndSwap(false, true) {
+				h.fn()
+				break
+			}
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (h *beforeSaveHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+// FAILED-BEFORE (R2-08 follow-up): a login that was fenced by a revocation and
+// retried on the re-read account issued a session although the revocation was
+// the user enrolling a second factor, which the decisions made on the first
+// read did not know about.
+func TestFencedLoginIsNotRetriedAcrossAChangeToTheAccount(t *testing.T) {
+	cfg := mfaLoginConfig()
+	up := newHardeningUserProvider(t)
+	engine, rdb, done := newCreateAccountEngine(t, cfg, up)
+	defer done()
+
+	// The user enrols a factor after the password-only login has decided that
+	// no second factor is needed, and before it stores its session.
+	rdb.AddHook(&beforeSaveHook{fn: func() { enableUserTOTP(t, engine, "u1", cfg) }})
+	_, _, err := engine.Login(context.Background(), "alice", "correct-password-123")
+	if err == nil {
+		t.Fatal("the login that decided before the second factor was enrolled got a session")
+	}
+	if n := activeSessions(t, engine); n != 0 {
+		t.Fatalf("user holds %d sessions, want 0", n)
+	}
+}

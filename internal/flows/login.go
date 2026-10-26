@@ -1622,6 +1622,14 @@ func issueFenced(
 	if verifiedHash != "" && fresh.PasswordHash != verifiedHash {
 		return refuse("password_changed_during_login", deps.Errors.InvalidCredentials)
 	}
+	// The second-factor, device and status decisions were made on the record
+	// that was read first. A change to the account since (a factor enrolled, a
+	// role or status changed) moves its version, and a retry would issue the
+	// session on those stale decisions, so the user signs in again instead.
+	// A plain logout-all does not touch the account and is retried.
+	if fresh.AccountVersion != user.AccountVersion {
+		return refuse("account_changed_during_login", deps.Errors.InvalidCredentials)
+	}
 
 	access, refresh, err = deps.IssueLoginSessionTokens(ctx, username, fresh, tenantID, rememberMe, next)
 	if errors.Is(err, session.ErrSessionFenced) {
