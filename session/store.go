@@ -667,13 +667,29 @@ func (s *Store) SaveFenced(ctx context.Context, sess *Session, ttl time.Duration
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
-	if status == 2 {
-		if actual, scanErr := s.EstimateActiveSessions(ctx, sess.TenantID); scanErr == nil {
-			if setErr := s.SetTenantSessionCount(ctx, sess.TenantID, actual); setErr == nil {
-				if status, err = run(); err != nil {
-					return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-				}
-			}
+	// The counter says the tenant is full. It can have drifted upwards (sessions
+	// that expired on their own never decrement it), so it is reconciled with a
+	// scan, but only if nothing moved it since it was read: a session saved or
+	// deleted during the scan changes the counter, the correction is dropped and
+	// the save is judged against the live counter instead.
+	for attempt := 0; status == 2 && attempt < 3; attempt++ {
+		observed, obsErr := s.redis.Get(ctx, s.tenantCountKey(sess.TenantID)).Result()
+		if obsErr != nil && !errors.Is(obsErr, redis.Nil) {
+			break
+		}
+		actual, scanErr := s.EstimateActiveSessions(ctx, sess.TenantID)
+		if scanErr != nil {
+			break
+		}
+		swapped, casErr := s.reconcileTenantCount(ctx, sess.TenantID, observed, actual)
+		if casErr != nil {
+			break
+		}
+		if status, err = run(); err != nil {
+			return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+		}
+		if swapped {
+			break
 		}
 	}
 
@@ -836,6 +852,31 @@ func (s *Store) SetTenantSessionCount(ctx context.Context, tenantID string, coun
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	return nil
+}
+
+// reconcileTenantScript sets the tenant counter to ARGV[2] (deletes it when
+// that is not positive) only if it still holds ARGV[1] ("" for no counter).
+var reconcileTenantScript = redis.NewScript(`
+local current = redis.call("GET", KEYS[1])
+if not current then current = "" end
+if current ~= ARGV[1] then return 0 end
+if tonumber(ARGV[2]) <= 0 then
+  redis.call("DEL", KEYS[1])
+else
+  redis.call("SET", KEYS[1], ARGV[2])
+end
+return 1
+`)
+
+// reconcileTenantCount applies a scanned session count to the tenant counter if
+// the counter still holds the value observed before the scan. It reports
+// whether the counter was written.
+func (s *Store) reconcileTenantCount(ctx context.Context, tenantID, observed string, actual int) (bool, error) {
+	res, err := reconcileTenantScript.Run(ctx, s.redis, []string{s.tenantCountKey(tenantID)}, observed, actual).Int64()
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	return res == 1, nil
 }
 
 // ActiveSessionCount returns the number of tracked session IDs for a user in a tenant.
