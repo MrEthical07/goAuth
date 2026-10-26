@@ -193,6 +193,33 @@ func (e *Engine) refreshRoleCheckFailure(ctx context.Context, result internalflo
 	return mapToAuthError(ErrSystemUnavailable)
 }
 
+// refreshPreCheck wires the optional checks that run on the stored session
+// before a refresh rotates the token: device binding when it is enforced. It
+// is nil otherwise, so the default path adds no reads. Detect-only device
+// binding is not applied to refresh.
+func (e *Engine) refreshPreCheck() *internalflows.RefreshPreCheck {
+	enforceDevice := e.config.DeviceBinding.Enabled &&
+		(e.config.DeviceBinding.EnforceIPBinding || e.config.DeviceBinding.EnforceUserAgentBinding)
+	if !enforceDevice {
+		return nil
+	}
+	return &internalflows.RefreshPreCheck{
+		Peek:        e.sessionStore.Peek,
+		Now:         clock.Now,
+		CheckDevice: e.validateDeviceBinding,
+	}
+}
+
+// refreshPreCheckFailure maps a failure of the refresh pre-check to the error
+// Refresh returns.
+func (e *Engine) refreshPreCheckFailure(ctx context.Context, result internalflows.RefreshResult) error {
+	e.metricInc(MetricRefreshFailure)
+	e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
+		return map[string]string{"reason": "device_binding"}
+	})
+	return mapToAuthError(result.Err)
+}
+
 // refreshRoleRecheck wires the optional refresh role re-check. It is nil
 // unless role switching is enabled, so the disabled path adds no reads.
 func (e *Engine) refreshRoleRecheck() *internalflows.RefreshRoleRecheck {

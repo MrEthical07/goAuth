@@ -29,6 +29,9 @@ const (
 	// RefreshFailureRoleCheck: the re-check could not reach the provider.
 	// Nothing was rotated or deleted.
 	RefreshFailureRoleCheck
+	// RefreshFailureDeviceBinding: device binding is enforced and the request
+	// does not match the session. Nothing was rotated or deleted.
+	RefreshFailureDeviceBinding
 )
 
 // RefreshResult carries either the issued token pair or failure metadata.
@@ -63,6 +66,18 @@ type RefreshRoleRecheck struct {
 	Now           func() time.Time
 }
 
+// RefreshPreCheck holds the optional checks that run on the stored session
+// before the refresh token is rotated: device binding, only wired when it is
+// enforced. A nil RefreshDeps.PreCheck leaves refresh exactly as it was.
+type RefreshPreCheck struct {
+	Peek func(ctx context.Context, tenantID, sessionID string) (*session.Session, error)
+	Now  func() time.Time
+
+	// CheckDevice, when non-nil, applies the device-binding policy to the
+	// session as role switching does.
+	CheckDevice func(ctx context.Context, sess *session.Session) error
+}
+
 // RefreshDeps captures refresh flow dependencies.
 type RefreshDeps struct {
 	TenantIDFromContext       func(context.Context) string
@@ -84,6 +99,9 @@ type RefreshDeps struct {
 	// RoleRecheck, when non-nil, confirms the session's role is still held
 	// before the refresh token is rotated.
 	RoleRecheck *RefreshRoleRecheck
+
+	// PreCheck, when non-nil, runs before RoleRecheck and the rotation.
+	PreCheck *RefreshPreCheck
 }
 
 type replayTracker interface {
@@ -107,6 +125,47 @@ func trackRefreshReuse(
 	if err := store.TrackReplayAnomaly(ctx, sessionID, lifetime()); err != nil && warn != nil {
 		warn("goAuth: replay anomaly tracking failed")
 	}
+}
+
+// runRefreshPreCheck reads the session without mutating it and, only if it
+// exists, is unexpired and the presented token matches its current secret,
+// applies the device-binding policy. Every other case
+// reports "no decision" so the normal rotation runs unchanged and reuse
+// detection and deletion behave exactly as without the check.
+func runRefreshPreCheck(
+	ctx context.Context,
+	tenantID, sessionID string,
+	providedHash [32]byte,
+	deps RefreshDeps,
+) (RefreshResult, bool) {
+	pc := deps.PreCheck
+	sess, err := pc.Peek(ctx, tenantID, sessionID)
+	if err != nil || sess == nil {
+		return RefreshResult{}, false
+	}
+	if sess.ExpiresAt <= pc.Now().Unix() {
+		return RefreshResult{}, false
+	}
+	if subtle.ConstantTimeCompare(sess.RefreshHash[:], providedHash[:]) != 1 {
+		return RefreshResult{}, false
+	}
+	fail := func(kind RefreshFailureKind, err error) (RefreshResult, bool) {
+		return RefreshResult{
+			Failure:   kind,
+			Err:       err,
+			TenantID:  sess.TenantID,
+			SessionID: sessionID,
+			UserID:    sess.UserID,
+			Session:   sess,
+		}, true
+	}
+
+	if pc.CheckDevice != nil {
+		if err := pc.CheckDevice(ctx, sess); err != nil {
+			return fail(RefreshFailureDeviceBinding, err)
+		}
+	}
+	return RefreshResult{}, false
 }
 
 // runRefreshRoleRecheck reads the session without mutating it and, only if
@@ -168,6 +227,11 @@ func RunRefresh(ctx context.Context, refreshToken string, deps RefreshDeps) Refr
 		}
 	}
 
+	if deps.PreCheck != nil {
+		if result, decided := runRefreshPreCheck(ctx, tenantID, sessionID, deps.HashRefreshSecret(providedSecret), deps); decided {
+			return result
+		}
+	}
 	if deps.RoleRecheck != nil {
 		if result, decided := runRefreshRoleRecheck(ctx, tenantID, sessionID, deps.HashRefreshSecret(providedSecret), deps); decided {
 			return result

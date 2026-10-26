@@ -427,6 +427,8 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 		return "", "", mapToAuthError(ErrRefreshReuse)
 	case internalflows.RefreshFailureRoleRevoked, internalflows.RefreshFailureRoleCheck:
 		return "", "", mapToAuthError(e.refreshRoleCheckFailure(ctx, result))
+	case internalflows.RefreshFailureDeviceBinding:
+		return "", "", e.refreshPreCheckFailure(ctx, result)
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)
 		e.emitAudit(ctx, auditEventRefreshInvalid, false, "", result.TenantID, result.SessionID, ErrSessionNotFound, e.refreshNotFoundMeta(result.Err))
@@ -1117,6 +1119,7 @@ func (e *Engine) initFlowDeps() {
 			RefreshHashMismatch:       session.ErrRefreshHashMismatch,
 			RedisNil:                  redis.Nil,
 			RoleRecheck:               e.refreshRoleRecheck(),
+			PreCheck:                  e.refreshPreCheck(),
 		},
 		Validate: internalflows.ValidateDeps{
 			ParseAccess: e.jwtManager.ParseAccess,
