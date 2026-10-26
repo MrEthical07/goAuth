@@ -68,6 +68,7 @@ type Engine struct {
 	passwordUpdater       TenantAwarePasswordUpdater
 	passwordCAS           PasswordHashCASUpdater
 	statusCAS             AccountStatusCASUpdater
+	backupGrants          *stores.BackupGrantStore
 	roleSwitchProvider    RoleSwitchProvider
 	roleSwitchLimiter     *limiters.RoleSwitchLimiter
 	externalProvider      ExternalIdentityProvider
@@ -2106,6 +2107,10 @@ func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID,
 	return mapToAuthErrorOrNil(e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code))
 }
 
+// backupSetupGrantTTL is how long after a successful ConfirmTOTPSetup the user
+// may generate their first backup codes without a TOTP code.
+const backupSetupGrantTTL = 10 * time.Minute
+
 func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 	var cfg Config
 	if e != nil {
@@ -2139,6 +2144,7 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 		},
 		Errors: internalflows.BackupCodeErrors{
 			TOTPFeatureDisabled:                ErrTOTPFeatureDisabled,
+			TOTPNotConfigured:                  ErrTOTPNotConfigured,
 			EngineNotReady:                     ErrEngineNotReady,
 			UserNotFound:                       ErrUserNotFound,
 			BackupCodeUnavailable:              ErrBackupCodeUnavailable,
@@ -2167,6 +2173,16 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 			return e.userProvider.ReplaceBackupCodes(ctx, userID, fromFlowBackupCodeRecords(records))
 		}
 		deps.ConsumeBackupCode = e.userProvider.ConsumeBackupCode
+		deps.TOTPEnabled = func(ctx context.Context, userID string) (bool, error) {
+			record, err := e.userProvider.GetTOTPSecret(ctx, userID)
+			if err != nil {
+				return false, err
+			}
+			return record != nil && record.Enabled && len(record.Secret) > 0, nil
+		}
+		if e.backupGrants != nil {
+			deps.ConsumeSetupGrant = e.backupGrants.Consume
+		}
 		if e.tenantScopedLookup() {
 			deps.ResolveUserInTenant = func(ctx context.Context, tenantID, userID string) error {
 				_, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
@@ -3873,6 +3889,11 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	}
 	if e != nil {
 		deps.LogoutAllInTenant = e.revokeUserSessions
+	}
+	if e != nil && e.backupGrants != nil {
+		deps.GrantBackupCodeSetup = func(ctx context.Context, tenantID, userID string) error {
+			return e.backupGrants.Grant(ctx, tenantID, userID, backupSetupGrantTTL)
+		}
 	}
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret

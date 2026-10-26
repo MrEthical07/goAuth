@@ -387,6 +387,20 @@ func (e *Engine) verifyRoleSwitchMFA(ctx context.Context, user internalflows.Rol
 			AccountVersion: user.AccountVersion,
 		}, code)
 	case internalflows.StepUpMethodBackupCode:
+		// Backup codes are a recovery artifact of an enrolled authenticator and
+		// count as proof only for a user who has one, exactly like the TOTP
+		// branch: a set of codes minted for an account without TOTP proves
+		// nothing about its owner.
+		if !e.config.TOTP.Enabled {
+			return ErrTOTPFeatureDisabled
+		}
+		record, err := e.userProvider.GetTOTPSecret(ctx, user.UserID)
+		if err != nil {
+			return ErrTOTPUnavailable
+		}
+		if record == nil || !record.Enabled || len(record.Secret) == 0 {
+			return ErrTOTPNotConfigured
+		}
 		return e.VerifyBackupCodeInTenant(ctx, user.TenantID, user.UserID, code)
 	}
 	return ErrStepUpRequired

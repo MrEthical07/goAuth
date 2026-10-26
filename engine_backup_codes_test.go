@@ -52,6 +52,7 @@ func TestBackupCodesGenerateStoresOnlyHashes(t *testing.T) {
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	codes, err := engine.GenerateBackupCodes(context.Background(), "u1")
 	if err != nil {
 		t.Fatalf("GenerateBackupCodes failed: %v", err)
@@ -80,6 +81,7 @@ func TestBackupCodeConsumeOneTimeAndReplayFail(t *testing.T) {
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	codes, err := engine.GenerateBackupCodes(context.Background(), "u1")
 	if err != nil {
 		t.Fatalf("GenerateBackupCodes failed: %v", err)
@@ -100,6 +102,7 @@ func TestBackupCodeConcurrentConsumeOnlyOneSucceeds(t *testing.T) {
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	codes, err := engine.GenerateBackupCodes(context.Background(), "u1")
 	if err != nil {
 		t.Fatalf("GenerateBackupCodes failed: %v", err)
@@ -140,6 +143,7 @@ func TestBackupCodeRateLimitEnforced(t *testing.T) {
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	if _, err := engine.GenerateBackupCodes(context.Background(), "u1"); err != nil {
 		t.Fatalf("GenerateBackupCodes failed: %v", err)
 	}
@@ -161,11 +165,11 @@ func TestBackupCodesRegenerationReplacesOldSet(t *testing.T) {
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
+	secret := enableUserTOTP(t, engine, "u1", cfg)
 	first, err := engine.GenerateBackupCodes(context.Background(), "u1")
 	if err != nil {
 		t.Fatalf("first GenerateBackupCodes failed: %v", err)
 	}
-	secret := enableUserTOTP(t, engine, "u1", cfg)
 	second, err := engine.RegenerateBackupCodes(context.Background(), "u1", codeForOffset(t, secret, cfg.TOTP, 1))
 	if err != nil {
 		t.Fatalf("RegenerateBackupCodes failed: %v", err)
@@ -185,6 +189,7 @@ func TestBackupCodesSecondGenerateRequiresTOTPVerification(t *testing.T) {
 	engine, _, done := newCreateAccountEngine(t, cfg, up)
 	defer done()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	if _, err := engine.GenerateBackupCodes(context.Background(), "u1"); err != nil {
 		t.Fatalf("first GenerateBackupCodes failed: %v", err)
 	}
@@ -260,6 +265,7 @@ func TestBackupCodeNotLeakedInAuditEvents(t *testing.T) {
 	engine, done := buildAuditTestEngine(t, cfg, sink, up)
 	defer done()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	codes, err := engine.GenerateBackupCodes(context.Background(), "u1")
 	if err != nil {
 		t.Fatalf("GenerateBackupCodes failed: %v", err)
@@ -363,6 +369,7 @@ func TestBackupCodesSecondGenerateFailureAudited(t *testing.T) {
 	engine, done := buildAuditTestEngine(t, cfg, sink, up)
 	defer done()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	if _, err := engine.GenerateBackupCodes(context.Background(), "u1"); err != nil {
 		t.Fatalf("first GenerateBackupCodes failed: %v", err)
 	}

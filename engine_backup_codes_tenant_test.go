@@ -44,7 +44,15 @@ func newTenantBackupCodeEngine(t *testing.T) (*Engine, *tenantMockProvider, *col
 		t.Fatalf("Build failed: %v", err)
 	}
 
-	codes, err := engine.GenerateBackupCodes(WithTenantID(context.Background(), "tenant-a"), "user-a")
+	// Backup codes are minted for an enrolled authenticator, in the minutes after
+	// its setup was confirmed.
+	tenantCtx := WithTenantID(context.Background(), "tenant-a")
+	up.totpRecords["user-a"] = TOTPRecord{Secret: []byte("0123456789abcdef0123"), Enabled: true, Verified: true}
+	if err := engine.backupGrants.Grant(tenantCtx, "tenant-a", "user-a", backupSetupGrantTTL); err != nil {
+		mr.Close()
+		t.Fatalf("Grant failed: %v", err)
+	}
+	codes, err := engine.GenerateBackupCodes(tenantCtx, "user-a")
 	if err != nil {
 		mr.Close()
 		t.Fatalf("GenerateBackupCodes failed: %v", err)
@@ -208,6 +216,7 @@ func TestVerifyBackupCodeSingleTenantMakesNoExtraProviderCall(t *testing.T) {
 	defer done()
 	ctx := context.Background()
 
+	enableUserTOTP(t, engine, "u1", cfg)
 	codes, err := engine.GenerateBackupCodes(ctx, "u1")
 	if err != nil {
 		t.Fatalf("GenerateBackupCodes failed: %v", err)

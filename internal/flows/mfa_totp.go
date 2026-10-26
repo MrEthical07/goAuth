@@ -74,6 +74,12 @@ type TOTPDeps struct {
 	UpdateTOTPLastUsedCounter func(context.Context, string, int64) error
 	LogoutAllInTenant         func(context.Context, string, string) error
 
+	// GrantBackupCodeSetup records, for a few minutes, that the user has just
+	// proven their authenticator, which lets them generate their first backup
+	// codes without another proof. Optional; a failure only costs the user a
+	// TOTP code at regeneration.
+	GrantBackupCodeSetup func(ctx context.Context, tenantID, userID string) error
+
 	GenerateSecret func() ([]byte, string, error)
 	ProvisionURI   func(string, string) string
 	VerifyCode     func([]byte, string, time.Time) (bool, int64, error)
@@ -286,6 +292,10 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		return errors.Join(deps.Errors.SessionInvalidationFailed, err)
 	}
 
+	if deps.GrantBackupCodeSetup != nil {
+		_ = deps.GrantBackupCodeSetup(ctx, tenant, userID)
+	}
+
 	deps.MetricInc(deps.Metrics.TOTPSuccess)
 	deps.EmitAudit(ctx, deps.Events.TOTPEnabled, true, userID, tenant, "", nil, nil)
 	return nil
@@ -387,7 +397,6 @@ func RunDisableTOTP(ctx context.Context, userID string, deps TOTPDeps) error {
 	if err := deps.DisableTOTP(ctx, userID); err != nil {
 		return deps.Errors.TOTPUnavailable
 	}
-
 	after, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
 		return deps.Errors.UserNotFound
