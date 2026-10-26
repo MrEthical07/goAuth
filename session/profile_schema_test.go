@@ -357,7 +357,7 @@ func TestMaybeMigrateSessionSchemaOnlyLiftsOlderRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: decode: %v", tc.name, err)
 		}
-		if err := store.maybeMigrateSessionSchema(ctx, key, decoded); err != nil {
+		if err := store.maybeMigrateSessionSchema(ctx, key, decoded, blob); err != nil {
 			t.Fatalf("%s: migrate: %v", tc.name, err)
 		}
 		after, _ := rdb.Get(ctx, key).Bytes()

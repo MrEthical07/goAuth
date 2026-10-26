@@ -107,6 +107,24 @@ return deleted
 
 var deleteAllForUserLua = redis.NewScript(deleteAllForUserScript)
 
+// migrateSchemaScript rewrites a pre-v5 session blob as v5 only if the stored
+// value is still the bytes the caller read, keeping the TTL. KEYS[1] = the
+// session, ARGV[1] = the bytes read, ARGV[2] = the v5 blob. A deleted key, a
+// rotated refresh hash or any other change makes the compare fail and nothing
+// is written. It returns 1 when it wrote.
+const migrateSchemaScript = `
+if redis.call("PTTL", KEYS[1]) <= 0 then
+  return 0
+end
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+redis.call("SET", KEYS[1], ARGV[2], "KEEPTTL")
+return 1
+`
+
+var migrateSchemaLua = redis.NewScript(migrateSchemaScript)
+
 const rotateRefreshScript = `
 local function read_be64(s, i)
   local b1 = string.byte(s, i)
@@ -524,7 +542,7 @@ func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Du
 		return nil, redis.Nil
 	}
 
-	if err := s.maybeMigrateSessionSchema(ctx, key, sess); err != nil {
+	if err := s.maybeMigrateSessionSchema(ctx, key, sess, data); err != nil {
 		return nil, err
 	}
 
@@ -687,7 +705,7 @@ func (s *Store) GetReadOnly(ctx context.Context, tenantID, sessionID string) (*S
 		}
 		return sess, nil
 	}
-	if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionID), sess); err != nil {
+	if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionID), sess, data); err != nil {
 		return nil, err
 	}
 
@@ -745,7 +763,7 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 			sessions = append(sessions, sess)
 			continue
 		}
-		if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionIDs[i]), sess); err != nil {
+		if err := s.maybeMigrateSessionSchema(ctx, s.key(tenantID, sessionIDs[i]), sess, data); err != nil {
 			return nil, err
 		}
 
@@ -888,20 +906,17 @@ func (s *Store) nextSlidingTTL(remainingAbsolute time.Duration) (time.Duration, 
 	return nextTTL, nil
 }
 
-func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess *Session) error {
+// maybeMigrateSessionSchema lifts a pre-v5 record to v5. original is the exact
+// bytes the caller read. The rewrite is one script that compares the stored
+// value with them and writes only if they are unchanged: a delete in between
+// leaves the session deleted, and a refresh rotation in between leaves the
+// rotated hash in place instead of restoring the one that was rotated out.
+func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess *Session, original []byte) error {
 	// Only records older than the legacy current version are migrated, and
 	// only up to it. A v5 record stays v5 and a v6 (profile) record is never
 	// rewritten: Encode would drop or misplace the profile, and v5 -> v6 is
 	// not a migration.
 	if sess == nil || sess.SchemaVersion >= CurrentSchemaVersion {
-		return nil
-	}
-
-	pttl, err := s.redis.PTTL(ctx, key).Result()
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
-	}
-	if pttl <= 0 {
 		return nil
 	}
 
@@ -911,12 +926,7 @@ func (s *Store) maybeMigrateSessionSchema(ctx context.Context, key string, sess 
 		return err
 	}
 
-	// XX: the read and this write are not atomic. If the session was deleted
-	// in between (logout, refresh-reuse revocation, a role switch), a plain
-	// SET would write the stale blob back and resurrect a session that was
-	// just revoked, along with its old refresh hash.
-	err = s.redis.SetArgs(ctx, key, encoded, redis.SetArgs{Mode: "XX", TTL: pttl}).Err()
-	if err != nil && !errors.Is(err, redis.Nil) {
+	if err := migrateSchemaLua.Run(ctx, s.redis, []string{key}, original, encoded).Err(); err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	return nil
@@ -1017,7 +1027,7 @@ func (s *Store) RotateRefreshHash(
 			return nil, decErr
 		}
 		sess.SessionID = sessionID
-		if err := s.maybeMigrateSessionSchema(ctx, key, sess); err != nil {
+		if err := s.maybeMigrateSessionSchema(ctx, key, sess, blob); err != nil {
 			return nil, err
 		}
 		return sess, nil
