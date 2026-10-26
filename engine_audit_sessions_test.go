@@ -635,3 +635,23 @@ func TestMFAChallengeEpochIsRemovedWithTheChallenge(t *testing.T) {
 		}
 	}
 }
+
+// A counter that drifted above the tenant cap is corrected by the login that
+// finds it, whichever step does the correcting.
+func TestLoginReconcilesADriftedTenantCounter(t *testing.T) {
+	cfg := accountTestConfig()
+	cfg.SessionHardening.MaxSessionsPerTenant = 3
+	up := newHardeningUserProvider(t)
+	engine, _ := newAuditEngine(t, cfg, up)
+	ctx := context.Background()
+
+	if err := engine.sessionStore.SetTenantSessionCount(ctx, "0", 50); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := engine.Login(ctx, "alice", "correct-password-123"); err != nil {
+		t.Fatalf("a drifted counter refused a login: %v", err)
+	}
+	if n, _ := engine.sessionStore.TenantSessionCount(ctx, "0"); n != 1 {
+		t.Fatalf("tenant counter = %d, want 1", n)
+	}
+}

@@ -1238,13 +1238,13 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 		}
 
 		if tenantSessions >= h.MaxSessionsPerTenant {
-			// Counter can drift when sessions expire naturally; reconcile before denying.
-			actual, scanErr := e.sessionStore.EstimateActiveSessions(ctx, tenantID)
-			if scanErr == nil {
+			// The counter can drift when sessions expire naturally, so it is
+			// checked against a scan before denying. The counter itself is
+			// corrected where the session is stored, by a compare-and-set that
+			// cannot lose a session saved meanwhile; writing the scan here
+			// would.
+			if actual, scanErr := e.sessionStore.EstimateActiveSessions(ctx, tenantID); scanErr == nil {
 				tenantSessions = actual
-				if setErr := e.sessionStore.SetTenantSessionCount(ctx, tenantID, actual); setErr != nil {
-					e.warn("goAuth: tenant session counter reconciliation failed")
-				}
 			}
 		}
 		if tenantSessions >= h.MaxSessionsPerTenant {
