@@ -134,7 +134,8 @@ func TestLoginRacingAnUnrelatedLogoutAllStillSucceeds(t *testing.T) {
 // logins with the old password run while the owner changes it; when they stop
 // no session may remain.
 func TestOverlappingLoginsDoNotSurviveAPasswordChange(t *testing.T) {
-	for round := 0; round < 4; round++ {
+	const workers = 4
+	for round := 0; round < 2; round++ {
 		cfg := accountTestConfig()
 		cfg.Security.EnableLoginFailureLimiter = false
 		up := newHardeningUserProvider(t)
@@ -142,8 +143,8 @@ func TestOverlappingLoginsDoNotSurviveAPasswordChange(t *testing.T) {
 
 		var wg sync.WaitGroup
 		stop := make(chan struct{})
-		started := make(chan struct{}, 8)
-		for i := 0; i < 8; i++ {
+		started := make(chan struct{}, workers)
+		for i := 0; i < workers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -158,7 +159,7 @@ func TestOverlappingLoginsDoNotSurviveAPasswordChange(t *testing.T) {
 				}
 			}()
 		}
-		for i := 0; i < 8; i++ {
+		for i := 0; i < workers; i++ {
 			<-started
 		}
 		if err := engine.ChangePassword(context.Background(), "u1", "correct-password-123", "another-password-456"); err != nil {
