@@ -427,7 +427,7 @@ func (e *Engine) Refresh(ctx context.Context, refreshToken string) (string, stri
 		return "", "", mapToAuthError(ErrRefreshReuse)
 	case internalflows.RefreshFailureRoleRevoked, internalflows.RefreshFailureRoleCheck:
 		return "", "", mapToAuthError(e.refreshRoleCheckFailure(ctx, result))
-	case internalflows.RefreshFailureDeviceBinding:
+	case internalflows.RefreshFailureDeviceBinding, internalflows.RefreshFailureUserChanged, internalflows.RefreshFailureUserCheck:
 		return "", "", e.refreshPreCheckFailure(ctx, result)
 	case internalflows.RefreshFailureSessionNotFound:
 		e.metricInc(MetricRefreshFailure)

@@ -141,9 +141,10 @@ created under it.
 | `RequireSecureCookies`         | `bool`        | `true`       | **No-op** — the engine never issues cookies; enforce at the HTTP layer (lint: `cookie_settings_noop`) |
 | `SameSitePolicy`               | `http.SameSite`| `Strict`    | **No-op** — the engine never issues cookies; enforce at the HTTP layer (lint: `cookie_settings_noop`) |
 | `CSRFProtection`               | `bool`        | `true`       | **No-op** — no CSRF machinery exists in the engine; enforce at the HTTP layer (lint: `cookie_settings_noop`) |
-| `EnablePermissionVersionCheck` | `bool`        | `true`       | Check permission version on validate |
-| `EnableRoleVersionCheck`       | `bool`        | `true`       | Check role version on validate |
-| `EnableAccountVersionCheck`    | `bool`        | `true`       | Check account version on validate |
+| `EnablePermissionVersionCheck` | `bool`        | `true`       | Compare the token's permission version with the session's on strict validate (a snapshot comparison: it does not read the user record, see [session.md](session.md#what-the-version-stamps-detect)) |
+| `EnableRoleVersionCheck`       | `bool`        | `true`       | Compare the token's role version with the session's on strict validate (snapshot comparison) |
+| `EnableAccountVersionCheck`    | `bool`        | `true`       | Compare the token's account version with the session's on strict validate (snapshot comparison) |
+| `RecheckUserOnRefresh`         | `bool`        | `false`      | `Refresh` re-reads the user and ends the session if its permission, role or account version differs from the session's or its status is blocking; `ErrSystemUnavailable` if the provider is down. One provider read per refresh (lint: `refresh_user_recheck_off` while off) |
 | `AutoLockoutEnabled`           | `bool`        | `false`      | Auto-lock after repeated failures |
 | `AutoLockoutThreshold`         | `int`         | 10           | Failures before auto-lock |
 | `AutoLockoutDuration`          | `time.Duration`| 30 min      | Rolling window in which failures are counted towards the threshold (0 = until unlocked). **It does not unlock the account**: an auto-locked account stays `Locked` until `UnlockAccount`/`EnableAccount` is called (lint: `auto_lockout_duration_noop`); automatic unlocking is on the [roadmap](roadmap.md) |

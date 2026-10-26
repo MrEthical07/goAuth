@@ -54,6 +54,18 @@ type Session struct {
 }
 ```
 
+### What the version stamps detect
+
+A session stores the user's `PermissionVersion`, `RoleVersion` and `AccountVersion` as they were when the session was created, and the access token carries the same three numbers. Strict `Validate` compares the token's stamps with the session's. Both were copied from the same place at the same moment, so the comparison detects a token and a session that disagree (a token minted for another session state); it does **not** read the user record, so it never notices that the user's role, permissions or status changed afterwards.
+
+How a change reaches existing sessions:
+
+- **`InvalidateUserSessions` (or `LogoutAll`)** ends every session of the user. Call it whenever you change a user's role, permissions or status outside goAuth's own account-status calls. This is required, not optional, unless the next point is on.
+- **`Security.RecheckUserOnRefresh = true`** (default `false`): `Refresh` reads the user through the tenant-scoped lookup before it rotates the token. If the user's `PermissionVersion`, `RoleVersion` or `AccountVersion` differs from the session's, or the status is blocking, the session is deleted and `Refresh` returns `ErrSessionNotFound` (or the status error). If the provider cannot be reached `Refresh` returns `ErrSystemUnavailable` and rotates nothing, so the same refresh token works once the provider is back. It costs one provider read per refresh. The provider must return `ErrUserNotFound` for a user that no longer exists; any other error is treated as an outage.
+- Strict `Validate` stays snapshot-based in both cases: an access token already issued is accepted until it expires or the session is deleted.
+
+Lint: `refresh_user_recheck_off` (INFO) is reported while the flag is off.
+
 ### Binary Encoding (v5, and v6 for profiles)
 
 `Encode(s *Session) ([]byte, error)` / `Decode(data []byte) (*Session, error)`

@@ -194,30 +194,66 @@ func (e *Engine) refreshRoleCheckFailure(ctx context.Context, result internalflo
 }
 
 // refreshPreCheck wires the optional checks that run on the stored session
-// before a refresh rotates the token: device binding when it is enforced. It
-// is nil otherwise, so the default path adds no reads. Detect-only device
-// binding is not applied to refresh.
+// before a refresh rotates the token: device binding when it is enforced, and
+// the user re-read when Security.RecheckUserOnRefresh is on. It is nil
+// otherwise, so the default path adds no reads. Detect-only device binding is
+// not applied to refresh.
 func (e *Engine) refreshPreCheck() *internalflows.RefreshPreCheck {
 	enforceDevice := e.config.DeviceBinding.Enabled &&
 		(e.config.DeviceBinding.EnforceIPBinding || e.config.DeviceBinding.EnforceUserAgentBinding)
-	if !enforceDevice {
+	recheck := e.config.Security.RecheckUserOnRefresh
+	if !enforceDevice && !recheck {
 		return nil
 	}
-	return &internalflows.RefreshPreCheck{
-		Peek:        e.sessionStore.Peek,
-		Now:         clock.Now,
-		CheckDevice: e.validateDeviceBinding,
+	pc := &internalflows.RefreshPreCheck{
+		Peek: e.sessionStore.Peek,
+		Now:  clock.Now,
 	}
+	if enforceDevice {
+		pc.CheckDevice = e.validateDeviceBinding
+	}
+	if recheck {
+		pc.UserNotFound = ErrUserNotFound
+		pc.LookupUser = func(ctx context.Context, tenantID, userID string) (internalflows.RefreshUserState, error) {
+			user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
+			if err != nil {
+				return internalflows.RefreshUserState{}, err
+			}
+			if user.UserID != userID {
+				return internalflows.RefreshUserState{}, ErrUserNotFound
+			}
+			return internalflows.RefreshUserState{
+				Status:            uint8(user.Status),
+				PermissionVersion: user.PermissionVersion,
+				RoleVersion:       user.RoleVersion,
+				AccountVersion:    user.AccountVersion,
+			}, nil
+		}
+	}
+	return pc
 }
 
 // refreshPreCheckFailure maps a failure of the refresh pre-check to the error
 // Refresh returns.
 func (e *Engine) refreshPreCheckFailure(ctx context.Context, result internalflows.RefreshResult) error {
 	e.metricInc(MetricRefreshFailure)
-	e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
-		return map[string]string{"reason": "device_binding"}
+	switch result.Failure {
+	case internalflows.RefreshFailureDeviceBinding:
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, result.Err, func() map[string]string {
+			return map[string]string{"reason": "device_binding"}
+		})
+		return mapToAuthError(result.Err)
+	case internalflows.RefreshFailureUserChanged:
+		e.metricInc(MetricSessionInvalidated)
+		e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrSessionNotFound, func() map[string]string {
+			return map[string]string{"reason": "user_changed"}
+		})
+		return mapToAuthError(ErrSessionNotFound)
+	}
+	e.emitAudit(ctx, auditEventRefreshInvalid, false, result.UserID, result.TenantID, result.SessionID, ErrSystemUnavailable, func() map[string]string {
+		return map[string]string{"reason": "user_check_unavailable"}
 	})
-	return mapToAuthError(result.Err)
+	return mapToAuthError(ErrSystemUnavailable)
 }
 
 // refreshRoleRecheck wires the optional refresh role re-check. It is nil

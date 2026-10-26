@@ -32,6 +32,12 @@ const (
 	// RefreshFailureDeviceBinding: device binding is enforced and the request
 	// does not match the session. Nothing was rotated or deleted.
 	RefreshFailureDeviceBinding
+	// RefreshFailureUserChanged: the user's permission, role or account
+	// version differs from the session's copy. The session was deleted.
+	RefreshFailureUserChanged
+	// RefreshFailureUserCheck: the user re-read could not reach the provider.
+	// Nothing was rotated or deleted.
+	RefreshFailureUserCheck
 )
 
 // RefreshResult carries either the issued token pair or failure metadata.
@@ -66,9 +72,19 @@ type RefreshRoleRecheck struct {
 	Now           func() time.Time
 }
 
+// RefreshUserState is what the optional user re-read compares with the
+// session's copy.
+type RefreshUserState struct {
+	Status            uint8
+	PermissionVersion uint32
+	RoleVersion       uint32
+	AccountVersion    uint32
+}
+
 // RefreshPreCheck holds the optional checks that run on the stored session
-// before the refresh token is rotated: device binding, only wired when it is
-// enforced. A nil RefreshDeps.PreCheck leaves refresh exactly as it was.
+// before the refresh token is rotated: device binding (only wired when it is
+// enforced) and the re-read of the user (only when Security.RecheckUserOnRefresh
+// is on). A nil RefreshDeps.PreCheck leaves refresh exactly as it was.
 type RefreshPreCheck struct {
 	Peek func(ctx context.Context, tenantID, sessionID string) (*session.Session, error)
 	Now  func() time.Time
@@ -76,6 +92,12 @@ type RefreshPreCheck struct {
 	// CheckDevice, when non-nil, applies the device-binding policy to the
 	// session as role switching does.
 	CheckDevice func(ctx context.Context, sess *session.Session) error
+
+	// LookupUser, when non-nil, re-reads the session's user through the
+	// tenant-scoped lookup. UserNotFound is the error it returns for a user
+	// that does not exist; any other error is an outage.
+	LookupUser   func(ctx context.Context, tenantID, userID string) (RefreshUserState, error)
+	UserNotFound error
 }
 
 // RefreshDeps captures refresh flow dependencies.
@@ -129,7 +151,7 @@ func trackRefreshReuse(
 
 // runRefreshPreCheck reads the session without mutating it and, only if it
 // exists, is unexpired and the presented token matches its current secret,
-// applies the device-binding policy. Every other case
+// applies the device-binding policy and re-reads the user. Every other case
 // reports "no decision" so the normal rotation runs unchanged and reuse
 // detection and deletion behave exactly as without the check.
 func runRefreshPreCheck(
@@ -164,6 +186,36 @@ func runRefreshPreCheck(
 		if err := pc.CheckDevice(ctx, sess); err != nil {
 			return fail(RefreshFailureDeviceBinding, err)
 		}
+	}
+	if pc.LookupUser == nil {
+		return RefreshResult{}, false
+	}
+
+	user, err := pc.LookupUser(ctx, sess.TenantID, sess.UserID)
+	switch {
+	case err != nil && pc.UserNotFound != nil && errors.Is(err, pc.UserNotFound):
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureUserChanged, err)
+	case err != nil:
+		// A provider outage says nothing about the session: it stays untouched
+		// and the same refresh token works on retry.
+		return fail(RefreshFailureUserCheck, err)
+	}
+	if statusErr := deps.AccountStatusError(user.Status); statusErr != nil {
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureAccountStatus, statusErr)
+	}
+	if deps.ShouldRequireVerified != nil &&
+		deps.ShouldRequireVerified() &&
+		user.Status == deps.PendingVerificationStatus {
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureUnverified, errors.New("pending_verification"))
+	}
+	if user.PermissionVersion != sess.PermissionVersion ||
+		user.RoleVersion != sess.RoleVersion ||
+		(user.AccountVersion != 0 && sess.AccountVersion != 0 && user.AccountVersion != sess.AccountVersion) {
+		_ = deps.SessionStore.Delete(ctx, sess.TenantID, sess.SessionID)
+		return fail(RefreshFailureUserChanged, nil)
 	}
 	return RefreshResult{}, false
 }
