@@ -763,6 +763,9 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 	if err == nil {
 		e.metricInc(MetricLogoutAll)
 		e.metricInc(MetricSessionInvalidated)
+		// Password change and reset, and every other flow that revokes all of a
+		// user's sessions, end here.
+		e.cancelEmailChangeAfterRecovery(ctx, tenantID, userID)
 	}
 	e.emitAudit(ctx, auditEventLogoutAll, err == nil, userID, tenantID, "", err, nil)
 	return mapToAuthErrorOrNil(err)

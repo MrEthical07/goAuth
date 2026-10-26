@@ -17,6 +17,9 @@ const (
 	auditEventEmailChangeRequested = "email_change_requested"
 	auditEventEmailChangeConfirmed = "email_change_confirmed"
 	auditEventEmailChangeFailure   = "email_change_failure"
+	// auditEventEmailChangeCancelled is emitted when a pending change was
+	// dropped because the account's sessions were revoked (recovery).
+	auditEventEmailChangeCancelled = "email_change_cancelled"
 
 	auditErrEmailChangeDisabled    AuditErrorCode = "email_change_disabled"
 	auditErrEmailChangeInvalid     AuditErrorCode = "email_change_invalid"
@@ -40,6 +43,7 @@ const (
 	emailChangeReasonStale       = "stale"
 	emailChangeReasonInUse       = "in_use"
 	emailChangeReasonUnavailable = "unavailable"
+	emailChangeReasonRecovery    = "recovery"
 
 	maxEmailLength = 254
 )
@@ -466,6 +470,51 @@ func (e *Engine) issuedBeforeEmailChange(ctx context.Context, tenantID, userID s
 	}
 	issuedAt := expiresAt - int64(ttl/time.Second)
 	return issuedAt <= changedAt, nil
+}
+
+// cancelEmailChangeAfterRecovery drops the user's pending email change after a
+// revocation of all their sessions (password reset or change, LogoutAll, and
+// the other flows that end with one). A staged change was requested from a
+// session that may be the reason for the recovery: it must not survive it. It
+// never fails the operation that called it: a failure is logged and audited.
+func (e *Engine) cancelEmailChangeAfterRecovery(ctx context.Context, tenantID, userID string) {
+	if !e.emailChangeEnabled() || userID == "" {
+		return
+	}
+	tenants := sessionRevocationTenants(ctx, tenantID)
+	if !e.tenantScopedLookup() {
+		// Without tenant-scoped lookups the challenge was stored under the
+		// user's own tenant, which neither the request's context nor the caller
+		// of a bare LogoutAll(userID) necessarily names (see cancelEmailChange).
+		switch user, err := e.lookupEmailChangeUser(ctx, tenantIDFromContext(ctx), userID); {
+		case err == nil:
+			owner := e.emailChangeTenant(ctx, user)
+			known := false
+			for _, t := range tenants {
+				known = known || tenantIDFromToken(t) == tenantIDFromToken(owner)
+			}
+			if !known {
+				tenants = append(tenants, owner)
+			}
+		case errors.Is(err, ErrUserNotFound):
+		default:
+			e.warn("goAuth: pending email change could not be located after a recovery")
+			_ = e.emailChangeFail(ctx, tenantID, userID, "cancel", emailChangeReasonRecovery, WrapAuthError(ErrSystemUnavailable, err))
+		}
+	}
+	for _, tenant := range tenants {
+		cancelled, err := e.emailChangeStore.CancelPending(ctx, tenant, userID)
+		if err != nil {
+			e.warn("goAuth: pending email change could not be cancelled after a recovery")
+			_ = e.emailChangeFail(ctx, tenant, userID, "cancel", emailChangeReasonRecovery, WrapAuthError(ErrSystemUnavailable, err))
+			continue
+		}
+		if cancelled {
+			e.emitAudit(ctx, auditEventEmailChangeCancelled, true, userID, tenant, "", nil, func() map[string]string {
+				return map[string]string{"reason": emailChangeReasonRecovery}
+			})
+		}
+	}
 }
 
 // CancelEmailChange deletes userID's pending email-change challenge, if any.

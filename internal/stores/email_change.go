@@ -127,7 +127,8 @@ forget()
 return data
 `)
 
-// cancelEmailChangeLua deletes the user's pending challenge, if any.
+// cancelEmailChangeLua deletes the user's pending challenge, if any, and
+// returns 1 if there was one and 0 if not.
 //
 // KEYS: per-user pointer. ARGV: record key prefix.
 var cancelEmailChangeLua = redis.NewScript(`
@@ -136,7 +137,10 @@ if old then
   redis.call('DEL', ARGV[1] .. old)
 end
 redis.call('DEL', KEYS[1])
-return 1
+if old then
+  return 1
+end
+return 0
 `)
 
 // EmailChangeStore keeps pending email-change challenges, one per user.
@@ -239,13 +243,19 @@ func (s *EmailChangeStore) Consume(ctx context.Context, tenantID, verificationID
 
 // Cancel deletes the user's pending challenge. It is idempotent.
 func (s *EmailChangeStore) Cancel(ctx context.Context, tenantID, userID string) error {
-	_, err := cancelEmailChangeLua.Run(ctx, s.redis,
+	_, err := s.CancelPending(ctx, tenantID, userID)
+	return err
+}
+
+// CancelPending is Cancel that reports whether a challenge was pending.
+func (s *EmailChangeStore) CancelPending(ctx context.Context, tenantID, userID string) (bool, error) {
+	n, err := cancelEmailChangeLua.Run(ctx, s.redis,
 		[]string{s.pointerKey(tenantID, userID)}, s.recordPrefix(tenantID),
-	).Result()
+	).Int()
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrEmailChangeUnavailable, err)
+		return false, fmt.Errorf("%w: %v", ErrEmailChangeUnavailable, err)
 	}
-	return nil
+	return n == 1, nil
 }
 
 // MarkIdentifierChanged records, for ttl, that the user's identifier changes at

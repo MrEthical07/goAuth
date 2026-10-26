@@ -380,3 +380,35 @@ func TestRedisCompat_DeleteAllEpochLifeFollowsTheConfiguredTTL(t *testing.T) {
 		})
 	}
 }
+
+func TestRedisCompat_EmailChangeCancelReportsWhatItRemoved(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			store := stores.NewEmailChangeStore(rdb, "aec")
+			ctx := context.Background()
+
+			if cancelled, err := store.CancelPending(ctx, "t-ec", "u-ec"); err != nil || cancelled {
+				t.Fatalf("nothing pending: cancelled=%v err=%v", cancelled, err)
+			}
+			rec := &stores.EmailChangeRecord{
+				UserID: "u-ec", OldIdentifier: "a@example.com", NewIdentifier: "b@example.com",
+				AccountVersion: 1, ExpiresAt: time.Now().Add(time.Minute).Unix(),
+			}
+			if err := store.Save(ctx, "t-ec", "v1", rec, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if cancelled, err := store.CancelPending(ctx, "t-ec", "u-ec"); err != nil || !cancelled {
+				t.Fatalf("one pending: cancelled=%v err=%v", cancelled, err)
+			}
+			if rdb.Exists(ctx, "aec:t-ec:v1", "aecp:t-ec:u-ec").Val() != 0 {
+				t.Fatal("the challenge or its pointer survived")
+			}
+			if cancelled, _ := store.CancelPending(ctx, "t-ec", "u-ec"); cancelled {
+				t.Fatal("a second cancel reported something removed")
+			}
+		})
+	}
+}

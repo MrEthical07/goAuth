@@ -73,6 +73,7 @@ With `EmailChange` enabled (see [email_change.md](email_change.md#audit)). The c
 |-------|-----------|
 | `email_change_requested` | `old_email`, `new_email` (masked) |
 | `email_change_confirmed` | `old_email`, `new_email` (masked), `sessions_revoked` |
+| `email_change_cancelled` | `reason` (`recovery`) |
 | `email_change_failure` | `stage` (`request`, `confirm`, `cancel`), `reason` (`disabled`, `user_not_found`, `status`, `invalid_email`, `same_email`, `rate_limited`, `invalid`, `expired`, `attempts`, `stale`, `in_use`, `unavailable`) |
 
 ## External identity events

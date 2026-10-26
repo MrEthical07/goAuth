@@ -54,6 +54,8 @@ type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoke
 
 `CancelEmailChange` deletes the user's pending challenge. It is idempotent and succeeds when nothing is pending.
 
+**Recovery cancels a staged change.** While `EmailChange.Enabled` is on, every successful revocation of all of a user's sessions also cancels their pending change: a password reset or change, `LogoutAll`, `LogoutAllInTenant`, `InvalidateUserSessions` and the other flows that end with one (disabling the account, changing TOTP). A change staged from a session that is the reason for the recovery must not outlive it. The cancel never fails the operation that triggered it: a failure is logged and audited (`email_change_failure`, `stage` `cancel`, `reason` `recovery`), and the challenge then simply expires with its TTL. A cancel that removed something is audited as `email_change_cancelled` with `reason` `recovery`. Confirming an email change does not cancel anything (it revokes sessions itself).
+
 ## The provider contract
 
 ```go
@@ -139,6 +141,7 @@ Account status failures use the existing status errors, and a provider or Redis 
 |-------|-----------|
 | `email_change_requested` | `old_email`, `new_email`, both masked (`j***@example.com`); never the code |
 | `email_change_confirmed` | `old_email`, `new_email` (masked), `sessions_revoked` |
+| `email_change_cancelled` | `reason` (`recovery`): a pending change was dropped because the user's sessions were revoked |
 | `email_change_failure` | `stage` (`request`, `confirm` or `cancel`), `reason` |
 
 Failure reasons: `disabled`, `user_not_found`, `status`, `invalid_email`, `same_email`, `rate_limited`, `invalid`, `expired`, `attempts`, `stale`, `in_use`, `unavailable`. With `Security.LimiterFailClosed` a limiter outage on a request is `unavailable`.
