@@ -356,7 +356,7 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 	result := &EmailChangeResult{UserID: record.UserID, OldEmail: record.OldIdentifier, NewEmail: record.NewIdentifier}
 	var revokeErr error
 	if !cfg.KeepOtherSessions {
-		revokeErr = e.revokeSessionsAfterEmailChange(ctx, tenantID, record.UserID, opts.KeepSessionID)
+		revokeErr = e.revokeSessionsAfterEmailChange(ctx, tenantID, user.TenantID, record.UserID, opts.KeepSessionID)
 		result.SessionsRevoked = revokeErr == nil
 	}
 	e.emitAudit(ctx, auditEventEmailChangeConfirmed, true, record.UserID, tenantID, "", nil, func() map[string]string {
@@ -405,17 +405,34 @@ func emailChangeProviderFailure(err error) (string, error) {
 
 // revokeSessionsAfterEmailChange revokes every session of the user except
 // keepSessionID, which counts only when it is a live session of this user.
-func (e *Engine) revokeSessionsAfterEmailChange(ctx context.Context, challengeTenant, userID, keepSessionID string) error {
-	tenant := e.emailChangeSessionTenant(ctx, challengeTenant)
-	keep := ""
-	if keepSessionID != "" {
-		if sess, err := e.sessionStore.Peek(ctx, tenant, keepSessionID); err == nil &&
-			sess.UserID == userID && sess.ExpiresAt > time.Now().Unix() {
-			keep = keepSessionID
+func (e *Engine) revokeSessionsAfterEmailChange(ctx context.Context, challengeTenant, recordTenant, userID, keepSessionID string) error {
+	// Sessions live under the context tenant, or under the account's own when
+	// the provider's record carries a different one; every one of them is
+	// revoked.
+	tenants := sessionRevocationTenants(ctx, e.emailChangeSessionTenant(ctx, challengeTenant))
+	if recordTenant != "" {
+		known := false
+		for _, t := range tenants {
+			known = known || tenantIDFromToken(t) == tenantIDFromToken(recordTenant)
+		}
+		if !known {
+			tenants = append(tenants, recordTenant)
 		}
 	}
-	_, err := e.sessionStore.DeleteAllForUserExcept(ctx, tenant, userID, keep)
-	return err
+	var errs []error
+	for _, tenant := range tenants {
+		keep := ""
+		if keepSessionID != "" {
+			if sess, err := e.sessionStore.Peek(ctx, tenant, keepSessionID); err == nil &&
+				sess.UserID == userID && sess.ExpiresAt > time.Now().Unix() {
+				keep = keepSessionID
+			}
+		}
+		if _, err := e.sessionStore.DeleteAllForUserExcept(ctx, tenant, userID, keep); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // emailChangeMarkerTTL outlives the longest challenge an old address could be

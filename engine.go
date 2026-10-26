@@ -763,6 +763,35 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 	return mapToAuthErrorOrNil(err)
 }
 
+// sessionRevocationTenants lists the tenants a user's sessions may live under
+// when the user is revoked on the strength of an account record: the tenant of
+// the request context, which is where a login stores its session, and the
+// tenant the record carries when that is set and different (the provider's
+// record tenant and the request's tenant agree only when multi-tenancy is on;
+// auto-login account creation stores sessions under the record tenant).
+func sessionRevocationTenants(ctx context.Context, recordTenant string) []string {
+	ctxTenant := tenantIDFromContext(ctx)
+	if recordTenant == "" || tenantIDFromToken(recordTenant) == tenantIDFromToken(ctxTenant) {
+		return []string{ctxTenant}
+	}
+	return []string{ctxTenant, recordTenant}
+}
+
+// revokeUserSessions ends every session of userID after a change that must
+// end them (password change or reset, TOTP enable or disable, a blocking
+// account status). It is the only place that decides which tenants to revoke
+// in: the context tenant AND, if it differs and is non-empty, the record's.
+// Every such revocation goes through it; a static test keeps it that way.
+func (e *Engine) revokeUserSessions(ctx context.Context, recordTenant, userID string) error {
+	var errs []error
+	for _, tenant := range sessionRevocationTenants(ctx, recordTenant) {
+		if err := e.LogoutAllInTenant(ctx, tenant, userID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // InvalidateUserSessions is an alias for [Engine.LogoutAll]. It destroys
 // every session for the user in the current tenant.
 //
@@ -909,12 +938,14 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		return mapToAuthError(err)
 	}
 
+	// Only for the audit trail: the revocation itself covers the context
+	// tenant and the record's (see revokeUserSessions).
 	invalidateTenant := tenantIDFromContext(ctx)
 	if user.TenantID != "" {
 		invalidateTenant = user.TenantID
 	}
 
-	if err := e.LogoutAllInTenant(ctx, invalidateTenant, userID); err != nil {
+	if err := e.revokeUserSessions(ctx, user.TenantID, userID); err != nil {
 		e.warn("goAuth: session invalidation failed after password change")
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, invalidateTenant, "", ErrSessionInvalidationFailed, func() map[string]string {
 			return map[string]string{
@@ -1472,7 +1503,7 @@ func (e *Engine) accountStatusFlowDeps() internalflows.UpdateAccountStatusDeps {
 		}
 	}
 	if e != nil {
-		deps.LogoutAllInTenant = e.LogoutAllInTenant
+		deps.LogoutAllInTenant = e.revokeUserSessions
 	}
 
 	return deps
@@ -3469,7 +3500,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 		deps.ConsumeResetRecord = e.consumeResetRecord
 	}
 	if e != nil {
-		deps.LogoutAllInTenant = e.LogoutAllInTenant
+		deps.LogoutAllInTenant = e.revokeUserSessions
 		deps.VerifyTOTPForUser = func(ctx context.Context, user internalflows.PasswordResetUser, code string) error {
 			return e.verifyTOTPForUser(ctx, UserRecord{
 				UserID:   user.UserID,
@@ -3819,7 +3850,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 		deps.UpdateTOTPLastUsedCounter = e.userProvider.UpdateTOTPLastUsedCounter
 	}
 	if e != nil {
-		deps.LogoutAllInTenant = e.LogoutAllInTenant
+		deps.LogoutAllInTenant = e.revokeUserSessions
 	}
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret

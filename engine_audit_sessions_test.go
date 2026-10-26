@@ -3,6 +3,9 @@ package goAuth
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -459,5 +462,99 @@ func TestEnableOfAnActiveAccountIsStillANoOp(t *testing.T) {
 	}
 	if _, err := engine.Validate(ctx, access, ModeStrict); err != nil {
 		t.Fatalf("a no-op enable ended the session: %v", err)
+	}
+}
+
+// FAILED-BEFORE (R2-09): a provider record whose tenant differs from the
+// request's made password change and account disabling revoke under the
+// record's tenant only, while the login had stored the session under the
+// request's.
+func TestRevocationReachesSessionsUnderTheContextTenantWhenTheRecordTenantDiffers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		revoke func(ctx context.Context, e *Engine) error
+	}{
+		{"password change", func(ctx context.Context, e *Engine) error {
+			return e.ChangePassword(ctx, "u1", "correct-password-123", "another-password-456")
+		}},
+		{"disable", func(ctx context.Context, e *Engine) error { return e.DisableAccount(ctx, "u1") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := accountTestConfig()
+			cfg.ValidationMode = ModeStrict
+			up := newHardeningUserProvider(t)
+			user := up.users["u1"]
+			user.TenantID = "7"
+			up.users["u1"] = user
+			engine, _, done := newCreateAccountEngine(t, cfg, up)
+			defer done()
+			ctx := context.Background()
+
+			access, refresh, err := engine.Login(ctx, "alice", "correct-password-123")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.revoke(ctx, engine); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			requireSessionRevoked(t, engine, access, refresh)
+		})
+	}
+}
+
+func TestSessionRevocationTenants(t *testing.T) {
+	for _, tc := range []struct {
+		name, ctxTenant, record string
+		want                    []string
+	}{
+		{"same tenant", "t1", "t1", []string{"t1"}},
+		{"record has none", "t1", "", []string{"t1"}},
+		{"default tenant spelled two ways", "", "0", []string{""}},
+		{"different tenants", "t1", "t2", []string{"t1", "t2"}},
+		{"default context, tenant record", "", "7", []string{"", "7"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.ctxTenant != "" {
+				ctx = WithTenantID(ctx, tc.ctxTenant)
+			}
+			got := sessionRevocationTenants(ctx, tc.record)
+			want := make([]string, len(tc.want))
+			for i, w := range tc.want {
+				want[i] = w
+				if w == "" {
+					want[i] = tenantIDFromContext(ctx)
+				}
+			}
+			if len(got) != len(want) {
+				t.Fatalf("tenants = %v, want %v", got, want)
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Fatalf("tenants = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}
+
+// Every flow that ends a user's sessions goes through revokeUserSessions, so
+// no call site can pick a single tenant on its own again.
+func TestEveryEngineRevocationGoesThroughTheSharedHelper(t *testing.T) {
+	files, err := filepath.Glob("engine*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "LogoutAllInTenant = e.LogoutAllInTenant") {
+			t.Errorf("%s wires a flow's revocation to LogoutAllInTenant directly; use revokeUserSessions", f)
+		}
 	}
 }
