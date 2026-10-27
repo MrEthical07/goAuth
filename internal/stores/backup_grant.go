@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -37,19 +38,35 @@ func (s *BackupGrantStore) key(tenantID, userID string) string {
 	return s.prefix + ":" + tenantID + ":" + userID
 }
 
-// Grant records the marker for ttl, replacing an earlier one.
-func (s *BackupGrantStore) Grant(ctx context.Context, tenantID, userID string, ttl time.Duration) error {
-	if err := s.redis.Set(ctx, s.key(tenantID, userID), "1", ttl).Err(); err != nil {
+// Grant records the marker for ttl, replacing an earlier one. epoch is the
+// user's revocation epoch at that moment: the marker is only good while no
+// revocation of the user's sessions has moved it since.
+func (s *BackupGrantStore) Grant(ctx context.Context, tenantID, userID string, epoch int64, ttl time.Duration) error {
+	if err := s.redis.Set(ctx, s.key(tenantID, userID), strconv.FormatInt(epoch, 10), ttl).Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrBackupGrantBackend, err)
 	}
 	return nil
 }
 
-// Consume uses the marker up. DEL is atomic and reports whether the key
-// existed, so two concurrent generations cannot both use it. It reports false
-// when there is no marker.
-func (s *BackupGrantStore) Consume(ctx context.Context, tenantID, userID string) (bool, error) {
-	n, err := s.redis.Del(ctx, s.key(tenantID, userID)).Result()
+// consumeGrantScript deletes the marker and reports whether it existed and held
+// the given epoch, in one step, so two concurrent generations cannot both use it.
+var consumeGrantScript = redis.NewScript(`
+local held = redis.call("GET", KEYS[1])
+if not held then
+  return 0
+end
+redis.call("DEL", KEYS[1])
+if held == ARGV[1] then
+  return 1
+end
+return 0
+`)
+
+// Consume uses the marker up. It reports false when there is none or when it was
+// granted under another epoch (the user's sessions were revoked since); either
+// way the marker is gone afterwards.
+func (s *BackupGrantStore) Consume(ctx context.Context, tenantID, userID string, epoch int64) (bool, error) {
+	n, err := consumeGrantScript.Run(ctx, s.redis, []string{s.key(tenantID, userID)}, strconv.FormatInt(epoch, 10)).Int()
 	if err != nil {
 		return false, fmt.Errorf("%w: %v", ErrBackupGrantBackend, err)
 	}

@@ -135,26 +135,36 @@ func TestBackupSetupGrantIsScopedAndRevoked(t *testing.T) {
 	ctx := context.Background()
 	store := env.engine.backupGrants
 
-	if err := store.Grant(ctx, "tenant-a", "u1", time.Minute); err != nil {
+	if err := store.Grant(ctx, "tenant-a", "u1", 4, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := store.Consume(ctx, "tenant-b", "u1"); ok {
+	if ok, _ := store.Consume(ctx, "tenant-b", "u1", 4); ok {
 		t.Fatal("a grant for tenant-a was usable in tenant-b")
 	}
-	if ok, _ := store.Consume(ctx, "tenant-a", "u2"); ok {
+	if ok, _ := store.Consume(ctx, "tenant-a", "u2", 4); ok {
 		t.Fatal("a grant for u1 was usable by u2")
 	}
-	if ok, _ := store.Consume(ctx, "tenant-a", "u1"); !ok {
+	if ok, _ := store.Consume(ctx, "tenant-a", "u1", 4); !ok {
 		t.Fatal("the grant was not usable by its owner")
 	}
-	if ok, _ := store.Consume(ctx, "tenant-a", "u1"); ok {
+	if ok, _ := store.Consume(ctx, "tenant-a", "u1", 4); ok {
 		t.Fatal("the grant was usable twice")
 	}
-	// The default tenant is spelled the same either way.
-	if err := store.Grant(ctx, "", "u1", time.Minute); err != nil {
+	// A grant made under another epoch is spent without being honored.
+	if err := store.Grant(ctx, "tenant-a", "u1", 4, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := store.Consume(ctx, "0", "u1"); !ok {
+	if ok, _ := store.Consume(ctx, "tenant-a", "u1", 5); ok {
+		t.Fatal("a grant was honored after the epoch moved")
+	}
+	if ok, _ := store.Consume(ctx, "tenant-a", "u1", 4); ok {
+		t.Fatal("a refused grant was still usable afterwards")
+	}
+	// The default tenant is spelled the same either way.
+	if err := store.Grant(ctx, "", "u1", 0, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := store.Consume(ctx, "0", "u1", 0); !ok {
 		t.Fatal("the default tenant spelled \"\" and \"0\" must be one tenant")
 	}
 }

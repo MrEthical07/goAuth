@@ -48,7 +48,12 @@ func newTenantBackupCodeEngine(t *testing.T) (*Engine, *tenantMockProvider, *col
 	// its setup was confirmed.
 	tenantCtx := WithTenantID(context.Background(), "tenant-a")
 	up.totpRecords["user-a"] = TOTPRecord{Secret: []byte("0123456789abcdef0123"), Enabled: true, Verified: true}
-	if err := engine.backupGrants.Grant(tenantCtx, "tenant-a", "user-a", backupSetupGrantTTL); err != nil {
+	epoch, err := engine.sessionStore.RevocationEpoch(tenantCtx, "tenant-a", "user-a")
+	if err != nil {
+		mr.Close()
+		t.Fatalf("RevocationEpoch failed: %v", err)
+	}
+	if err := engine.backupGrants.Grant(tenantCtx, "tenant-a", "user-a", epoch, backupSetupGrantTTL); err != nil {
 		mr.Close()
 		t.Fatalf("Grant failed: %v", err)
 	}

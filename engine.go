@@ -766,7 +766,6 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 		// Password change and reset, and every other flow that revokes all of a
 		// user's sessions, end here.
 		e.cancelEmailChangeAfterRecovery(ctx, tenantID, userID)
-		e.revokeBackupCodeGrant(ctx, tenantID, userID)
 	}
 	e.emitAudit(ctx, auditEventLogoutAll, err == nil, userID, tenantID, "", err, nil)
 	return mapToAuthErrorOrNil(err)
@@ -2111,20 +2110,6 @@ func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID,
 	return mapToAuthErrorOrNil(e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code))
 }
 
-// revokeBackupCodeGrant removes the first-generation marker ConfirmTOTPSetup
-// leaves, when the user's sessions are revoked: a recovery inside the ten
-// minutes must not leave a free set of codes behind. (ConfirmTOTPSetup revokes
-// the sessions first and writes the marker after, so its own marker survives.)
-// Best effort: the marker expires on its own.
-func (e *Engine) revokeBackupCodeGrant(ctx context.Context, tenantID, userID string) {
-	if e.backupGrants == nil || userID == "" {
-		return
-	}
-	for _, tenant := range sessionRevocationTenants(ctx, tenantID) {
-		_ = e.backupGrants.Revoke(ctx, tenant, userID)
-	}
-}
-
 // backupSetupGrantTTL is how long after a successful ConfirmTOTPSetup the user
 // may generate their first backup codes without a TOTP code.
 const backupSetupGrantTTL = 10 * time.Minute
@@ -2199,7 +2184,15 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 			return record != nil && record.Enabled && len(record.Secret) > 0, nil
 		}
 		if e.backupGrants != nil {
-			deps.ConsumeSetupGrant = e.backupGrants.Consume
+			deps.ConsumeSetupGrant = func(ctx context.Context, tenantID, userID string) (bool, error) {
+				// The marker holds the revocation epoch at setup; a revocation of the
+				// user's sessions since (a recovery inside the ten minutes) moved it.
+				epoch, err := e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
+				if err != nil {
+					return false, err
+				}
+				return e.backupGrants.Consume(ctx, tenantID, userID, epoch)
+			}
 		}
 		if e.tenantScopedLookup() {
 			deps.ResolveUserInTenant = func(ctx context.Context, tenantID, userID string) error {
@@ -3924,7 +3917,13 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	}
 	if e != nil && e.backupGrants != nil {
 		deps.GrantBackupCodeSetup = func(ctx context.Context, tenantID, userID string) error {
-			return e.backupGrants.Grant(ctx, tenantID, userID, backupSetupGrantTTL)
+			// Setup revoked the user's sessions just before; the marker is good
+			// for as long as no later revocation moves the epoch.
+			epoch, err := e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
+			if err != nil {
+				return err
+			}
+			return e.backupGrants.Grant(ctx, tenantID, userID, epoch, backupSetupGrantTTL)
 		}
 		deps.RevokeBackupCodeSetup = e.backupGrants.Revoke
 	}
