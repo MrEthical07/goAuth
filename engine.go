@@ -2110,6 +2110,24 @@ func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID,
 	return mapToAuthErrorOrNil(e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code))
 }
 
+// configureBackupGrantDeps wires the first-generation backup-code marker into
+// the TOTP flows: written when setup is confirmed, removed when TOTP is disabled.
+func (e *Engine) configureBackupGrantDeps(deps *internalflows.TOTPDeps) {
+	if e == nil || e.backupGrants == nil {
+		return
+	}
+	deps.GrantBackupCodeSetup = func(ctx context.Context, tenantID, userID string) error {
+		// Setup revoked the user's sessions just before; the marker is good for
+		// as long as no later revocation moves the epoch.
+		epoch, err := e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
+		if err != nil {
+			return err
+		}
+		return e.backupGrants.Grant(ctx, tenantID, userID, epoch, backupSetupGrantTTL)
+	}
+	deps.RevokeBackupCodeSetup = e.backupGrants.Revoke
+}
+
 // backupSetupGrantTTL is how long after a successful ConfirmTOTPSetup the user
 // may generate their first backup codes without a TOTP code.
 const backupSetupGrantTTL = 10 * time.Minute
@@ -3915,18 +3933,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	if e != nil {
 		deps.LogoutAllInTenant = e.revokeUserSessions
 	}
-	if e != nil && e.backupGrants != nil {
-		deps.GrantBackupCodeSetup = func(ctx context.Context, tenantID, userID string) error {
-			// Setup revoked the user's sessions just before; the marker is good
-			// for as long as no later revocation moves the epoch.
-			epoch, err := e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
-			if err != nil {
-				return err
-			}
-			return e.backupGrants.Grant(ctx, tenantID, userID, epoch, backupSetupGrantTTL)
-		}
-		deps.RevokeBackupCodeSetup = e.backupGrants.Revoke
-	}
+	e.configureBackupGrantDeps(&deps)
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret
 		deps.ProvisionURI = e.totp.ProvisionURI
