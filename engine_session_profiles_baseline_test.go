@@ -577,7 +577,7 @@ const spbV070Transcript = `
   cmd del rl:login:user:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:bb82030dbc2bcaba32a90bf2e207a84a856fc5f033b77c480836ab6f77f40f19
   cmd scard au:0:u1
   cmd set amc:<id6> challenge:02000000000000000000000002753100013000 ex 180
-  cmd set amc:<id6>:ep 2 ex 180
+  cmd set amc:<id6>:ep 2:1 ex 180
   challenge ttl=180000ms bytes=02000000000000000000000002753100013000
 == mfa wrong code
   err AUTH_MFA_INVALID_CODE/AUTH_VALIDATION
@@ -634,5 +634,5 @@ metric 26=4
 metric 27=1
 metric 28=2
 metric 29=1
-keys arp:<id1> as:0:<id5> as:0:<id7> ast:0:count au:0:u1 au:0:u2 aue:0:u1 rl:account:req:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:f0030501023327437b06e5c6f87df7871b8e704ae608d1d0b7b24fdd2a06c716 rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b
+keys abg:0:u1 arp:<id1> as:0:<id5> as:0:<id7> ast:0:count au:0:u1 au:0:u2 aue:0:u1 rl:account:req:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:f0030501023327437b06e5c6f87df7871b8e704ae608d1d0b7b24fdd2a06c716 rl:login:fail:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9:e788ea2014693dcdb86767aceb3860a432fc626c6477a6c53016aff40726842b
 `

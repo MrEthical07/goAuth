@@ -74,6 +74,17 @@ type TOTPDeps struct {
 	UpdateTOTPLastUsedCounter func(context.Context, string, int64) error
 	LogoutAllInTenant         func(context.Context, string, string) error
 
+	// GrantBackupCodeSetup records, for a few minutes, that the user has just
+	// proven their authenticator, which lets them generate their first backup
+	// codes without another proof. Optional; a failure only costs the user a
+	// TOTP code at regeneration.
+	GrantBackupCodeSetup func(ctx context.Context, tenantID, userID string) error
+	// RevokeBackupCodeSetup removes that marker. Optional.
+	RevokeBackupCodeSetup func(ctx context.Context, tenantID, userID string) error
+	// ClearBackupCodes removes every backup code of the user. Disabling TOTP
+	// calls it: the codes are a recovery artifact of the factor that is gone.
+	ClearBackupCodes func(ctx context.Context, userID string) error
+
 	GenerateSecret func() ([]byte, string, error)
 	ProvisionURI   func(string, string) string
 	VerifyCode     func([]byte, string, time.Time) (bool, int64, error)
@@ -286,6 +297,10 @@ func RunConfirmTOTPSetup(ctx context.Context, userID, code string, deps TOTPDeps
 		return errors.Join(deps.Errors.SessionInvalidationFailed, err)
 	}
 
+	if deps.GrantBackupCodeSetup != nil {
+		_ = deps.GrantBackupCodeSetup(ctx, tenant, userID)
+	}
+
 	deps.MetricInc(deps.Metrics.TOTPSuccess)
 	deps.EmitAudit(ctx, deps.Events.TOTPEnabled, true, userID, tenant, "", nil, nil)
 	return nil
@@ -387,6 +402,12 @@ func RunDisableTOTP(ctx context.Context, userID string, deps TOTPDeps) error {
 	if err := deps.DisableTOTP(ctx, userID); err != nil {
 		return deps.Errors.TOTPUnavailable
 	}
+	// The backup codes belong to the factor that was just removed. A set left
+	// behind would work again the day the user enrols a new authenticator.
+	var clearErr error
+	if deps.ClearBackupCodes != nil {
+		clearErr = deps.ClearBackupCodes(ctx, userID)
+	}
 
 	after, err := deps.GetUserByID(ctx, userID)
 	if err != nil {
@@ -400,10 +421,19 @@ func RunDisableTOTP(ctx context.Context, userID string, deps TOTPDeps) error {
 	if after.TenantID != "" {
 		tenant = after.TenantID
 	}
+	if deps.RevokeBackupCodeSetup != nil {
+		_ = deps.RevokeBackupCodeSetup(ctx, tenant, userID)
+	}
 	if err := deps.LogoutAllInTenant(ctx, tenant, userID); err != nil {
 		return errors.Join(deps.Errors.SessionInvalidationFailed, err)
 	}
 	_ = deps.ResetTOTPLimiter(ctx, userID)
+	if clearErr != nil {
+		deps.EmitAudit(ctx, deps.Events.TOTPDisabled, false, userID, tenant, "", clearErr, func() map[string]string {
+			return map[string]string{"reason": "backup_codes_not_cleared"}
+		})
+		return errors.Join(deps.Errors.TOTPUnavailable, clearErr)
+	}
 
 	deps.EmitAudit(ctx, deps.Events.TOTPDisabled, true, userID, tenant, "", nil, nil)
 	return nil

@@ -83,7 +83,7 @@ var deleteSessionLua = redis.NewScript(deleteSessionScript)
 const deleteAllForUserScript = `
 local keep = ARGV[3]
 redis.call("INCR", "aue:" .. string.sub(KEYS[1], 4))
-redis.call("PEXPIRE", "aue:" .. string.sub(KEYS[1], 4), 86400000)
+redis.call("PEXPIRE", "aue:" .. string.sub(KEYS[1], 4), ARGV[4] or "86400000")
 local members = redis.call("SMEMBERS", KEYS[1])
 local deleted = 0
 for _, sid in ipairs(members) do
@@ -500,6 +500,27 @@ type Store struct {
 	// unless WithProfiles was called. It is a pointer so that Store, which
 	// callers could always compare with ==, stays comparable.
 	profiles *profileTable
+
+	// epochTTL is how long a revocation epoch is kept after the last bump;
+	// zero means DefaultRevocationEpochTTL.
+	epochTTL time.Duration
+}
+
+// DefaultRevocationEpochTTL is how long the revocation epoch of a user is kept
+// after the last revocation unless [Store.WithRevocationEpochTTL] says
+// otherwise.
+const DefaultRevocationEpochTTL = 24 * time.Hour
+
+// WithRevocationEpochTTL sets how long a user's revocation epoch is kept after
+// the last revocation, and returns the store. It must outlive every operation
+// that holds an epoch it read earlier (a login, an MFA challenge): an expired
+// key reads as 0, which fences nothing. Values below
+// [DefaultRevocationEpochTTL] are ignored. Call it before the store is used.
+func (s *Store) WithRevocationEpochTTL(d time.Duration) *Store {
+	if d > DefaultRevocationEpochTTL {
+		s.epochTTL = d
+	}
+	return s
 }
 
 // NewStore creates a session [Store] backed by the given Redis client.
@@ -606,10 +627,11 @@ type SaveLimits struct {
 
 // RevocationEpoch returns the user's revocation epoch: a counter that every
 // revocation of the user's sessions (delete-all, so password change, reset,
-// status changes and the rest) bumps, kept for 24 hours after the last bump,
-// far longer than a login or an MFA challenge (capped at 12 hours by Build) can
-// be in flight: an expired key reads as 0, which is only safe if no login still
-// holds an older epoch. A login reads it before it reads the account and hands
+// status changes and the rest) bumps, kept for [DefaultRevocationEpochTTL] (or
+// the longer life set with [Store.WithRevocationEpochTTL]) after the last bump.
+// The engine sets that to the longest MFA challenge life plus an hour: an
+// expired key reads as 0, which is only safe if no login still holds an older
+// epoch. A login reads it before it reads the account and hands
 // it to [Store.SaveFenced], which refuses to store the session if it has moved.
 func (s *Store) RevocationEpoch(ctx context.Context, tenantID, userID string) (int64, error) {
 	epoch, err := s.redis.Get(ctx, s.epochKey(tenantID, userID)).Int64()
@@ -811,13 +833,17 @@ func (s *Store) DeleteAllForUserExcept(ctx context.Context, tenantID, userID, ke
 }
 
 func (s *Store) deleteAllForUser(ctx context.Context, tenantID, userID, keepSessionID string) (int, error) {
+	args := []any{s.key(tenantID, ""), s.assuranceKey(tenantID, ""), keepSessionID}
+	if s.epochTTL > DefaultRevocationEpochTTL {
+		// Only a longer-than-default life is passed, so the script's arguments
+		// are what they were for every configuration that keeps the default.
+		args = append(args, s.epochTTL.Milliseconds())
+	}
 	res, err := deleteAllForUserLua.Run(
 		ctx,
 		s.redis,
 		[]string{s.userKey(tenantID, userID), s.tenantCountKey(tenantID)},
-		s.key(tenantID, ""),
-		s.assuranceKey(tenantID, ""),
-		keepSessionID,
+		args...,
 	).Int()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)

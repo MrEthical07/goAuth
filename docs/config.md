@@ -130,7 +130,7 @@ created under it.
 |--------------------------------|---------------|--------------|-------------|
 | `ProductionMode`               | `bool`        | `false`      | Enable production security checks |
 | `EnableIPBinding`              | `bool`        | `false`      | **No-op** — never read by the engine; IP binding is controlled by `DeviceBinding.*` (lint: `security_ip_binding_noop`) |
-| `EnableUserAgentBinding`       | `bool`        | `true`       | Bind sessions to User-Agent |
+| `EnableUserAgentBinding`       | `bool`        | `false`      | **No-op, deprecated** — never read by the engine; user-agent binding is controlled by `DeviceBinding.*` (lint: `security_user_agent_binding_noop`). It used to default to `true`. |
 | `EnableLoginFailureLimiter`    | `bool`        | `true`       | Enable login-failure limiter |
 | `EnableIPSignal`               | `bool`        | `false`      | **No-op** — never read by the engine (lint: `security_ip_signal_noop`) |
 | `EnforceRefreshRotation`       | `bool`        | `true`       | Require token rotation on refresh |
@@ -190,7 +190,7 @@ created under it.
 | `Algorithm`                 | `string`      | `"SHA1"`  | TOTP hash algorithm |
 | `Skew`                      | `int`         | 1         | Allowed time-step skew |
 | `EnforceReplayProtection`   | `bool`        | `true`    | Reject re-used TOTP codes |
-| `MFALoginChallengeTTL`      | `time.Duration`| 3 min    | MFA challenge lifetime; `Build` rejects more than 12h (the challenge is fenced with a revocation epoch that is kept 24h) |
+| `MFALoginChallengeTTL`      | `time.Duration`| 3 min    | MFA challenge lifetime; the revocation epoch it is fenced with is kept `max(24h, this + 1h)` |
 | `MFALoginMaxAttempts`       | `int`         | 5         | Max MFA confirm attempts |
 | `BackupCodeCount`           | `int`         | 10        | Number of backup codes |
 | `BackupCodeLength`          | `int`         | 10        | Backup code character length |
@@ -423,7 +423,7 @@ engine**:
 - `external_autolink_trusts_active_status` (info) — `ExternalAuth.AutoLinkVerifiedEmail` treats an Active account as email-verified, which legacy or imported accounts may not be; `external_signup_passwordless` (info) — `ExternalAuth.AllowSignup` creates accounts without a password; `external_key_max_stale_long` (warn) — `ExternalAuth.KeyMaxStale` above 72h keeps trusting cached provider keys that long during an outage
 - `*_noop` codes — config knobs that are accepted but never read by the engine (see the field tables above)
 
-The complete code list (38 codes: 16 INFO, 18 WARN, 4 HIGH) lives in
+The complete code list (39 codes: 16 INFO, 19 WARN, 4 HIGH) lives in
 [config_lint.md](config_lint.md).
 
 > **See also:** [config_lint.md](config_lint.md), [config-presets.md](config-presets.md)

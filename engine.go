@@ -68,6 +68,7 @@ type Engine struct {
 	passwordUpdater       TenantAwarePasswordUpdater
 	passwordCAS           PasswordHashCASUpdater
 	statusCAS             AccountStatusCASUpdater
+	backupGrants          *stores.BackupGrantStore
 	roleSwitchProvider    RoleSwitchProvider
 	roleSwitchLimiter     *limiters.RoleSwitchLimiter
 	externalProvider      ExternalIdentityProvider
@@ -762,6 +763,9 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 	if err == nil {
 		e.metricInc(MetricLogoutAll)
 		e.metricInc(MetricSessionInvalidated)
+		// Password change and reset, and every other flow that revokes all of a
+		// user's sessions, end here.
+		e.cancelEmailChangeAfterRecovery(ctx, tenantID, userID)
 	}
 	e.emitAudit(ctx, auditEventLogoutAll, err == nil, userID, tenantID, "", err, nil)
 	return mapToAuthErrorOrNil(err)
@@ -2106,6 +2110,28 @@ func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID,
 	return mapToAuthErrorOrNil(e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code))
 }
 
+// configureBackupGrantDeps wires the first-generation backup-code marker into
+// the TOTP flows: written when setup is confirmed, removed when TOTP is disabled.
+func (e *Engine) configureBackupGrantDeps(deps *internalflows.TOTPDeps) {
+	if e == nil || e.backupGrants == nil {
+		return
+	}
+	deps.GrantBackupCodeSetup = func(ctx context.Context, tenantID, userID string) error {
+		// Setup revoked the user's sessions just before; the marker is good for
+		// as long as no later revocation moves the epoch.
+		epoch, err := e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
+		if err != nil {
+			return err
+		}
+		return e.backupGrants.Grant(ctx, tenantID, userID, epoch, backupSetupGrantTTL)
+	}
+	deps.RevokeBackupCodeSetup = e.backupGrants.Revoke
+}
+
+// backupSetupGrantTTL is how long after a successful ConfirmTOTPSetup the user
+// may generate their first backup codes without a TOTP code.
+const backupSetupGrantTTL = 10 * time.Minute
+
 func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 	var cfg Config
 	if e != nil {
@@ -2139,6 +2165,7 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 		},
 		Errors: internalflows.BackupCodeErrors{
 			TOTPFeatureDisabled:                ErrTOTPFeatureDisabled,
+			TOTPNotConfigured:                  ErrTOTPNotConfigured,
 			EngineNotReady:                     ErrEngineNotReady,
 			UserNotFound:                       ErrUserNotFound,
 			BackupCodeUnavailable:              ErrBackupCodeUnavailable,
@@ -2167,6 +2194,24 @@ func (e *Engine) backupCodeFlowDeps() internalflows.BackupCodeDeps {
 			return e.userProvider.ReplaceBackupCodes(ctx, userID, fromFlowBackupCodeRecords(records))
 		}
 		deps.ConsumeBackupCode = e.userProvider.ConsumeBackupCode
+		deps.TOTPEnabled = func(ctx context.Context, userID string) (bool, error) {
+			record, err := e.userProvider.GetTOTPSecret(ctx, userID)
+			if err != nil {
+				return false, err
+			}
+			return record != nil && record.Enabled && len(record.Secret) > 0, nil
+		}
+		if e.backupGrants != nil {
+			deps.ConsumeSetupGrant = func(ctx context.Context, tenantID, userID string) (bool, error) {
+				// The marker holds the revocation epoch at setup; a revocation of the
+				// user's sessions since (a recovery inside the ten minutes) moved it.
+				epoch, err := e.sessionStore.RevocationEpoch(ctx, tenantID, userID)
+				if err != nil {
+					return false, err
+				}
+				return e.backupGrants.Consume(ctx, tenantID, userID, epoch)
+			}
+		}
 		if e.tenantScopedLookup() {
 			deps.ResolveUserInTenant = func(ctx context.Context, tenantID, userID string) error {
 				_, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
@@ -2517,6 +2562,15 @@ func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID strin
 	record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
 	if err != nil {
 		return internalflows.PasswordResetStoreRecord{}, err
+	}
+	// A newer request, or a reset that completed since this one was issued,
+	// superseded the record: the secret was right, the code is dead.
+	current, pointerErr := e.resetStore.IsCurrent(ctx, tenantID, record.UserID, resetID)
+	if pointerErr != nil {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
+	}
+	if !current {
+		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
 	}
 	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
 	if markerErr != nil {
@@ -3066,8 +3120,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			}, ttl)
 		}
 		deps.DeleteMFAChallenge = e.mfaLoginStore.Delete
-		deps.SaveMFAChallengeEpoch = e.mfaLoginStore.SaveEpoch
-		deps.GetMFAChallengeEpoch = e.mfaLoginStore.Epoch
+		deps.SaveMFAChallengeContext = e.mfaLoginStore.SaveContext
+		deps.GetMFAChallengeContext = e.mfaLoginStore.Context
 		deps.ReserveMFAAttempt = e.mfaLoginStore.ReserveAttempt
 		deps.ReleaseMFAAttempt = func(ctx context.Context, challengeID string) {
 			_ = e.mfaLoginStore.ReleaseAttempt(ctx, challengeID)
@@ -3520,6 +3574,8 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 			}, nil
 		}
 		deps.ConsumeResetRecord = e.consumeResetRecord
+		deps.SupersedeResets = e.resetStore.SetCurrent
+		deps.InvalidateResets = e.resetStore.InvalidateOutstanding
 	}
 	if e != nil {
 		deps.LogoutAllInTenant = e.revokeUserSessions
@@ -3870,10 +3926,14 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 		deps.DisableTOTP = e.userProvider.DisableTOTP
 		deps.MarkTOTPVerified = e.userProvider.MarkTOTPVerified
 		deps.UpdateTOTPLastUsedCounter = e.userProvider.UpdateTOTPLastUsedCounter
+		deps.ClearBackupCodes = func(ctx context.Context, userID string) error {
+			return e.userProvider.ReplaceBackupCodes(ctx, userID, nil)
+		}
 	}
 	if e != nil {
 		deps.LogoutAllInTenant = e.revokeUserSessions
 	}
+	e.configureBackupGrantDeps(&deps)
 	if e != nil && e.totp != nil {
 		deps.GenerateSecret = e.totp.GenerateSecret
 		deps.ProvisionURI = e.totp.ProvisionURI

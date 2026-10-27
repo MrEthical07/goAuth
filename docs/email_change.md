@@ -25,7 +25,7 @@ type ConfirmEmailChangeOptions struct{ KeepSessionID string }
 type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoked bool }
 ```
 
-`userID` for Request and Cancel comes from the session, never from the request body. `VerificationID` is `<tenant>:<id>`: it carries the tenant, is safe to log, and may be handed to the browser. `Code` is a secret: send it to the new address, never log it. goAuth never writes it to the audit trail or its own logs.
+`userID` for Request and Cancel comes from the session, never from the request body. `VerificationID` is `<tenant>:<id>`: it carries the tenant, is safe to log, and may be handed to the browser; nothing about `Code` can be derived from it (which is why `VerificationUUID` is not available for email change). `Code` is a secret: send it to the new address, never log it. goAuth never writes it to the audit trail or its own logs.
 
 ### Request
 
@@ -53,6 +53,8 @@ type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoke
 ### Cancel
 
 `CancelEmailChange` deletes the user's pending challenge. It is idempotent and succeeds when nothing is pending.
+
+**Recovery cancels a staged change.** While `EmailChange.Enabled` is on, every successful revocation of all of a user's sessions also cancels their pending change: a password reset or change, `LogoutAll`, `LogoutAllInTenant`, `InvalidateUserSessions` and the other flows that end with one (disabling the account, changing TOTP). A change staged from a session that is the reason for the recovery must not outlive it. The cancel never fails the operation that triggered it: a failure is logged and audited (`email_change_failure`, `stage` `cancel`, `reason` `recovery`), and the challenge then simply expires with its TTL. A cancel that removed something is audited as `email_change_cancelled` with `reason` `recovery`. Confirming an email change does not cancel anything (it revokes sessions itself).
 
 ## The provider contract
 
@@ -111,7 +113,7 @@ goAuth has no public "recent MFA" accessor (the assurance it keeps per session s
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `Enabled` | `false` | Turns the three methods on. Requires `EmailChangeProvider`. |
-| `Strategy` | `VerificationToken` | Code format, the email-verification strategies (`VerificationToken`, `VerificationUUID`, `VerificationOTP`). The zero value is the same default as `EmailVerification`. |
+| `Strategy` | `VerificationToken` | Code format: `VerificationToken` or `VerificationOTP`. `VerificationUUID` is rejected by `Build` (its Code is the VerificationID, which you may hand to the browser). The zero value is the same default as `EmailVerification`. |
 | `OTPDigits` | 6 | Code length in OTP mode, 6 to 10. |
 | `VerificationTTL` | 15m | Challenge lifetime, 1m to 24h; at most 15m in OTP mode. |
 | `MaxAttempts` | 5 | Confirm attempts per challenge, at most 65535; at most 5 in OTP mode. |
@@ -139,6 +141,7 @@ Account status failures use the existing status errors, and a provider or Redis 
 |-------|-----------|
 | `email_change_requested` | `old_email`, `new_email`, both masked (`j***@example.com`); never the code |
 | `email_change_confirmed` | `old_email`, `new_email` (masked), `sessions_revoked` |
+| `email_change_cancelled` | `reason` (`recovery`): a pending change was dropped because the user's sessions were revoked |
 | `email_change_failure` | `stage` (`request`, `confirm` or `cancel`), `reason` |
 
 Failure reasons: `disabled`, `user_not_found`, `status`, `invalid_email`, `same_email`, `rate_limited`, `invalid`, `expired`, `attempts`, `stale`, `in_use`, `unavailable`. With `Security.LimiterFailClosed` a limiter outage on a request is `unavailable`.

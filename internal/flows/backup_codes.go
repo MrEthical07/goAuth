@@ -34,6 +34,7 @@ type BackupCodeEvents struct {
 
 type BackupCodeErrors struct {
 	TOTPFeatureDisabled                error
+	TOTPNotConfigured                  error
 	EngineNotReady                     error
 	UserNotFound                       error
 	BackupCodeUnavailable              error
@@ -59,6 +60,15 @@ type BackupCodeDeps struct {
 	ReplaceBackupCodes  func(context.Context, string, []BackupCodeRecord) error
 	ConsumeBackupCode   func(context.Context, string, [32]byte) (bool, error)
 	VerifyTOTPForUser   func(context.Context, BackupCodeUser, string) error
+
+	// TOTPEnabled reports whether the user has an enabled authenticator.
+	// Backup codes are a recovery artifact of that factor: they are neither
+	// generated nor regenerated for a user without one.
+	TOTPEnabled func(ctx context.Context, userID string) (bool, error)
+	// ConsumeSetupGrant uses up the single-use marker that confirming TOTP
+	// setup leaves for a few minutes. Generating the first set of codes without
+	// a TOTP code needs it; nil means no marker can exist.
+	ConsumeSetupGrant func(ctx context.Context, tenantID, userID string) (bool, error)
 
 	// ReserveLimiter claims one attempt before a code is evaluated. last is
 	// true when the claim took the final slot of the window, so a wrong code
@@ -115,6 +125,9 @@ func RunGenerateBackupCodes(ctx context.Context, userID string, deps BackupCodeD
 		})
 		return nil, statusErr
 	}
+	if err := requireEnabledTOTP(ctx, user, "generate", deps); err != nil {
+		return nil, err
+	}
 	existing, err := deps.GetBackupCodes(ctx, userID)
 	if err != nil {
 		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
@@ -126,6 +139,27 @@ func RunGenerateBackupCodes(ctx context.Context, userID string, deps BackupCodeD
 	if len(existing) > 0 {
 		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.BackupCodeRegenerationRequiresTOTP, map[string]string{
 			"action": "generate",
+		})
+		return nil, deps.Errors.BackupCodeRegenerationRequiresTOTP
+	}
+	// No codes on file is not proof of anything: a session holder could ask for
+	// codes and use them as a second factor. Only the minutes after TOTP setup
+	// was confirmed allow it; afterwards a TOTP code is needed.
+	granted := false
+	if deps.ConsumeSetupGrant != nil {
+		granted, err = deps.ConsumeSetupGrant(ctx, user.TenantID, user.UserID)
+		if err != nil {
+			emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+				"action": "generate",
+				"reason": "setup_grant_unavailable",
+			})
+			return nil, deps.Errors.BackupCodeUnavailable
+		}
+	}
+	if !granted {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.BackupCodeRegenerationRequiresTOTP, map[string]string{
+			"action": "generate",
+			"reason": "no_setup_grant",
 		})
 		return nil, deps.Errors.BackupCodeRegenerationRequiresTOTP
 	}
@@ -168,6 +202,9 @@ func RunRegenerateBackupCodes(ctx context.Context, userID, totpCode string, deps
 		})
 		return nil, statusErr
 	}
+	if err := requireEnabledTOTP(ctx, user, "regenerate", deps); err != nil {
+		return nil, err
+	}
 	if err := deps.VerifyTOTPForUser(ctx, user, totpCode); err != nil {
 		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, err, map[string]string{
 			"action": "regenerate",
@@ -176,6 +213,33 @@ func RunRegenerateBackupCodes(ctx context.Context, userID, totpCode string, deps
 	}
 
 	return runGenerateAndReplaceBackupCodes(ctx, user.UserID, user.TenantID, "regenerate", deps)
+}
+
+// requireEnabledTOTP refuses a user without an enabled authenticator. The
+// TOTP verifier treats "not enabled" as "nothing to verify", which is right for
+// a sensitive-action prompt and wrong for minting a second factor.
+func requireEnabledTOTP(ctx context.Context, user BackupCodeUser, action string, deps BackupCodeDeps) error {
+	if deps.TOTPEnabled == nil {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.EngineNotReady, map[string]string{
+			"action": action,
+		})
+		return deps.Errors.EngineNotReady
+	}
+	enabled, err := deps.TOTPEnabled(ctx, user.UserID)
+	if err != nil {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.BackupCodeUnavailable, map[string]string{
+			"action": action,
+			"reason": "totp_state_unavailable",
+		})
+		return deps.Errors.BackupCodeUnavailable
+	}
+	if !enabled {
+		emitBackupCodeFailure(ctx, deps, user.UserID, user.TenantID, deps.Errors.TOTPNotConfigured, map[string]string{
+			"action": action,
+		})
+		return deps.Errors.TOTPNotConfigured
+	}
+	return nil
 }
 
 func RunVerifyBackupCode(ctx context.Context, userID, code string, deps BackupCodeDeps) error {

@@ -1,5 +1,75 @@
 # Release Readiness Assessment
 
+## v0.8.1 (security release)
+
+Date: 2026-10-27
+Release Target: v0.8.1
+Status: Ready for release once the pull request for part 3 is merged and CI is green on `main`. The tag is created by the maintainer; nothing in the pull requests creates, moves or deletes one.
+
+### Summary
+
+v0.8.1 is the fix release for the second security audit of v0.8.0 (findings `R2-xx`),
+delivered as three pull requests: part 1 limiters, brute force and enumeration (#30),
+part 2 session lifecycle and revocation (#31), part 3 MFA artifacts, recovery and
+docs (this one). **v0.8.0 is retracted** (`retract v0.8.0` in `go.mod`: MFA-login TOTP
+guessing was not limited per account). Upgrading from v0.8.0 is recommended; the
+CHANGELOG `[0.8.1]` section lists the behavior changes old → new and the two changes
+that can need action (`EmailChange.Strategy: VerificationUUID` is rejected by `Build`;
+`GenerateBackupCodes` works without a TOTP code only in the ten minutes after
+`ConfirmTOTPSetup`).
+
+### Compatibility & rollout
+
+- `gorelease -base=v0.8.0` reports only compatible changes (it suggests v0.9.0 because
+  the API grew; the release is a patch release because every addition is optional and no
+  signature changed).
+- No new module dependencies; no stored format changed (the session and MFA challenge
+  records and their golden-bytes tests are untouched).
+- New Redis keys, all expiring by TTL: `aue:<tenant>:<user>` (revocation epoch),
+  `amc:<challenge>:ep` (epoch and advertised factors of an MFA challenge),
+  `abg:<tenant>:<user>` (first backup-code generation, 10 minutes),
+  `aprg:<tenant>:<user>` (newest password-reset code), plus the limiter keys of part 1.
+- **Rolling deploy.** v0.8.0 and v0.8.1 instances can share a Redis. The revocation
+  fence covers revocations made by v0.8.1 instances only; a reset code issued by a
+  v0.8.0 instance may be refused once a v0.8.1 instance wrote the user's pointer; an
+  MFA challenge issued by a v0.8.0 instance behaves as it did.
+- **Provider contract.** By-ID lookups (`GetUserByID`, `GetUserByIDInTenant`) must return
+  `ErrUserNotFound` for a missing user; any other error is treated as an outage.
+- Optional provider capabilities, detected at `Build`: `PasswordHashCASUpdater`,
+  `AccountStatusCASUpdater`. Optional option: `Security.RecheckUserOnRefresh`.
+
+### Verification gates
+
+Run on the part 3 branch (Windows, Go 1.27):
+
+| Gate | Result |
+|------|--------|
+| `gofmt -l .`, `goimports -l .` | no output |
+| `go build ./...`, `go vet ./...`, `go vet -tags=integration ./...` | pass |
+| `go test ./... -count=1` | pass |
+| `go test -tags=integration ./test/...` (miniredis, and Redis 7.0.15 through `REDIS_ADDR`) | pass |
+| staticcheck (`-checks=all,-ST1000,-ST1003,-ST1005,-U1000`) | no findings |
+| `security/run_scanners.sh` (Go 1.27.3) | baseline passed |
+| `gorelease -base=v0.8.0` | only compatible changes |
+| `security/run_perf_sanity.sh` | `ns/op` of `BenchmarkRefresh` is above the recorded baseline locally exactly as on `main` on the same machine (the baseline was recorded on other hardware); a same-machine A/B of Login, Login+MFA, Refresh, Validate, Logout and LogoutAll is in the pull request |
+
+`go test -race ./...` is enforced by the `go-race` CI workflow (Ubuntu and macOS);
+local race builds are unavailable on the release machine.
+
+### Release checklist
+
+- [x] Parts 1 and 2 merged (#30, #31)
+- [x] Part 3 implemented with tests and docs
+- [x] CHANGELOG `[0.8.1]` dated, with the combined behavior changes and migration notes
+- [x] `go.mod` retracts v0.8.0
+- [x] Local gate passes
+- [ ] Part 3 pull request merged to `main`, `go-race` and CodeQL green on `main`
+- [ ] Annotated tag `v0.8.1` created after merge (maintainer); the retraction takes effect once it is published
+
+---
+
+## v0.8.0
+
 Date: 2026-10-22
 Release Target: v0.8.0
 Status: Ready for release once the pull request for part 3 is merged and CI is green on `main`

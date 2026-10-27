@@ -290,3 +290,33 @@ func TestReconcileTenantCountIsCompareAndSet(t *testing.T) {
 		t.Fatal("a missing counter must be set when none was observed")
 	}
 }
+
+func TestRevocationEpochLifeFollowsTheConfiguredTTL(t *testing.T) {
+	store, rdb, done := newSessionStoreTest(t)
+	defer done()
+	ctx := context.Background()
+
+	// A value at or below the default changes nothing.
+	store.WithRevocationEpochTTL(time.Hour)
+	if err := store.DeleteAllForUser(ctx, "t-1", "u-1"); err != nil {
+		t.Fatal(err)
+	}
+	if ttl := rdb.TTL(ctx, "aue:t-1:u-1").Val(); ttl <= 23*time.Hour || ttl > 24*time.Hour {
+		t.Fatalf("epoch TTL = %v, want the 24 h default", ttl)
+	}
+
+	store.WithRevocationEpochTTL(31 * time.Hour)
+	if err := store.DeleteAllForUser(ctx, "t-1", "u-2"); err != nil {
+		t.Fatal(err)
+	}
+	if ttl := rdb.TTL(ctx, "aue:t-1:u-2").Val(); ttl <= 30*time.Hour || ttl > 31*time.Hour {
+		t.Fatalf("epoch TTL = %v, want 31 h", ttl)
+	}
+	// The same script serves the keep-one variant.
+	if _, err := store.DeleteAllForUserExcept(ctx, "t-1", "u-3", "keep"); err != nil {
+		t.Fatal(err)
+	}
+	if ttl := rdb.TTL(ctx, "aue:t-1:u-3").Val(); ttl <= 30*time.Hour || ttl > 31*time.Hour {
+		t.Fatalf("epoch TTL after delete-all-except = %v, want 31 h", ttl)
+	}
+}

@@ -531,7 +531,7 @@ challenge, err := engine.RequestPasswordReset(ctx, "alice@example.com")
 1. **Rate-limit check** — `PasswordResetLimiter.CheckConfirm`.
 2. **Challenge consume** — `PasswordResetStore.Consume` (WATCH/MULTI with constant-time compare).
 3. **MFA verify** (if applicable) — TOTP or backup code.
-4. **Password policy** — min length, max bytes, reuse check.
+4. **Password policy** — min length, max bytes. There is no reuse check on reset (only `ChangePassword` compares the new password with the current one).
 5. **Hash new password** — `password.Argon2.Hash`.
 6. **Update hash** — `UserProvider.UpdatePasswordHash` (or `TenantAwarePasswordUpdater.UpdatePasswordHashInTenant` with the resolved tenant when `MultiTenant.Enabled` and the provider implements it).
 7. **Invalidate sessions** — `session.Store.DeleteAllForUser`.

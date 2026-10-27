@@ -86,6 +86,14 @@ type PasswordResetDeps struct {
 	UpdatePasswordHashInTenant func(context.Context, string, string, string) error
 	LogoutAllInTenant          func(context.Context, string, string) error
 
+	// SupersedeResets makes resetID the user's only valid reset record, so a
+	// new request cancels the codes of earlier ones; it runs before the record
+	// is saved. InvalidateResets does the same for every record when a reset
+	// completed. Both are optional, and a failure of the second is audited, not
+	// returned: the password has already changed.
+	SupersedeResets  func(ctx context.Context, tenantID, userID, resetID string, ttl time.Duration) error
+	InvalidateResets func(ctx context.Context, tenantID, userID string, ttl time.Duration) error
+
 	SaveResetRecord    func(context.Context, string, string, PasswordResetStoreRecord, time.Duration) error
 	GetResetRecord     func(context.Context, string, string) (PasswordResetStoreRecord, error)
 	ConsumeResetRecord func(context.Context, string, string, [32]byte, int, int) (PasswordResetStoreRecord, error)
@@ -260,6 +268,22 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 			}
 		})
 		return "", mapped
+	}
+
+	// The record exists; only now does it cancel the earlier ones, so a request
+	// that fails to store its record does not cost the user the code they hold.
+	// Until this returns the new code has not been mailed either.
+	if deps.SupersedeResets != nil {
+		if err := deps.SupersedeResets(ctx, effectiveTenant, user.UserID, resetID, deps.ResetTTL); err != nil {
+			mapped := deps.MapStoreError(err)
+			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"reason":     "supersede_failed",
+				}
+			})
+			return "", mapped
+		}
 	}
 
 	deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, true, user.UserID, effectiveTenant, "", nil, func() map[string]string {
@@ -445,6 +469,19 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 			}
 		})
 		return err
+	}
+
+	// The reset is done: every other code issued for the account before now is
+	// dead, whoever holds it.
+	if deps.InvalidateResets != nil {
+		if err := deps.InvalidateResets(ctx, tenantID, record.UserID, deps.ResetTTL); err != nil {
+			deps.Warn("goAuth: outstanding password reset codes could not be invalidated")
+			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, record.UserID, tenantID, "", deps.Errors.PasswordResetUnavailable, func() map[string]string {
+				return map[string]string{
+					"reason": "reset_invalidation_failed",
+				}
+			})
+		}
 	}
 
 	invalidateTenant := tenantID

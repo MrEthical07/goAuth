@@ -51,6 +51,46 @@ func (s *PasswordResetStore) key(tenantID, resetID string) string {
 	return s.prefix + ":" + normalizeTenantID(tenantID) + ":" + resetID
 }
 
+// currentKey names the per-(tenant, user) pointer to the newest reset record
+// ("<prefix>g:<tenant>:<user>"). It holds that record's reset ID, or a
+// tombstone after a reset completed.
+func (s *PasswordResetStore) currentKey(tenantID, userID string) string {
+	return s.prefix + "g:" + normalizeTenantID(tenantID) + ":" + userID
+}
+
+// resetCompletedTombstone is stored in the pointer when a reset has completed:
+// no reset ID equals it, so every record issued before is superseded.
+const resetCompletedTombstone = "-"
+
+// SetCurrent makes resetID the user's only valid reset record: records issued
+// earlier stop being redeemable. ttl must cover the record's own life.
+func (s *PasswordResetStore) SetCurrent(ctx context.Context, tenantID, userID, resetID string, ttl time.Duration) error {
+	if err := s.redis.Set(ctx, s.currentKey(tenantID, userID), resetID, ttl).Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
+	}
+	return nil
+}
+
+// InvalidateOutstanding supersedes every reset record the user has, as a
+// completed reset does. ttl must cover the life of a record issued just before.
+func (s *PasswordResetStore) InvalidateOutstanding(ctx context.Context, tenantID, userID string, ttl time.Duration) error {
+	return s.SetCurrent(ctx, tenantID, userID, resetCompletedTombstone, ttl)
+}
+
+// IsCurrent reports whether resetID has not been superseded. A user with no
+// pointer (records issued before pointers existed, or whose pointer expired
+// together with every record it could supersede) has no superseded records.
+func (s *PasswordResetStore) IsCurrent(ctx context.Context, tenantID, userID, resetID string) (bool, error) {
+	current, err := s.redis.Get(ctx, s.currentKey(tenantID, userID)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return true, nil
+		}
+		return false, fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
+	}
+	return current == resetID, nil
+}
+
 func (s *PasswordResetStore) Save(
 	ctx context.Context,
 	tenantID, resetID string,

@@ -332,23 +332,82 @@ func TestRedisCompat_MFAChallengeEpoch(t *testing.T) {
 			store := stores.NewMFALoginChallengeStore(rdb, "amc")
 			ctx := context.Background()
 
-			if _, ok, err := store.Epoch(ctx, "c1"); err != nil || ok {
+			if _, _, ok, err := store.Context(ctx, "c1"); err != nil || ok {
 				t.Fatalf("no epoch yet: ok=%v err=%v", ok, err)
 			}
 			if err := store.Save(ctx, "c1", &stores.MFALoginChallenge{UserID: "u1", TenantID: "0", ExpiresAt: time.Now().Add(time.Minute).Unix()}, time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.SaveEpoch(ctx, "c1", 7, time.Minute); err != nil {
+			if err := store.SaveContext(ctx, "c1", 7, 2, time.Minute); err != nil {
 				t.Fatal(err)
 			}
-			if epoch, ok, err := store.Epoch(ctx, "c1"); err != nil || !ok || epoch != 7 {
-				t.Fatalf("epoch = %d ok=%v err=%v", epoch, ok, err)
+			if epoch, adv, ok, err := store.Context(ctx, "c1"); err != nil || !ok || epoch != 7 || adv != 2 {
+				t.Fatalf("epoch = %d advertised = %d ok=%v err=%v", epoch, adv, ok, err)
 			}
 			if deleted, err := store.Delete(ctx, "c1"); err != nil || !deleted {
 				t.Fatalf("delete = %v, %v", deleted, err)
 			}
-			if _, ok, _ := store.Epoch(ctx, "c1"); ok {
+			if _, _, ok, _ := store.Context(ctx, "c1"); ok {
 				t.Fatal("the epoch outlived its challenge")
+			}
+		})
+	}
+}
+
+func TestRedisCompat_DeleteAllEpochLifeFollowsTheConfiguredTTL(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			ctx := context.Background()
+
+			def := session.NewStore(rdb, "as", true, false, 0)
+			if err := def.DeleteAllForUser(ctx, "t-ttl", "u-def"); err != nil {
+				t.Fatal(err)
+			}
+			if ttl := rdb.TTL(ctx, "aue:t-ttl:u-def").Val(); ttl <= 23*time.Hour || ttl > 24*time.Hour {
+				t.Fatalf("default epoch TTL = %v, want 24 h", ttl)
+			}
+
+			long := session.NewStore(rdb, "as", true, false, 0).WithRevocationEpochTTL(31 * time.Hour)
+			if err := long.DeleteAllForUser(ctx, "t-ttl", "u-long"); err != nil {
+				t.Fatal(err)
+			}
+			if ttl := rdb.TTL(ctx, "aue:t-ttl:u-long").Val(); ttl <= 30*time.Hour || ttl > 31*time.Hour {
+				t.Fatalf("long epoch TTL = %v, want 31 h", ttl)
+			}
+		})
+	}
+}
+
+func TestRedisCompat_EmailChangeCancelReportsWhatItRemoved(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			store := stores.NewEmailChangeStore(rdb, "aec")
+			ctx := context.Background()
+
+			if cancelled, err := store.CancelPending(ctx, "t-ec", "u-ec"); err != nil || cancelled {
+				t.Fatalf("nothing pending: cancelled=%v err=%v", cancelled, err)
+			}
+			rec := &stores.EmailChangeRecord{
+				UserID: "u-ec", OldIdentifier: "a@example.com", NewIdentifier: "b@example.com",
+				AccountVersion: 1, ExpiresAt: time.Now().Add(time.Minute).Unix(),
+			}
+			if err := store.Save(ctx, "t-ec", "v1", rec, time.Minute); err != nil {
+				t.Fatal(err)
+			}
+			if cancelled, err := store.CancelPending(ctx, "t-ec", "u-ec"); err != nil || !cancelled {
+				t.Fatalf("one pending: cancelled=%v err=%v", cancelled, err)
+			}
+			if rdb.Exists(ctx, "aec:t-ec:v1", "aecp:t-ec:u-ec").Val() != 0 {
+				t.Fatal("the challenge or its pointer survived")
+			}
+			if cancelled, _ := store.CancelPending(ctx, "t-ec", "u-ec"); cancelled {
+				t.Fatal("a second cancel reported something removed")
 			}
 		})
 	}

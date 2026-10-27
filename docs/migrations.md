@@ -4,11 +4,13 @@
 
 ### Upgrading from v0.8.0
 
-**No code change is needed.** v0.8.1 contains the fixes for the security audit of
-v0.8.0: no exported signature changed and `gorelease -base=v0.8.0` reports no
-incompatible change. Redis can be shared by v0.8.0 and v0.8.1 instances during a
-rolling deploy: the new keys are counters that expire with their window, and no
-stored format changed. Read the behavior changes below before you deploy; the
+**v0.8.0 is retracted; upgrade.** **No code change is needed** unless you set
+`EmailChange.Strategy: VerificationUUID` or call `GenerateBackupCodes` outside the ten
+minutes after `ConfirmTOTPSetup` (both are explained under part 3 below). v0.8.1
+contains the fixes for the security audit of v0.8.0: no exported signature changed
+and `gorelease -base=v0.8.0` reports no incompatible change. Redis can be shared by
+v0.8.0 and v0.8.1 instances during a rolling deploy: the new keys expire by TTL and
+no stored format changed (see "Rolling deploys and the provider contract" below). Read the behavior changes below before you deploy; the
 unchanged-when-unused transcripts of v0.8.0 (`TestSessionProfilesUnusedMatchesV070`,
 `TestExternalAuthUnusedMatchesMain`) were updated for exactly those lines.
 
@@ -89,11 +91,11 @@ Part 2 of the audit fixes (the CHANGELOG lists each with its finding ID):
   `ErrDeviceBindingRejected`; detect-only and off are unchanged.
 - **Email verification** reads the account again right before the status write; an
   account blocked meanwhile is returned as its status error and left blocked.
-- `Build` rejects `TOTP.MFALoginChallengeTTL` above 12 hours (the default is 3
-  minutes); the challenge is fenced with a revocation epoch kept 24 hours.
+- The revocation epoch is kept for `max(24h, TOTP.MFALoginChallengeTTL + 1h)` after the
+  last revocation, so `Build` accepts any MFA challenge TTL.
 - `Config.Lint()` raises `refresh_user_recheck_off` (INFO) for every config that has
   not turned on `Security.RecheckUserOnRefresh`.
-- New Redis keys: `aue:<tenant>:<user>` (24 hours, refreshed by each delete-all) and
+- New Redis keys: `aue:<tenant>:<user>` (at least 24 hours, refreshed by each delete-all) and
   `amc:<challenge>:ep` (the MFA challenge's TTL). During a rolling deploy a
   revocation made by a v0.8.0 instance does not move the epoch, so the fence covers
   only revocations made by v0.8.1 instances.
@@ -122,6 +124,65 @@ Two optional interfaces on your `UserProvider`, detected at `Build`:
   next AccountStatus) (applied bool, err error)`: the same for the status (advance
   the account version when it applies). Without it email verification re-reads the
   account right before the write and only activates a pending one.
+
+### MFA artifacts, recovery and configuration: what changes with nothing enabled
+
+Part 3 of the audit fixes (the CHANGELOG lists each with its finding ID):
+
+- **Backup codes need an enrolled authenticator.** `GenerateBackupCodes` and
+  `RegenerateBackupCodes` return `ErrTOTPNotConfigured` for a user without one
+  (Regenerate used to succeed for them), and a backup code satisfies a login or a
+  role-switch step-up only for a user who has one.
+- **`GenerateBackupCodes` works without a TOTP code only in the 10 minutes after
+  `ConfirmTOTPSetup`, once.** A marker (`abg:<tenant>:<user>`) written by the setup
+  and consumed by Generate lets the first set be generated; any other time, or when
+  codes already exist, it returns `ErrBackupCodeRegenerationRequiresTOTP`. **Action
+  if your UI offers a "generate backup codes" button in account settings, or a user
+  enrolled before you upgraded and has no codes:** ask for a TOTP code and call
+  `RegenerateBackupCodes(ctx, userID, totpCode)`, or call `GenerateBackupCodes` right
+  after `ConfirmTOTPSetup`.
+- **`DisableTOTP` removes the user's backup codes.**
+- **`EmailChange.Strategy = VerificationUUID` is rejected by `Build`.** Its code was the
+  `VerificationID` you may hand to the browser. **Action if you set it:** use
+  `VerificationToken` (the default) or `VerificationOTP`.
+- **Password reset: one valid code per account.** A new request supersedes the
+  codes of earlier ones and a completed reset invalidates every outstanding code.
+  A pointer `aprg:<tenant>:<user>` (`ResetTTL`) holds the newest reset ID. Anyone who
+  can request a reset can supersede a code that is waiting for its owner (the owner
+  gets a new mail); the request limiters bound that.
+- **A pending email change is cancelled when the user's sessions are revoked** (password
+  reset or change, `LogoutAll`, `InvalidateUserSessions`, disabling, TOTP changes),
+  while `EmailChange` is enabled. Audit event `email_change_cancelled`.
+- **The MFA confirmation accepts only a factor the challenge advertised**; a challenge
+  from before the upgrade accepts any enrolled factor, as before. The advertised set is
+  stored in `amc:<challenge>:ep` (value `<epoch>:<factors>`).
+- **`Security.EnableUserAgentBinding` is deprecated, defaults to `false` and lints when
+  set** (`security_user_agent_binding_noop`). It was never read; use `DeviceBinding.*`.
+- **The revocation epoch is kept for `max(24h, TOTP.MFALoginChallengeTTL + 1h)`**;
+  `Build` accepts any challenge TTL.
+- Password-reset confirmation does not check password reuse (the documentation said
+  it did); `ChangePassword` does.
+
+### Rolling deploys and the provider contract
+
+- **Rolling deploy from v0.8.0.** Redis can be shared by v0.8.0 and v0.8.1 instances: new
+  keys expire by TTL and no stored format changed. While both run: a revocation made by
+  a v0.8.0 instance does not move the revocation epoch, so the login fence covers
+  only revocations made by v0.8.1 instances; a reset code issued by a v0.8.0 instance
+  is refused if a v0.8.1 instance wrote the user's reset pointer since (the user
+  requests another); an MFA challenge issued by a v0.8.0 instance has no recorded
+  factors or epoch and behaves as it did.
+- **Provider contract.** Where the engine must tell "the user is gone" from "the
+  provider is down" (`Security.RecheckUserOnRefresh`, email change, role switching),
+  your `UserProvider`'s `GetUserByID` (and `GetUserByIDInTenant`) must return
+  `ErrUserNotFound` for a user that does not exist. The engine treats exactly that error as
+  "gone" (the session is ended, nothing can be confirmed) and any other error as an
+  outage (nothing is changed; the caller gets `ErrSystemUnavailable` or the operation's
+  own unavailable error). A provider that returns a different error for a missing user
+  makes those paths answer "unavailable" instead.
+- **Retraction.** `go.mod` retracts v0.8.0. Tools such as `go list -m -u` and
+  `go get -u` stop offering it once v0.8.1 is published; builds that already pin v0.8.0
+  keep working but are told to upgrade.
 
 ### Optional: per-IP login throttle
 

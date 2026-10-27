@@ -20,8 +20,8 @@ goAuth supports TOTP (Time-Based One-Time Password, RFC 6238), backup codes, and
 
 | Primitive | Signature | Description |
 |-----------|-----------|-------------|
-| `GenerateBackupCodes` | `(ctx, userID string) ([]string, error)` | Generate a set of one-time codes |
-| `RegenerateBackupCodes` | `(ctx, userID, totpCode string) ([]string, error)` | Regenerate (requires TOTP proof) |
+| `GenerateBackupCodes` | `(ctx, userID string) ([]string, error)` | Generate the first set of one-time codes. Needs an enabled authenticator (`ErrTOTPNotConfigured` otherwise) and works without a TOTP code **only within 10 minutes of a successful `ConfirmTOTPSetup`**, once; any other time, or when codes already exist, it returns `ErrBackupCodeRegenerationRequiresTOTP` |
+| `RegenerateBackupCodes` | `(ctx, userID, totpCode string) ([]string, error)` | Replace the set (requires a TOTP code; `ErrTOTPNotConfigured` for a user without an enabled authenticator) |
 | `VerifyBackupCode` | `(ctx, userID, code string) error` | Use a backup code |
 
 ### MFA Login Flow
@@ -56,6 +56,7 @@ type LoginResult struct {
 argument carries the raw assertion response JSON for webauthn — see
 [webauthn.md](webauthn.md)). When a user has both WebAuthn credentials and TOTP,
 `MFATypes` lists both and `MFAType` prefers `"webauthn"` (phishing-resistant first).
+A confirmation is accepted only for a factor the challenge **advertised**: the password step stores the offered factors next to the challenge (`amc:<challenge>:ep`, which also carries the revocation epoch) and `ConfirmLoginMFAWithType` counts any other type as a wrong answer (`ErrMFALoginInvalid`, one attempt). `"backup"` is the fallback of `"totp"` and is allowed whenever TOTP was advertised. A factor the user enrolled after the password step therefore does not answer a challenge that never offered it. A challenge created without that record (by an earlier version) accepts any enrolled factor, as before.
 
 ### Session profiles
 
@@ -132,7 +133,9 @@ stores the flag with the MFA challenge, so the session issued by
 - TOTP secrets are 20-byte random values from `crypto/rand`.
 - Code verification uses `crypto/subtle.ConstantTimeCompare`.
 - Skew > 1 is warned by `Config.Lint()` (widens acceptance window).
-- Backup code regeneration requires TOTP proof to prevent hijack.
+- Backup codes are a recovery artifact of an enabled authenticator. They are neither generated nor regenerated for a user without one, and a backup code is accepted as a second factor (login, role-switch step-up) only for a user who has one.
+- Backup code regeneration requires TOTP proof to prevent hijack. The first set can be generated without it only in the 10 minutes after `ConfirmTOTPSetup` (a single-use marker, `abg:<tenant>:<user>`); a session holder cannot mint codes for themselves later. The marker records the user's revocation epoch at setup, so revoking the user's sessions (a password change or reset, `LogoutAll`) inside those 10 minutes invalidates it too. The library has no session to bind the marker to (`GenerateBackupCodes` takes a user ID), so call it from the setup flow itself, right after `ConfirmTOTPSetup`.
+- `DisableTOTP` removes the user's backup codes, so a set minted for one authenticator never works for the next.
 - MFA challenges have TTL and attempt limits. The per-challenge cap (`TOTP.MFALoginMaxAttempts`) is claimed with one script *before* the factor is evaluated, so parallel confirmations cannot evaluate more codes than the cap allows.
 - TOTP guesses at MFA login also draw on the **per-account TOTP budget** that `VerifyTOTP` uses (`TOTP.MFALoginMaxAttempts` per `TOTP.VerifyAttemptCooldown`), so minting a new challenge for every five guesses does not reset the limit. When the budget is spent the challenge is destroyed and `ErrTOTPRateLimited` is returned, and a right code is refused too until the window passes; a right code clears the budget.
 - Every code check (TOTP, backup code, step-up) claims its attempt before the code is evaluated; see [rate_limiting.md](rate_limiting.md#reserve-before-you-verify).
@@ -146,7 +149,7 @@ stores the flag with the MFA challenge, so the session issued by
 
 - `LoginWithResult` returns `MFARequired=true` but no error — callers must check the flag.
 - Backup codes are one-time: each code can only be used once.
-- `GenerateBackupCodes` replaces any existing backup codes.
+- `GenerateBackupCodes` never replaces existing codes: it returns `ErrBackupCodeRegenerationRequiresTOTP` while any exist. `RegenerateBackupCodes` (with a TOTP code) replaces them. A user who enrolled before upgrading to v0.8.1 and has no codes generates them with `RegenerateBackupCodes`.
 - TOTP counter tracking prevents code reuse within the same time step.
 
 ## Architecture

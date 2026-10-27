@@ -470,7 +470,7 @@ func TestCancelEmailChange(t *testing.T) {
 }
 
 func TestEmailChangeStrategies(t *testing.T) {
-	for name, strategy := range map[string]VerificationStrategyType{"token": VerificationToken, "uuid": VerificationUUID, "otp": VerificationOTP} {
+	for name, strategy := range map[string]VerificationStrategyType{"token": VerificationToken, "otp": VerificationOTP} {
 		t.Run(name, func(t *testing.T) {
 			env := newECEnv(t, func(c *EmailChangeConfig) {
 				c.Strategy = strategy

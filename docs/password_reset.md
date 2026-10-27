@@ -23,7 +23,6 @@ Password reset provides a secure lifecycle for resetting user passwords via toke
 | `ErrPasswordResetRateLimited` | Too many requests |
 | `ErrPasswordResetAttempts` | Max confirmation attempts exceeded |
 | `ErrPasswordPolicy` | New password doesn't meet policy |
-| `ErrPasswordReuse` | New password same as current |
 
 ## Strategies
 
@@ -61,7 +60,7 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 - Challenge tokens are SHA-256 hashed before storage.
 - Rate limiting protects both request and confirm endpoints.
 - All existing sessions are invalidated after successful reset.
-- Password reuse is rejected.
+- Reuse of the current password is **not** checked: confirming a reset applies the password policy to the new password and nothing more (`ChangePassword` is the flow that rejects a new password equal to the current one with `ErrPasswordReuse`). Enforce reuse rules in your own layer if you need them on reset.
 
 ## Edge Cases & Gotchas
 
@@ -69,6 +68,7 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 - `RequestPasswordReset` does not reveal whether the identifier exists (prevents enumeration): every branch that answers with a challenge — registered, unknown — takes at least the same randomized 20-40 ms from request entry, so the response times overlap. An identifier over `MaxIdentifierBytes` (320) is refused as `ErrPasswordResetInvalid`.
 - Requests are limited per identifier as typed and per resolved account (`rl:reset:req:user:*`). A provider that matches identifiers case-insensitively would otherwise give every spelling its own budget. The account budget answers `ErrPasswordResetRateLimited` (not a fake challenge) so that your application sends no mail; with a case-insensitive provider that lets a caller trying spellings see that the account exists.
 - OTP mode requires `OTPDigits ≤ 6` in production mode.
+- **One valid code per account.** A new `RequestPasswordReset` supersedes the codes of earlier requests for the same user, and a completed reset supersedes every code issued before it, whoever holds them (a pointer `aprg:<tenant>:<user>` holds the newest reset ID, or a tombstone after a completion; it lives as long as `ResetTTL`). Anyone who can request a reset for an account can therefore supersede a code that is waiting for its owner (the owner gets a new mail with a working code); the per-identifier and per-account request limiters bound how often. A code issued by a v0.8.0 instance during a rolling deploy has no pointer entry and is refused if a v0.8.1 instance has since written one.
 
 ## Architecture
 
@@ -85,7 +85,7 @@ Engine.RequestPasswordReset(identifier)
 Engine.ConfirmPasswordReset(challenge, newPassword)
   ├─ PasswordResetLimiter.CheckConfirm
   ├─ PasswordResetStore.Consume (CAS + constant-time compare)
-  ├─ Password policy + reuse check
+  ├─ Password policy (no reuse check)
   ├─ password.Argon2.Hash(newPassword)
   ├─ UserProvider.UpdatePasswordHash
   └─ session.Store.DeleteAllForUser (invalidate sessions)

@@ -243,6 +243,9 @@ func (b *Builder) Build() (*Engine, error) {
 	if policies := sessionProfilePolicies(cfg.SessionProfiles.Profiles); policies != nil {
 		store.WithProfiles(policies)
 	}
+	// An MFA challenge pins the revocation epoch of its password step for its
+	// whole life, so the epoch has to outlive the longest challenge.
+	store.WithRevocationEpochTTL(cfg.TOTP.MFALoginChallengeTTL + time.Hour)
 
 	engine := &Engine{
 		config:       cloneConfig(cfg),
@@ -315,6 +318,7 @@ func (b *Builder) Build() (*Engine, error) {
 		WindowMode:  windowMode,
 	})
 	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
+	engine.backupGrants = stores.NewBackupGrantStore(b.redis, "abg")
 	// Optional: only a provider that can compare-and-swap a password hash opts
 	// in; without it the upgrade re-reads the user before it writes.
 	if cas, ok := b.userProvider.(PasswordHashCASUpdater); ok {
