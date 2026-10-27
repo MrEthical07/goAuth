@@ -411,7 +411,8 @@ epoch's life).
   the step-up and the login accept them only for a user who has one; Generate and
   Regenerate return `ErrTOTPNotConfigured` for a user who does not (Regenerate used to
   succeed for them); Generate works without a TOTP code only in the 10 minutes after
-  `ConfirmTOTPSetup`, once (a tenant-scoped, single-use marker); otherwise it returns
+  `ConfirmTOTPSetup`, once (a tenant-scoped, single-use marker that a revocation of the
+  user's sessions also removes); otherwise it returns
   `ErrBackupCodeRegenerationRequiresTOTP`. A user who enrolled before upgrading and
   has no codes uses `RegenerateBackupCodes` with a TOTP code.
 - **`DisableTOTP` removes the user's backup codes** (and the pending marker): a set

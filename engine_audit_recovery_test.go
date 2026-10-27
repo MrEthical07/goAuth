@@ -190,3 +190,25 @@ func TestDisableTOTPClearsTheBackupCodes(t *testing.T) {
 	}
 	_ = secret
 }
+
+// A recovery inside the ten minutes after setup closes the first-generation
+// window: the sessions were revoked because the account may be compromised.
+func TestRevokingSessionsClosesTheFirstBackupCodeWindow(t *testing.T) {
+	for name, revoke := range map[string]func(env *rsEnv) error{
+		"LogoutAll": func(env *rsEnv) error { return env.engine.LogoutAll(env.ctx(), rsUserID) },
+		"password change": func(env *rsEnv) error {
+			return env.engine.ChangePassword(env.ctx(), rsUserID, rsPassword, "brand-new-password-9")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := newRSEnv(t, stepUpAdminRequiresMFA(0))
+			env.enableTOTP()
+			if err := revoke(env); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := env.engine.GenerateBackupCodes(env.ctx(), rsUserID); !errors.Is(err, ErrBackupCodeRegenerationRequiresTOTP) {
+				t.Fatalf("Generate after the sessions were revoked: %v, want ErrBackupCodeRegenerationRequiresTOTP", err)
+			}
+		})
+	}
+}

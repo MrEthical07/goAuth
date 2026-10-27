@@ -766,6 +766,7 @@ func (e *Engine) LogoutAllInTenant(ctx context.Context, tenantID, userID string)
 		// Password change and reset, and every other flow that revokes all of a
 		// user's sessions, end here.
 		e.cancelEmailChangeAfterRecovery(ctx, tenantID, userID)
+		e.revokeBackupCodeGrant(ctx, tenantID, userID)
 	}
 	e.emitAudit(ctx, auditEventLogoutAll, err == nil, userID, tenantID, "", err, nil)
 	return mapToAuthErrorOrNil(err)
@@ -2108,6 +2109,20 @@ func (e *Engine) VerifyBackupCode(ctx context.Context, userID, code string) erro
 func (e *Engine) VerifyBackupCodeInTenant(ctx context.Context, tenantID, userID, code string) error {
 	e.ensureFlowDeps()
 	return mapToAuthErrorOrNil(e.flows.VerifyBackupCodeInTenant(ctx, tenantID, userID, code))
+}
+
+// revokeBackupCodeGrant removes the first-generation marker ConfirmTOTPSetup
+// leaves, when the user's sessions are revoked: a recovery inside the ten
+// minutes must not leave a free set of codes behind. (ConfirmTOTPSetup revokes
+// the sessions first and writes the marker after, so its own marker survives.)
+// Best effort: the marker expires on its own.
+func (e *Engine) revokeBackupCodeGrant(ctx context.Context, tenantID, userID string) {
+	if e.backupGrants == nil || userID == "" {
+		return
+	}
+	for _, tenant := range sessionRevocationTenants(ctx, tenantID) {
+		_ = e.backupGrants.Revoke(ctx, tenant, userID)
+	}
 }
 
 // backupSetupGrantTTL is how long after a successful ConfirmTOTPSetup the user
