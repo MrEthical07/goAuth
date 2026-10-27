@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.1] - 2026-10-26
+## [0.8.1] - 2026-10-27
 
 **Security release. Upgrading from v0.8.0 is recommended, and v0.8.0 is retracted**
 (`retract v0.8.0` in `go.mod`: MFA-login TOTP guessing was not limited per account;
