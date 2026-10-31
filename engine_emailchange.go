@@ -341,20 +341,19 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 	// Challenges for the old address issued before this moment stop working.
 	// Written before the change so a failure here aborts it: the other order
 	// could leave an old reset code redeemable.
-	markerTTL := e.emailChangeMarkerTTL()
-	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, tenantID, record.UserID, e.now(), markerTTL); err != nil {
+	if err := e.supersedeChallengesForEmailChange(ctx, tenantID, user.TenantID, record.UserID); err != nil {
 		return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, emailChangeReasonUnavailable, WrapAuthError(ErrSystemUnavailable, err))
 	}
 	if err := e.emailChangeProvider.UpdateIdentifier(ctx, tenantID, record.UserID, record.OldIdentifier, record.NewIdentifier); err != nil {
 		reason, public := emailChangeProviderFailure(err)
 		return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, reason, public)
 	}
-	// Refresh the marker with the time of the commit: a code requested for the
-	// old address while the provider call was running was issued after the
-	// first write and would otherwise slip past it. The change is done, so a
-	// failure here is logged, not returned.
-	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, tenantID, record.UserID, e.now(), markerTTL); err != nil {
-		e.warn("goAuth: email change committed but the identifier-change marker could not be refreshed; codes requested for the old address during the change are not refused")
+	// Supersede again now that the change is committed: a code requested for the
+	// old address while the provider call was running was issued after the first
+	// write and would otherwise slip past it. The change is done, so a failure
+	// here is logged, not returned.
+	if err := e.supersedeChallengesForEmailChange(ctx, tenantID, user.TenantID, record.UserID); err != nil {
+		e.warn("goAuth: email change committed but outstanding reset and verification codes could not be superseded; codes requested for the old address during the change are not refused")
 	}
 
 	result := &EmailChangeResult{UserID: record.UserID, OldEmail: record.OldIdentifier, NewEmail: record.NewIdentifier}
@@ -433,6 +432,32 @@ func (e *Engine) revokeSessionsAfterEmailChange(ctx context.Context, challengeTe
 			}
 		}
 		if _, err := e.sessionStore.DeleteAllForUserExcept(ctx, tenant, userID, keep); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// supersedeChallengesForEmailChange kills every password-reset and
+// email-verification code the user holds: they were mailed to the old address.
+// It tombstones the user's newest-record pointers (by write order, so a code
+// requested afterwards, for the new address, is valid whatever the clock says)
+// and also writes the time-based identifier-change marker, which is only the
+// fallback for records whose owner has no pointer (see consumeResetRecord).
+func (e *Engine) supersedeChallengesForEmailChange(ctx context.Context, challengeTenant, recordTenant, userID string) error {
+	tenants := []string{challengeTenant}
+	if recordTenant != "" && tenantIDFromToken(recordTenant) != tenantIDFromToken(challengeTenant) {
+		tenants = append(tenants, recordTenant)
+	}
+	var errs []error
+	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, challengeTenant, userID, e.now(), e.emailChangeMarkerTTL()); err != nil {
+		errs = append(errs, err)
+	}
+	for _, tenant := range tenants {
+		if err := e.supersedeResetCodes(ctx, tenant, userID); err != nil {
+			errs = append(errs, err)
+		}
+		if err := e.supersedeVerificationCodes(ctx, tenant, userID); err != nil {
 			errs = append(errs, err)
 		}
 	}

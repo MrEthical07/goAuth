@@ -96,7 +96,11 @@ type EmailVerificationDeps struct {
 	UpdateStatusIf     func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error)
 	InvalidateSessions func(ctx context.Context, tenantID, userID string) error
 
-	SaveVerificationRecord    func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
+	SaveVerificationRecord func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
+	// SupersedeVerifications makes verificationID the user's only valid
+	// verification record, so a request cancels the codes of earlier ones. It
+	// runs after the record is saved. Nil leaves earlier codes valid.
+	SupersedeVerifications    func(ctx context.Context, tenantID, userID, verificationID string, ttl time.Duration) error
 	ConsumeVerificationRecord func(context.Context, string, string, [32]byte, int, int) (EmailVerificationStoreRecord, error)
 
 	GenerateChallenge  func(int, int, string) (string, string, [32]byte, error)
@@ -304,6 +308,23 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			}
 		})
 		return "", mapped
+	}
+
+	// The record exists; only now does it cancel the earlier ones, so a request
+	// that fails to store its record does not cost the user the code they hold.
+	// Until this returns the new code has not been mailed either.
+	if deps.SupersedeVerifications != nil {
+		if err := deps.SupersedeVerifications(ctx, effectiveTenant, user.UserID, verificationID, deps.VerificationTTL); err != nil {
+			mapped := deps.MapStoreError(err)
+			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"reason":     "supersede_failed",
+				}
+			})
+			return "", mapped
+		}
 	}
 
 	deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, user.UserID, effectiveTenant, "", nil, func() map[string]string {

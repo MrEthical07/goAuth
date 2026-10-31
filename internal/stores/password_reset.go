@@ -90,14 +90,24 @@ func (s *PasswordResetStore) InvalidateOutstanding(ctx context.Context, tenantID
 // pointer (records issued before pointers existed, or whose pointer expired
 // together with every record it could supersede) has no superseded records.
 func (s *PasswordResetStore) IsCurrent(ctx context.Context, tenantID, userID, resetID string) (bool, error) {
+	state, err := s.PointerState(ctx, tenantID, userID, resetID)
+	return state != PointerSuperseded, err
+}
+
+// PointerState reports how resetID stands against the user's pointer: current,
+// superseded, or (no pointer written) absent.
+func (s *PasswordResetStore) PointerState(ctx context.Context, tenantID, userID, resetID string) (PointerState, error) {
 	current, err := s.redis.Get(ctx, s.currentKey(tenantID, userID)).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return true, nil
+			return PointerAbsent, nil
 		}
-		return false, fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
+		return PointerAbsent, fmt.Errorf("%w: %v", ErrResetRedisUnavailable, err)
 	}
-	return current == resetID, nil
+	if current == resetID {
+		return PointerCurrent, nil
+	}
+	return PointerSuperseded, nil
 }
 
 func (s *PasswordResetStore) Save(

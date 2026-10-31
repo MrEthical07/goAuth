@@ -2580,32 +2580,38 @@ func (e *Engine) configureEmailVerificationStoreDeps(deps *internalflows.EmailVe
 			Strategy:   record.Strategy,
 		}, ttl)
 	}
+	deps.SupersedeVerifications = e.verificationStore.SetCurrent
 	deps.ConsumeVerificationRecord = e.consumeVerificationRecord
 }
 
-// consumeResetRecord consumes a password-reset challenge and refuses one issued
-// before the user's last email change: it was mailed to the old address. The
-// marker is read only while EmailChange is enabled.
+// consumeResetRecord consumes a password-reset challenge and refuses one that
+// was superseded: by a newer request, by a completed reset, or by an email
+// change, which was mailed to the old address. Supersession is decided by write
+// order, through the user's pointer. The time-based identifier-change marker is
+// only the fallback for a record whose owner has no pointer (issued by an
+// instance older than v0.8.1) and is read only while EmailChange is enabled.
 func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.PasswordResetStoreRecord, error) {
 	record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
 	if err != nil {
 		return internalflows.PasswordResetStoreRecord{}, err
 	}
-	// A newer request, or a reset that completed since this one was issued,
-	// superseded the record: the secret was right, the code is dead.
-	current, pointerErr := e.resetStore.IsCurrent(ctx, tenantID, record.UserID, resetID)
+	// A newer request, a reset that completed since this one was issued, or an
+	// email change superseded the record: the secret was right, the code is dead.
+	state, pointerErr := e.resetStore.PointerState(ctx, tenantID, record.UserID, resetID)
 	if pointerErr != nil {
 		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
 	}
-	if !current {
+	switch state {
+	case stores.PointerSuperseded:
 		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
-	}
-	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
-	if markerErr != nil {
-		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
-	}
-	if stale {
-		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
+	case stores.PointerAbsent:
+		stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
+		if markerErr != nil {
+			return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
+		}
+		if stale {
+			return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
+		}
 	}
 	return internalflows.PasswordResetStoreRecord{
 		UserID:     record.UserID,
@@ -2616,18 +2622,60 @@ func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID strin
 	}, nil
 }
 
+// supersedeResetCodes makes every password-reset code the user holds
+// unredeemable, in every tenant a revocation of the user covers (the context
+// tenant and tenantID): it tombstones the user's newest-reset pointer, so a
+// code issued before the call is refused and one requested after it is valid.
+// Decided by write order, never by time. It is a no-op while password reset is
+// disabled.
+func (e *Engine) supersedeResetCodes(ctx context.Context, tenantID, userID string) error {
+	if e.resetStore == nil || !e.config.PasswordReset.Enabled {
+		return nil
+	}
+	var errs []error
+	for _, tenant := range sessionRevocationTenants(ctx, tenantID) {
+		if err := e.resetStore.InvalidateOutstanding(ctx, tenant, userID, e.config.PasswordReset.ResetTTL); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// supersedeVerificationCodes is supersedeResetCodes for email verification.
+func (e *Engine) supersedeVerificationCodes(ctx context.Context, tenantID, userID string) error {
+	if e.verificationStore == nil || !e.config.EmailVerification.Enabled {
+		return nil
+	}
+	var errs []error
+	for _, tenant := range sessionRevocationTenants(ctx, tenantID) {
+		if err := e.verificationStore.InvalidateOutstanding(ctx, tenant, userID, e.config.EmailVerification.VerificationTTL); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // consumeVerificationRecord is consumeResetRecord for email verification.
 func (e *Engine) consumeVerificationRecord(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
 	record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
 	if err != nil {
 		return internalflows.EmailVerificationStoreRecord{}, err
 	}
-	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.EmailVerification.VerificationTTL)
-	if markerErr != nil {
+	state, pointerErr := e.verificationStore.PointerState(ctx, tenantID, record.UserID, verificationID)
+	if pointerErr != nil {
 		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationRedisUnavailable
 	}
-	if stale {
+	switch state {
+	case stores.PointerSuperseded:
 		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationNotFound
+	case stores.PointerAbsent:
+		stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.EmailVerification.VerificationTTL)
+		if markerErr != nil {
+			return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationRedisUnavailable
+		}
+		if stale {
+			return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationNotFound
+		}
 	}
 	return internalflows.EmailVerificationStoreRecord{
 		UserID:     record.UserID,

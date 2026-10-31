@@ -117,6 +117,53 @@ type EmailVerificationStore struct {
 	now    func() time.Time
 }
 
+// verificationPointerPrefix names the per-(tenant, user) pointer to the newest
+// verification record ("aevg:<tenant>:<user>"). It holds that record's ID, or a
+// tombstone after an event that supersedes every outstanding record (an email
+// change). It is independent of the store's record prefix.
+const verificationPointerPrefix = "aevg"
+
+// verificationTombstone is stored in the pointer to supersede every record: no
+// verification ID equals it.
+const verificationTombstone = "-"
+
+func (s *EmailVerificationStore) currentKey(tenantID, userID string) string {
+	return verificationPointerPrefix + ":" + normalizeTenantID(tenantID) + ":" + userID
+}
+
+// SetCurrent makes verificationID the user's only valid verification record:
+// records issued earlier stop being redeemable. Call it after the record is
+// stored, so a request whose record failed to store leaves the code the user
+// already holds alone. ttl must cover the record's own life.
+func (s *EmailVerificationStore) SetCurrent(ctx context.Context, tenantID, userID, verificationID string, ttl time.Duration) error {
+	if err := s.redis.Set(ctx, s.currentKey(tenantID, userID), verificationID, ttl).Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrVerificationRedisUnavailable, err)
+	}
+	return nil
+}
+
+// InvalidateOutstanding supersedes every verification record the user has. ttl
+// must cover the life of a record issued just before.
+func (s *EmailVerificationStore) InvalidateOutstanding(ctx context.Context, tenantID, userID string, ttl time.Duration) error {
+	return s.SetCurrent(ctx, tenantID, userID, verificationTombstone, ttl)
+}
+
+// PointerState reports how verificationID stands against the user's pointer:
+// current, superseded, or (no pointer written) absent.
+func (s *EmailVerificationStore) PointerState(ctx context.Context, tenantID, userID, verificationID string) (PointerState, error) {
+	current, err := s.redis.Get(ctx, s.currentKey(tenantID, userID)).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return PointerAbsent, nil
+		}
+		return PointerAbsent, fmt.Errorf("%w: %v", ErrVerificationRedisUnavailable, err)
+	}
+	if current == verificationID {
+		return PointerCurrent, nil
+	}
+	return PointerSuperseded, nil
+}
+
 // WithClock sets the time source the store compares record expiry against
 // (the wall clock by default) and returns the store. Call it before use.
 func (s *EmailVerificationStore) WithClock(now func() time.Time) *EmailVerificationStore {
