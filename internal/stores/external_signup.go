@@ -87,21 +87,38 @@ func (s *ExternalSignupStore) Save(ctx context.Context, tenantID, handle string,
 	return nil
 }
 
-// Take atomically reads and deletes the ticket (GETDEL): of any number of
+// takeExternalSignupLua reads and deletes the ticket in one step, so of any
+// number of concurrent callers exactly one gets it. It is a script and not
+// GETDEL because GETDEL needs Redis 6.2 and the supported floor is 6.0.
+//
+// KEYS: ticket. Returns the stored value, or nil when there is none.
+var takeExternalSignupLua = redis.NewScript(`
+local v = redis.call('GET', KEYS[1])
+if v then
+  redis.call('DEL', KEYS[1])
+end
+return v
+`)
+
+// Take atomically reads and deletes the ticket: of any number of
 // concurrent callers, exactly one gets the record. The ticket is consumed even
 // when it turns out to be expired or foreign. A handle from another tenant is
 // looked up under that tenant's key space and so is simply not found; the
 // stored tenant is checked as well.
 func (s *ExternalSignupStore) Take(ctx context.Context, tenantID, handle string) (*ExternalSignupRecord, error) {
-	data, err := s.redis.GetDel(ctx, s.key(tenantID, handle)).Bytes()
+	res, err := takeExternalSignupLua.Run(ctx, s.redis, []string{s.key(tenantID, handle)}).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, ErrExternalSignupNotFound
 		}
 		return nil, fmt.Errorf("%w: %v", ErrExternalSignupUnavailable, err)
 	}
+	data, ok := res.(string)
+	if !ok {
+		return nil, fmt.Errorf("%w: unexpected script result", ErrExternalSignupUnavailable)
+	}
 	var record ExternalSignupRecord
-	if err := json.Unmarshal(data, &record); err != nil || record.Version != externalSignupRecordVersion {
+	if err := json.Unmarshal([]byte(data), &record); err != nil || record.Version != externalSignupRecordVersion {
 		return nil, ErrExternalSignupNotFound
 	}
 	if record.TenantID != normalizeTenantID(tenantID) {

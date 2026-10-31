@@ -623,13 +623,13 @@ used the only difference is the boundary fix under **Fixed**.
   ticket's printed forms. It is consumed even if step two fails after that; the
   application restarts the sign-up. See `docs/external_identity.md#two-step-sign-up`.
 - **New Redis keys:** `axs:<tenant>:<sha256(handle)>` (a deferred sign-up, `SignupTicketTTL`;
-  needs Redis 6.2 for `GETDEL`), `aevg:<tenant>:<user>` (the newest verification record,
+  taken by a GET-then-DEL script, so Redis 6.0 is enough), `aevg:<tenant>:<user>` (the newest verification record,
   or a tombstone; `VerificationTTL`) and `aecu:<tenant>:<verification id>` (marks an email
   change requested by a pending account; the challenge's lifetime). The email-change
   tombstones are also written to the existing `aprg:<tenant>:<user>`. No stored format
   changed (`session/golden_bytes_test.go` and `internal/stores/golden_bytes_test.go` are
   untouched).
-- Real-Redis `TestRedisCompat` coverage for the sign-up handle's `GETDEL`, the verification
+- Real-Redis `TestRedisCompat` coverage for the sign-up handle's single-use script, the verification
   pointer and the unverified-change script.
 
 #### Fixed

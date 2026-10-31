@@ -25,9 +25,9 @@ func compatKeys(t *testing.T, rdb redis.UniversalClient, pattern string) []strin
 	return keys
 }
 
-// The deferred sign-up ticket is read and deleted with GETDEL: of many
+// The deferred sign-up ticket is read and deleted by one script: of many
 // concurrent callers exactly one gets it, on every backend.
-func TestRedisCompat_ExternalSignupGetDel(t *testing.T) {
+func TestRedisCompat_ExternalSignupSingleUse(t *testing.T) {
 	for _, mode := range redisModes(t) {
 		t.Run(mode.name, func(t *testing.T) {
 			rdb, cleanup := mode.setup(t)

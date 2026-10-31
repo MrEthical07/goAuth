@@ -198,7 +198,7 @@ that adopts none of them sees only these differences:
 New keys, all expiring by TTL: `aevg:<tenant>:<user>` (`EmailVerification.VerificationTTL`),
 `aecu:<tenant>:<id>` (only for email changes requested by pending accounts; the
 challenge's lifetime), and, only with `DeferSignup`, `axs:<tenant>:<sha256(handle)>`
-(`ExternalAuth.SignupTicketTTL`, default 10m; needs Redis 6.2 for `GETDEL`). No stored
+(`ExternalAuth.SignupTicketTTL`, default 10m). No stored
 format changed.
 
 ### Optional: the test clock (`WithClock`)

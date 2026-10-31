@@ -298,7 +298,7 @@ client            your server                         goAuth                    
   │                  │ your step: age check, terms ...    │
   │                  │   refused: CancelExternalSignup ──▶│ DEL axs:...            (nothing else to undo)
   │                  │   accepted: CompleteExternalSignup▶│ resolve the session profile
-  │                  │                                    │ GETDEL axs:... (single use, tenant-bound)
+  │                  │                                    │ take axs:... (GET+DEL script: single use, tenant-bound)
   │                  │                                    │ resolve the identity again, no token
   │                  │                                    │ account-creation limiter, create + link
   │                  │◀───────────────────────────────────│ shared login tail: session, audit, NewAccount=true
@@ -323,7 +323,7 @@ one as they do today.
 
 1. resolves the session profile first, as every session path does (an unknown profile
    is refused before the handle is touched, so it does not spend it);
-2. consumes the handle atomically with `GETDEL`. It is bound to the context's tenant:
+2. consumes the handle atomically (one GET-then-DEL script). It is bound to the context's tenant:
    a handle used under another tenant is simply not found, and does not burn the
    owner's. A missing, used or expired handle is `ErrExternalSignupInvalid`;
 3. resolves the stored identity again, **with no token**: if the identity is linked
@@ -366,8 +366,8 @@ link and no row of the application's own; the ticket expires in at most
 `SignupTicketTTL` anyway. The date of birth never reaches goAuth.
 
 Redis keys: `axs:<tenant>:<hex sha256 of the handle>` (JSON record, `SignupTicketTTL`),
-written by step one, read and deleted by `GETDEL` in step two, deleted by Cancel.
-`GETDEL` needs Redis 6.2 or later.
+written by step one, read and deleted by one script in step two, deleted by Cancel.
+The script runs on every supported Redis version (6.0 and later).
 
 ## Password-less accounts
 

@@ -33,7 +33,7 @@ that can need action (`EmailChange.Strategy: VerificationUUID` is rejected by `B
   `aprg:<tenant>:<user>` (newest password-reset code), plus the limiter keys of part 1.
   Part 4 adds `aevg:<tenant>:<user>` (newest verification code, or a tombstone),
   `aecu:<tenant>:<id>` (an email change requested by a pending account) and, only with
-  `DeferSignup`, `axs:<tenant>:<sha256(handle)>` (needs Redis 6.2 for `GETDEL`). The
+  `DeferSignup`, `axs:<tenant>:<sha256(handle)>`. The
   time-based `aeci:<tenant>:<user>` marker stays as the fallback for records with no
   pointer (issued by older instances).
 - **Rolling deploy.** v0.8.0 and v0.8.1 instances can share a Redis. The revocation
