@@ -10,6 +10,9 @@ type EmailVerificationUser struct {
 	UserID   string
 	TenantID string
 	Status   uint8
+	// Identifier is the address the account had when it was resolved. It is
+	// only read by RecheckIdentifier.
+	Identifier string
 }
 
 type EmailVerificationStoreRecord struct {
@@ -103,7 +106,11 @@ type EmailVerificationDeps struct {
 	// SupersedeVerifications makes verificationID the user's only valid
 	// verification record, so a request cancels the codes of earlier ones. It
 	// runs after the record is saved. Nil leaves earlier codes valid.
-	SupersedeVerifications    func(ctx context.Context, tenantID, userID, verificationID string, ttl time.Duration) error
+	SupersedeVerifications func(ctx context.Context, tenantID, userID, verificationID string, ttl time.Duration) error
+	// RecheckIdentifier, when set, runs after SupersedeVerifications and
+	// reports whether the account still has the identifier it was resolved
+	// with (see PasswordResetDeps.RecheckIdentifier). Nil skips the check.
+	RecheckIdentifier         func(ctx context.Context, tenantID, userID, identifier string) (bool, error)
 	ConsumeVerificationRecord func(context.Context, string, string, [32]byte, int, int) (EmailVerificationStoreRecord, error)
 
 	GenerateChallenge  func(int, int, string) (string, string, [32]byte, error)
@@ -327,6 +334,22 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 				}
 			})
 			return "", mapped
+		}
+	}
+
+	// See RunRequestPasswordReset: an email change that committed while this
+	// request was in flight must not leave a valid code for the old address.
+	if deps.RecheckIdentifier != nil {
+		same, recheckErr := deps.RecheckIdentifier(ctx, effectiveTenant, user.UserID, user.Identifier)
+		if recheckErr != nil || !same {
+			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, effectiveTenant, "", deps.Errors.EmailVerificationUnavailable, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"reason":     "identifier_changed",
+				}
+			})
+			return "", deps.Errors.EmailVerificationUnavailable
 		}
 	}
 

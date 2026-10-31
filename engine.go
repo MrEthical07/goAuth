@@ -2562,14 +2562,17 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}
-		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
+		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status), Identifier: user.Identifier}, nil
+	}
+	if e.emailChangeEnabled() {
+		deps.RecheckIdentifier = e.identifierUnchanged
 	}
 	deps.GetUserByIDInTenant = func(ctx context.Context, tenantID, userID string) (internalflows.EmailVerificationUser, error) {
 		user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}
-		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
+		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status), Identifier: user.Identifier}, nil
 	}
 }
 
@@ -2627,6 +2630,19 @@ func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID strin
 		Attempts:   record.Attempts,
 		Strategy:   record.Strategy,
 	}, nil
+}
+
+// identifierUnchanged reports whether the user still has identifier. A request
+// for a reset or verification code calls it after it has written its pointer,
+// while EmailChange is enabled: a change that committed in between has already
+// tombstoned the pointer, and the request's own write must not leave a valid
+// code for the old address on top of that tombstone.
+func (e *Engine) identifierUnchanged(ctx context.Context, tenantID, userID, identifier string) (bool, error) {
+	user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
+	if err != nil {
+		return false, err
+	}
+	return user.Identifier == identifier, nil
 }
 
 // supersedeResetCodes makes every password-reset code the user holds
@@ -3610,10 +3626,14 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 				return internalflows.PasswordResetUser{}, err
 			}
 			return internalflows.PasswordResetUser{
-				UserID:   user.UserID,
-				TenantID: user.TenantID,
-				Status:   uint8(user.Status),
+				UserID:     user.UserID,
+				TenantID:   user.TenantID,
+				Status:     uint8(user.Status),
+				Identifier: user.Identifier,
 			}, nil
+		}
+		if e.emailChangeEnabled() {
+			deps.RecheckIdentifier = e.identifierUnchanged
 		}
 		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.PasswordResetUser, error) {
 			user, err := e.lookupUserByID(ctx, userID)
