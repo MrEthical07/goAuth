@@ -229,7 +229,7 @@ func (e *Engine) requestEmailChange(ctx context.Context, userID, newEmail string
 		NewIdentifier:  newAddr,
 		AccountVersion: user.AccountVersion,
 		SecretHash:     secretHash,
-		ExpiresAt:      time.Now().Add(cfg.VerificationTTL).Unix(),
+		ExpiresAt:      e.now().Add(cfg.VerificationTTL).Unix(),
 		Strategy:       int(cfg.Strategy),
 	}
 	if err := e.emailChangeStore.Save(ctx, tenantID, rawID, record, cfg.VerificationTTL); err != nil {
@@ -342,7 +342,7 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 	// Written before the change so a failure here aborts it: the other order
 	// could leave an old reset code redeemable.
 	markerTTL := e.emailChangeMarkerTTL()
-	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, tenantID, record.UserID, time.Now(), markerTTL); err != nil {
+	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, tenantID, record.UserID, e.now(), markerTTL); err != nil {
 		return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, emailChangeReasonUnavailable, WrapAuthError(ErrSystemUnavailable, err))
 	}
 	if err := e.emailChangeProvider.UpdateIdentifier(ctx, tenantID, record.UserID, record.OldIdentifier, record.NewIdentifier); err != nil {
@@ -353,7 +353,7 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 	// old address while the provider call was running was issued after the
 	// first write and would otherwise slip past it. The change is done, so a
 	// failure here is logged, not returned.
-	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, tenantID, record.UserID, time.Now(), markerTTL); err != nil {
+	if err := e.emailChangeStore.MarkIdentifierChanged(ctx, tenantID, record.UserID, e.now(), markerTTL); err != nil {
 		e.warn("goAuth: email change committed but the identifier-change marker could not be refreshed; codes requested for the old address during the change are not refused")
 	}
 
@@ -428,7 +428,7 @@ func (e *Engine) revokeSessionsAfterEmailChange(ctx context.Context, challengeTe
 		keep := ""
 		if keepSessionID != "" {
 			if sess, err := e.sessionStore.Peek(ctx, tenant, keepSessionID); err == nil &&
-				sess.UserID == userID && sess.ExpiresAt > time.Now().Unix() {
+				sess.UserID == userID && sess.ExpiresAt > e.now().Unix() {
 				keep = keepSessionID
 			}
 		}

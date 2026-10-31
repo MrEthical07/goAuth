@@ -79,6 +79,33 @@ type Engine struct {
 	emailChangeLimiter    *limiters.EmailChangeLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
+
+	// clk is the injected time source; nil means the package default (the
+	// system clock). Read it only through now.
+	clk Clock
+}
+
+// now is the engine's time source: the clock given to [Builder.WithClock], or
+// the system clock. Every time-dependent decision the engine makes goes
+// through now or sessionNow, so an injected clock moves them all; latency
+// measurements are the one exception and read the wall clock directly.
+func (e *Engine) now() time.Time {
+	if e != nil && e.clk != nil {
+		return e.clk.Now()
+	}
+	return time.Now()
+}
+
+// sessionNow is now for the places that stamp or judge a session's life (and
+// the external ID-token checks). Without an injected clock it is the package
+// clock, which is the system clock unless a test in this module installed an
+// override with clock.Set; that older hook never moved token signing or the
+// challenge stores, and still does not.
+func (e *Engine) sessionNow() time.Time {
+	if e != nil && e.clk != nil {
+		return e.clk.Now()
+	}
+	return clock.Now()
 }
 
 // tenantScopedLookup reports whether user lookups must be scoped to the
@@ -1133,7 +1160,7 @@ func (e *Engine) initFlowDeps() {
 				mode, err := e.resolveRouteMode(RouteMode(routeMode))
 				return int(mode), err
 			},
-			Now:                       time.Now,
+			Now:                       e.now,
 			MaxClockSkew:              e.config.SessionHardening.MaxClockSkew,
 			ModeJWTOnly:               int(ModeJWTOnly),
 			ModeHybrid:                int(ModeHybrid),
@@ -1154,7 +1181,7 @@ func (e *Engine) initFlowDeps() {
 			ParseAccessAllowExpired: e.jwtManager.ParseAccessAllowExpired,
 			TenantIDFromContext:     tenantIDFromContext,
 			TenantIDFromToken:       tenantIDFromToken,
-			Now:                     time.Now,
+			Now:                     e.now,
 			SessionStore:            e.sessionStore,
 			PeekProfile:             e.logoutProfilePeeker(),
 		},
@@ -1436,7 +1463,7 @@ func (e *Engine) configureAccountLimiterDeps(deps *internalflows.AccountDeps, cf
 func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
 	deps := internalflows.AccountSessionDeps{
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 clock.Now,
+		Now:                 e.sessionNow,
 		NewSessionID: func() (string, error) {
 			sid, err := internal.NewSessionID()
 			if err != nil {
@@ -1819,7 +1846,7 @@ func (e *Engine) emitAudit(
 	}
 
 	event := AuditEvent{
-		Timestamp: time.Now().UTC(),
+		Timestamp: e.now().UTC(),
 		EventType: eventType,
 		UserID:    userID,
 		TenantID:  tenantID,
@@ -2408,7 +2435,8 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		ActiveStatus:        uint8(AccountActive),
 		PendingStatus:       uint8(AccountPendingVerification),
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 time.Now,
+		Now:                 e.now,
+		FloorNow:            time.Now,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
 		},
@@ -3009,7 +3037,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		TenantIDFromContext:       tenantIDFromContext,
 		ClientIPFromContext:       clientIPFromContext,
 		UserAgentFromContext:      userAgentFromContext,
-		Now:                       clock.Now,
+		Now:                       e.sessionNow,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
 		},
@@ -3471,7 +3499,8 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 		MaxAttempts:         cfg.PasswordReset.MaxAttempts,
 		RequireMFA:          cfg.TOTP.Enabled && (cfg.TOTP.RequireTOTPForPasswordReset || cfg.TOTP.RequireForPasswordReset),
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 time.Now,
+		Now:                 e.now,
+		FloorNow:            time.Now,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
 		},
@@ -3861,7 +3890,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	deps := internalflows.TOTPDeps{
 		Enabled:                 cfg.TOTP.Enabled,
 		EnforceReplayProtection: cfg.TOTP.EnforceReplayProtection,
-		Now:                     time.Now,
+		Now:                     e.now,
 		TenantIDFromContext:     tenantIDFromContext,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))

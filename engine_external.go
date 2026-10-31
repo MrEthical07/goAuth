@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/MrEthical07/goAuth/internal/clock"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/oidc"
@@ -127,6 +126,13 @@ func (g redisReplayGuard) SetNX(ctx context.Context, key string, ttl time.Durati
 // newExternalVerifier builds the token verifier for the configured providers.
 // It performs no network call.
 func newExternalVerifier(cfg Config, rdb redis.UniversalClient, client *http.Client) (*oidc.Verifier, error) {
+	return newExternalVerifierWithClock(cfg, rdb, client, nil)
+}
+
+// newExternalVerifierWithClock is newExternalVerifier with the engine's time
+// source for the exp, iat and nbf checks, the key cache and the replay TTLs;
+// nil is the package default.
+func newExternalVerifierWithClock(cfg Config, rdb redis.UniversalClient, client *http.Client, now func() time.Time) (*oidc.Verifier, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
@@ -136,6 +142,7 @@ func newExternalVerifier(cfg Config, rdb redis.UniversalClient, client *http.Cli
 		Leeway:        cfg.ExternalAuth.ClockLeeway,
 		KeyRefreshMin: cfg.ExternalAuth.KeyRefreshMin,
 		KeyMaxStale:   cfg.ExternalAuth.KeyMaxStale,
+		Now:           now,
 	})
 }
 
@@ -552,7 +559,7 @@ func (e *Engine) externalIdentityFor(claims *oidc.Claims, displayName string) Ex
 		EmailVerified:  claims.EmailVerified,
 		IsPrivateEmail: claims.IsPrivateEmail,
 		DisplayName:    displayName,
-		LinkedAt:       clock.Now(),
+		LinkedAt:       e.sessionNow(),
 	}
 }
 

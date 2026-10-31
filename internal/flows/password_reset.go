@@ -105,6 +105,11 @@ type PasswordResetDeps struct {
 	// no floor. SleepFor waits for a duration (nil: a context-aware sleep).
 	EnumerationFloor func() time.Duration
 	SleepFor         func(context.Context, time.Duration) error
+	// FloorNow is the time source the floor measures its elapsed time with.
+	// The floor is a real-time defence against timing measurement, so an
+	// engine with an injected test clock passes the wall clock here; nil falls
+	// back to Now.
+	FloorNow func() time.Time
 
 	VerifyTOTPForUser        func(context.Context, PasswordResetUser, string) error
 	VerifyBackupCodeInTenant func(context.Context, string, string, string) error
@@ -120,7 +125,7 @@ type PasswordResetDeps struct {
 
 func RunRequestPasswordReset(ctx context.Context, identifier string, deps PasswordResetDeps) (string, error) {
 	normalizePasswordResetDeps(&deps)
-	floor := startEnumerationFloor(deps.Now, deps.EnumerationFloor, deps.SleepFor)
+	floor := startEnumerationFloor(floorClock(deps.FloorNow, deps.Now), deps.EnumerationFloor, deps.SleepFor)
 
 	if !deps.Enabled {
 		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.PasswordResetDisabled, nil)

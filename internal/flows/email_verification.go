@@ -108,6 +108,11 @@ type EmailVerificationDeps struct {
 	// (nil: a context-aware sleep).
 	EnumerationFloor func() time.Duration
 	SleepFor         func(context.Context, time.Duration) error
+	// FloorNow is the time source the floor measures its elapsed time with.
+	// The floor is a real-time defence against timing measurement, so an
+	// engine with an injected test clock passes the wall clock here; nil falls
+	// back to Now.
+	FloorNow func() time.Time
 
 	MetricInc     func(int)
 	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
@@ -120,7 +125,7 @@ type EmailVerificationDeps struct {
 
 func RunRequestEmailVerification(ctx context.Context, identifier string, deps EmailVerificationDeps) (string, error) {
 	normalizeEmailVerificationDeps(&deps)
-	floor := startEnumerationFloor(deps.Now, deps.EnumerationFloor, deps.SleepFor)
+	floor := startEnumerationFloor(floorClock(deps.FloorNow, deps.Now), deps.EnumerationFloor, deps.SleepFor)
 
 	if !deps.Enabled {
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationDisabled, nil)

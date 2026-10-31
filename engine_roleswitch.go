@@ -3,10 +3,8 @@ package goAuth
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/MrEthical07/goAuth/internal"
-	"github.com/MrEthical07/goAuth/internal/clock"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/session"
@@ -207,7 +205,7 @@ func (e *Engine) refreshPreCheck() *internalflows.RefreshPreCheck {
 	}
 	pc := &internalflows.RefreshPreCheck{
 		Peek:             e.sessionStore.Peek,
-		Now:              clock.Now,
+		Now:              e.sessionNow,
 		StoreUnavailable: session.ErrRedisUnavailable,
 	}
 	if enforceDevice {
@@ -266,7 +264,7 @@ func (e *Engine) refreshRoleRecheck() *internalflows.RefreshRoleRecheck {
 	return &internalflows.RefreshRoleRecheck{
 		Peek:          e.sessionStore.Peek,
 		CanAssumeRole: e.roleSwitchProvider.CanAssumeRole,
-		Now:           clock.Now,
+		Now:           e.sessionNow,
 	}
 }
 
@@ -277,7 +275,7 @@ func (e *Engine) roleSwitchFlowDeps() internalflows.RoleSwitchDeps {
 
 	deps := internalflows.RoleSwitchDeps{
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 clock.Now,
+		Now:                 e.sessionNow,
 		DecodeRefreshToken:  internal.DecodeRefreshToken,
 		NewRefreshSecret:    internal.NewRefreshSecret,
 		HashRefreshSecret:   internal.HashRefreshSecret,
@@ -453,7 +451,7 @@ func (e *Engine) recordLoginAssurance(ctx context.Context, tenantID, refreshToke
 		e.warn("goAuth: session assurance skipped; refresh token undecodable")
 		return
 	}
-	now := time.Now().Unix()
+	now := e.now().Unix()
 	assurance := session.Assurance{MFAAt: now, MFAMethod: method, AuthAt: now}
 	ttl := e.sessionLifetimeFor(rememberMe)
 	if profile := internalflows.ResolvedSessionProfile(ctx); profile != "" {

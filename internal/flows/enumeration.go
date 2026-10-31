@@ -19,6 +19,15 @@ type enumerationFloor struct {
 	sleep func(context.Context, time.Duration) error
 }
 
+// floorClock picks the time source of an enumeration floor: floorNow when set,
+// otherwise now.
+func floorClock(floorNow, now func() time.Time) func() time.Time {
+	if floorNow != nil {
+		return floorNow
+	}
+	return now
+}
+
 // startEnumerationFloor draws the floor and starts the clock.
 func startEnumerationFloor(
 	now func() time.Time,
