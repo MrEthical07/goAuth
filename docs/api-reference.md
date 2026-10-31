@@ -36,6 +36,8 @@ The root package contains the authentication engine, builder, configuration, typ
 | `WithMetricsEnabled` | method | Enables in-process counter metrics. |
 | `WithLatencyHistograms` | method | Enables latency histogram recording. |
 | `WithHTTPClient` | method | Sets the `*http.Client` used to fetch external identity providers' signing keys (default: 5-second timeout). See [external_identity.md](external_identity.md). |
+| `WithClock` | method | `(c Clock) *Builder`. Replaces the time the engine reads (`nil` = the system clock). Per engine; for tests. See [testing.md](testing.md). |
+| `Clock` | interface | `Now() time.Time`, the argument of `WithClock`. |
 | `Build` | method | Validates config and returns a ready `*Engine`. |
 
 ### Authentication

@@ -55,6 +55,7 @@ ctx = goAuth.WithUserAgent(ctx, "my-app/1.0")
 | `WithAuditSink` | `b.WithAuditSink(sink)` | `sink AuditSink` | `*Builder`; required when `cfg.Audit.Enabled == true` |
 | `WithMetricsEnabled` | `b.WithMetricsEnabled(enabled)` | `enabled bool` | `*Builder`; toggles in-process metrics |
 | `WithLatencyHistograms` | `b.WithLatencyHistograms(enabled)` | `enabled bool` | `*Builder`; toggles latency histograms |
+| `WithClock` | `b.WithClock(clock)` | `clock Clock` (`Now() time.Time`); `nil` = system clock | `*Builder`; per-engine time source for tests. Redis key lifetimes stay real: advance miniredis by the same amount. See [testing.md](testing.md) |
 | `WithHTTPClient` | `b.WithHTTPClient(client)` | `client *http.Client` | `*Builder`; client for external identity providers' key fetches (default 5s timeout); nothing is fetched at `Build` |
 | `Build` | `b.Build()` | none | `(*Engine, error)`; validates config and builds immutable engine |
 

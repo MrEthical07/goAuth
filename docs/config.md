@@ -385,6 +385,12 @@ engine**:
 > performs no Redis lookup by itself — it is identical to `ModeJWTOnly` unless the
 > route is explicitly validated in `ModeStrict`.
 
+## Time source (`Builder.WithClock`)
+
+Not a `Config` field: the engine's clock is chosen on the builder, `WithClock(c Clock)`, with `Clock` being `interface{ Now() time.Time }`. The default (`nil`) is the system clock, and an engine built without it behaves exactly as before.
+
+It is per engine and governs session creation and expiry, idle windows and profile ceilings, JWT issue and validation, the expiry of reset, verification, email-change, MFA and sign-up challenges, external ID-token checks and replay TTLs, the sliding-window limiter buckets and the `now` passed to the Redis scripts. It does **not** move Redis: key lifetimes are Redis's own time, so with miniredis advance the clock and `FastForward` by the same amount; a real Redis cannot be time-travelled. Intended for tests; safe in production only with a clock that is monotonic and tracks real time. See [testing.md](testing.md).
+
 ## Config Validation
 
 `Config.Validate()` is called automatically by `Builder.Build()`. It checks:
