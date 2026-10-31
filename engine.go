@@ -2532,6 +2532,13 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
 			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
 		}
+		deps.UpdateStatus = func(ctx context.Context, userID string, status uint8) error {
+			if e.userProvider == nil {
+				return ErrEngineNotReady
+			}
+			_, err := e.userProvider.UpdateAccountStatus(ctx, userID, AccountStatus(status))
+			return err
+		}
 		if e.statusCAS != nil {
 			deps.UpdateStatusIf = func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error) {
 				return e.statusCAS.UpdateAccountStatusIf(ctx, tenantID, userID, AccountStatus(expected), AccountStatus(next))

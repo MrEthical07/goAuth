@@ -93,7 +93,10 @@ type EmailVerificationDeps struct {
 	// UpdateStatusAndInvalidate for the pending-to-active transition: the
 	// status is written only if it is still the expected one, and the user's
 	// sessions are ended after a write that applied.
-	UpdateStatusIf     func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error)
+	UpdateStatusIf func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error)
+	// UpdateStatus writes a status without touching sessions. Only
+	// ActivatePendingAccountKeepSessions uses it.
+	UpdateStatus       func(ctx context.Context, userID string, status uint8) error
 	InvalidateSessions func(ctx context.Context, tenantID, userID string) error
 
 	SaveVerificationRecord func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
@@ -615,6 +618,37 @@ func activatePendingAccount(ctx context.Context, tenantID string, user EmailVeri
 		return outcome, err
 	}
 	return activationDone, deps.UpdateStatusAndInvalidate(scoped, user.UserID, deps.ActiveStatus)
+}
+
+// ActivatePendingAccountKeepSessions is activatePendingAccount for a caller
+// that settles the account's sessions itself (a confirmed email change): the
+// same compare-and-set, or re-read and write only from pending, but no session
+// is invalidated. It reports whether the account was found Active already, in
+// which case nothing was written; a blocking status is returned as its error.
+func ActivatePendingAccountKeepSessions(ctx context.Context, tenantID, userID string, deps EmailVerificationDeps) (alreadyActive bool, err error) {
+	normalizeEmailVerificationDeps(&deps)
+	scoped := deps.WithTenant(ctx, tenantID)
+
+	if deps.UpdateStatusIf != nil {
+		applied, err := deps.UpdateStatusIf(scoped, tenantID, userID, deps.PendingStatus, deps.ActiveStatus)
+		if err != nil {
+			return false, err
+		}
+		if applied {
+			return false, nil
+		}
+		outcome, err := judgeStatusBeforeActivation(ctx, tenantID, userID, deps)
+		return outcome == activationAlreadyActive, err
+	}
+
+	outcome, err := judgeStatusBeforeActivation(ctx, tenantID, userID, deps)
+	if err != nil || outcome == activationAlreadyActive {
+		return outcome == activationAlreadyActive, err
+	}
+	if deps.UpdateStatus == nil {
+		return false, deps.Errors.EmailVerificationUnavailable
+	}
+	return false, deps.UpdateStatus(scoped, userID, deps.ActiveStatus)
 }
 
 // judgeStatusBeforeActivation reads the account and reports whether it can

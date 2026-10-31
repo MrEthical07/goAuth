@@ -494,6 +494,12 @@ type EmailChangeResult struct {
 	NewEmail string
 	// SessionsRevoked reports whether the user's other sessions were revoked.
 	SessionsRevoked bool
+	// WasUnverified is true when the account was still pending verification
+	// when the change was requested. Its old address was never proven to belong
+	// to the user, so the application MUST NOT send the old-address notice
+	// (OldEmail is not a verified owner); the confirmed code proved the new
+	// address, so the account is now Active and no verification mail is needed.
+	WasUnverified bool
 }
 
 // ExternalLoginOptions carries the per-sign-in inputs of

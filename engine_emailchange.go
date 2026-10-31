@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/redis/go-redis/v9"
@@ -44,6 +45,10 @@ const (
 	emailChangeReasonInUse       = "in_use"
 	emailChangeReasonUnavailable = "unavailable"
 	emailChangeReasonRecovery    = "recovery"
+
+	// emailChangeMetaWasUnverified marks the requested and confirmed events of
+	// a change made by an account that was still pending verification.
+	emailChangeMetaWasUnverified = "account_was_unverified"
 
 	maxEmailLength = 254
 )
@@ -202,8 +207,13 @@ func (e *Engine) requestEmailChange(ctx context.Context, userID, newEmail string
 	}
 	tenantID := e.emailChangeTenant(ctx, user)
 
-	if statusErr := emailChangeStatusError(user.Status); statusErr != nil {
-		return nil, e.emailChangeFail(ctx, tenantID, userID, stage, emailChangeReasonStatus, statusErr)
+	// A pending account may change its address while email verification is on:
+	// the code mailed to the new address is then the verification.
+	pendingOK := user.Status == AccountPendingVerification && e.config.EmailVerification.Enabled
+	if !pendingOK {
+		if statusErr := emailChangeStatusError(user.Status); statusErr != nil {
+			return nil, e.emailChangeFail(ctx, tenantID, userID, stage, emailChangeReasonStatus, statusErr)
+		}
 	}
 	newAddr, ok := normalizeNewEmail(newEmail)
 	if !ok {
@@ -232,15 +242,23 @@ func (e *Engine) requestEmailChange(ctx context.Context, userID, newEmail string
 		ExpiresAt:      e.now().Add(cfg.VerificationTTL).Unix(),
 		Strategy:       int(cfg.Strategy),
 	}
-	if err := e.emailChangeStore.Save(ctx, tenantID, rawID, record, cfg.VerificationTTL); err != nil {
+	save := e.emailChangeStore.Save
+	if pendingOK {
+		save = e.emailChangeStore.SaveUnverified
+	}
+	if err := save(ctx, tenantID, rawID, record, cfg.VerificationTTL); err != nil {
 		return nil, e.emailChangeFail(ctx, tenantID, userID, stage, emailChangeReasonUnavailable, WrapAuthError(ErrSystemUnavailable, err))
 	}
 
 	e.emitAudit(ctx, auditEventEmailChangeRequested, true, user.UserID, tenantID, "", nil, func() map[string]string {
-		return map[string]string{
+		meta := map[string]string{
 			"old_email": maskEmail(user.Identifier),
 			"new_email": maskEmail(newAddr),
 		}
+		if pendingOK {
+			meta[emailChangeMetaWasUnverified] = "true"
+		}
+		return meta
 	})
 	return &EmailChangeRequest{VerificationID: tenantID + ":" + rawID, Code: parts[2]}, nil
 }
@@ -331,8 +349,22 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 		}
 		return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, emailChangeReasonUnavailable, err)
 	}
-	if statusErr := emailChangeStatusError(user.Status); statusErr != nil {
-		return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, emailChangeReasonStatus, statusErr)
+	// A challenge requested by a pending account may be confirmed while the
+	// account is still pending (the code proves the new address, which is the
+	// verification) or after it became Active through the old address (then it
+	// is the ordinary flow). Anything else is refused as before.
+	wasUnverified := false
+	if user.Status == AccountPendingVerification && e.config.EmailVerification.Enabled {
+		flagged, flagErr := e.emailChangeStore.WasUnverified(ctx, tenantID, rawID)
+		if flagErr != nil {
+			return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, emailChangeReasonUnavailable, WrapAuthError(ErrSystemUnavailable, flagErr))
+		}
+		wasUnverified = flagged
+	}
+	if !wasUnverified {
+		if statusErr := emailChangeStatusError(user.Status); statusErr != nil {
+			return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, emailChangeReasonStatus, statusErr)
+		}
 	}
 	if user.AccountVersion != record.AccountVersion || user.Identifier != record.OldIdentifier {
 		return nil, e.emailChangeFail(ctx, tenantID, record.UserID, stage, emailChangeReasonStale, ErrEmailChangeStale)
@@ -356,23 +388,61 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 		e.warn("goAuth: email change committed but outstanding reset and verification codes could not be superseded; codes requested for the old address during the change are not refused")
 	}
 
-	result := &EmailChangeResult{UserID: record.UserID, OldEmail: record.OldIdentifier, NewEmail: record.NewIdentifier}
+	result := &EmailChangeResult{UserID: record.UserID, OldEmail: record.OldIdentifier, NewEmail: record.NewIdentifier, WasUnverified: wasUnverified}
+	// The confirmed code proved the new address: that is the verification. A
+	// failure here leaves the address changed and the account pending, which the
+	// caller learns from the error returned with the result.
+	var activateErr error
+	if wasUnverified {
+		activateErr = e.activateAfterEmailChange(ctx, tenantID, record.UserID)
+	}
 	var revokeErr error
 	if !cfg.KeepOtherSessions {
 		revokeErr = e.revokeSessionsAfterEmailChange(ctx, tenantID, user.TenantID, record.UserID, opts.KeepSessionID)
 		result.SessionsRevoked = revokeErr == nil
 	}
 	e.emitAudit(ctx, auditEventEmailChangeConfirmed, true, record.UserID, tenantID, "", nil, func() map[string]string {
-		return map[string]string{
+		meta := map[string]string{
 			"old_email":        maskEmail(record.OldIdentifier),
 			"new_email":        maskEmail(record.NewIdentifier),
 			"sessions_revoked": boolString(result.SessionsRevoked),
 		}
+		if wasUnverified {
+			meta[emailChangeMetaWasUnverified] = "true"
+		}
+		return meta
 	})
+	var errs []error
+	if activateErr != nil {
+		errs = append(errs, activateErr)
+	}
 	if revokeErr != nil {
-		return result, errors.Join(ErrSessionInvalidationFailed, revokeErr)
+		errs = append(errs, ErrSessionInvalidationFailed, revokeErr)
+	}
+	if len(errs) > 0 {
+		return result, errors.Join(errs...)
 	}
 	return result, nil
+}
+
+// activateAfterEmailChange moves the account from PendingVerification to Active
+// once the confirmed code has proved the new address. It uses the optional
+// AccountStatusCASUpdater when the provider has one and otherwise re-reads the
+// account and writes only if it is still pending, as email verification does,
+// so a disable or lock that landed since the account was loaded stays in force.
+// It never touches sessions: ConfirmEmailChange settles them with the rule of
+// the verified flow. The error is the one a blocking status maps to, or a
+// system-unavailable failure.
+func (e *Engine) activateAfterEmailChange(ctx context.Context, tenantID, userID string) error {
+	_, err := internalflows.ActivatePendingAccountKeepSessions(ctx, tenantID, userID, e.emailVerificationFlowDeps())
+	if err == nil {
+		return nil
+	}
+	var authErr *AuthError
+	if errors.As(err, &authErr) {
+		return err
+	}
+	return WrapAuthError(ErrSystemUnavailable, err)
 }
 
 // emailChangeConsumeFailure maps a store error to the audit reason and the
