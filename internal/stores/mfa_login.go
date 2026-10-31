@@ -54,6 +54,14 @@ type MFALoginChallenge struct {
 type MFALoginChallengeStore struct {
 	redis  redis.UniversalClient
 	prefix string
+	now    func() time.Time
+}
+
+// WithClock sets the time source the store compares challenge expiry against
+// (the wall clock by default) and returns the store. Call it before use.
+func (s *MFALoginChallengeStore) WithClock(now func() time.Time) *MFALoginChallengeStore {
+	s.now = nowFn(now)
+	return s
 }
 
 func NewMFALoginChallengeStore(redisClient redis.UniversalClient, prefix string) *MFALoginChallengeStore {
@@ -63,6 +71,7 @@ func NewMFALoginChallengeStore(redisClient redis.UniversalClient, prefix string)
 	return &MFALoginChallengeStore{
 		redis:  redisClient,
 		prefix: prefix,
+		now:    time.Now,
 	}
 }
 
@@ -99,7 +108,7 @@ func (s *MFALoginChallengeStore) Get(ctx context.Context, challengeID string) (*
 	if err != nil {
 		return nil, err
 	}
-	if time.Now().Unix() > record.ExpiresAt {
+	if s.now().Unix() > record.ExpiresAt {
 		_, _ = s.redis.Del(ctx, s.key(challengeID)).Result()
 		return nil, ErrMFALoginChallengeExpired
 	}
@@ -215,7 +224,7 @@ return attempts
 // ErrMFALoginChallengeExceeded; a missing challenge is
 // ErrMFALoginChallengeNotFound and an expired one ErrMFALoginChallengeExpired.
 func (s *MFALoginChallengeStore) ReserveAttempt(ctx context.Context, challengeID string, limit int) (int, error) {
-	res, err := reserveAttemptScript.Run(ctx, s.redis, []string{s.key(challengeID)}, limit, time.Now().Unix()).Int64()
+	res, err := reserveAttemptScript.Run(ctx, s.redis, []string{s.key(challengeID)}, limit, s.now().Unix()).Int64()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrMFALoginChallengeBackend, err)
 	}

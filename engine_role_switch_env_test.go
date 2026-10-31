@@ -34,6 +34,7 @@ type rsEnv struct {
 	cfg    Config
 	tenant string
 	cmds   *redisCommandLog
+	clk    Clock // nil unless a test installed one with rsClock
 }
 
 type rsOption func(*rsEnv, *Config)
@@ -43,6 +44,11 @@ func rsMultiTenant() rsOption {
 		cfg.MultiTenant.Enabled = true
 		env.tenant = "tenant-a"
 	}
+}
+
+// rsClock builds the engine with WithClock(c).
+func rsClock(c Clock) rsOption {
+	return func(env *rsEnv, _ *Config) { env.clk = c }
 }
 
 func rsConfig(mutate func(*Config)) rsOption {
@@ -171,6 +177,7 @@ func newRSEnv(t *testing.T, opts ...rsOption) *rsEnv {
 		}).
 		WithUserProvider(env.up).
 		WithAuditSink(env.sink).
+		WithClock(env.clk).
 		Build()
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)

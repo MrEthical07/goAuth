@@ -30,6 +30,8 @@ type PasswordVerifyConfig struct {
 	Cooldown    time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 // PasswordVerifyLimiter rate-limits password-verification attempts for a
@@ -54,7 +56,7 @@ func NewPasswordVerifyLimiter(redisClient redis.UniversalClient, cfg PasswordVer
 		cd = defaultPasswordVerifyCooldown
 	}
 	return &PasswordVerifyLimiter{
-		window:      window.New(redisClient, cfg.WindowMode),
+		window:      window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now),
 		maxAttempts: int64(max),
 		cooldown:    cd,
 	}

@@ -36,6 +36,8 @@ The root package contains the authentication engine, builder, configuration, typ
 | `WithMetricsEnabled` | method | Enables in-process counter metrics. |
 | `WithLatencyHistograms` | method | Enables latency histogram recording. |
 | `WithHTTPClient` | method | Sets the `*http.Client` used to fetch external identity providers' signing keys (default: 5-second timeout). See [external_identity.md](external_identity.md). |
+| `WithClock` | method | `(c Clock) *Builder`. Replaces the time the engine reads (`nil` = the system clock). Per engine; for tests. See [testing.md](testing.md). |
+| `Clock` | interface | `Now() time.Time`, the argument of `WithClock`. |
 | `Build` | method | Validates config and returns a ready `*Engine`. |
 
 ### Authentication
@@ -69,8 +71,12 @@ Sign in with a Google, Sign in with Apple or OIDC ID token the application alrea
 
 | Symbol | Kind | Description |
 |--------|------|-------------|
-| `LoginWithExternalIdentity` | method | `(ctx, provider, idToken string, opts ExternalLoginOptions) (*LoginResult, error)`. Verifies the token, resolves/links/creates the account, then continues like a password login (status, session hardening, MFA, session issue). `LoginResult` gains `NewAccount` and `LinkedIdentity`. |
-| `ExternalLoginOptions` | struct | `Nonce` (required, the raw nonce the server issued), `DisplayName` (passed to the provider on sign-up), `RememberMe`. |
+| `LoginWithExternalIdentity` | method | `(ctx, provider, idToken string, opts ExternalLoginOptions) (*LoginResult, error)`. Verifies the token, resolves/links/creates the account, then continues like a password login (status, session hardening, MFA, session issue). `LoginResult` gains `NewAccount`, `LinkedIdentity` and `ExternalSignup` (non-nil only for a deferred sign-up: no account, no tokens). |
+| `ExternalLoginOptions` | struct | `Nonce` (required, the raw nonce the server issued), `DisplayName` (passed to the provider on sign-up), `RememberMe`, `DeferSignup` (with `AllowSignup`: stop at account creation and return a ticket). |
+| `CompleteExternalSignup` | method | `(ctx, handle string, opts ExternalSignupOptions) (*LoginResult, error)`. Step two of a two-step sign-up: consumes the single-use handle, creates the account, signs in (`NewAccount = true`). `ErrExternalSignupInvalid` for an unknown, used, expired or foreign handle. See [external_identity.md](external_identity.md#two-step-sign-up). |
+| `CancelExternalSignup` | method | `(ctx, handle string) error`. Discards a handle; idempotent. |
+| `ExternalSignupOptions` | struct | `DisplayName` (replaces the step-one name when non-empty), `RememberMe`. |
+| `ExternalSignupTicket` | struct | `Handle` (single-use bearer secret; redacted when printed or logged), `Provider`, `Subject`, `Email`, `EmailVerified`, `IsPrivateEmail`, `DisplayName`, `ExpiresAt`. Returned in `LoginResult.ExternalSignup`. |
 | `LinkExternalIdentity` | method | `(ctx, userID, provider, idToken, nonce string) (*ExternalIdentity, error)`. Links an identity to the authenticated user; idempotent; `ErrExternalIdentityInUse` if another user has it. |
 | `UnlinkExternalIdentity` | method | `(ctx, userID, provider, subject string) error`. `ErrLastLoginMethod` when the user has no password and this is their only identity. |
 | `ListExternalIdentities` | method | `(ctx, userID string) ([]ExternalIdentity, error)`. |
@@ -78,7 +84,7 @@ Sign in with a Google, Sign in with Apple or OIDC ID token the application alrea
 | `ExternalIdentity` | struct | `Provider`, `Subject`, `Email`, `EmailVerified`, `IsPrivateEmail`, `DisplayName`, `LinkedAt`. |
 | `ExternalIdentityProvider` | interface | Optional `UserProvider` capability (required when `ExternalAuth.Enabled`): `GetUserByExternalIdentity`, `CreateUserWithExternalIdentity`, `LinkExternalIdentity`, `UnlinkExternalIdentity`, `ListExternalIdentities`, all tenant-scoped; unique `(tenant, provider, subject)`. |
 | `ExternalAuthConfig`, `ExternalProviderConfig` | type | `Config.ExternalAuth`. `ExternalKindGoogle`, `ExternalKindApple`, `ExternalKindOIDC` are the `Kind` values. |
-| `ErrExternalAuthDisabled`, `ErrExternalProviderUnknown`, `ErrExternalTokenInvalid`, `ErrExternalTokenReplayed`, `ErrExternalProviderUnavailable`, `ErrExternalEmailUnverified`, `ErrExternalAccountNotFound`, `ErrExternalAccountLinkRequired`, `ErrExternalLinkRequiresVerification`, `ErrExternalIdentityInUse`, `ErrLastLoginMethod`, `ErrExternalLoginRateLimited` | var | External sign-in sentinels (see [error-model.md](error-model.md)). |
+| `ErrExternalAuthDisabled`, `ErrExternalProviderUnknown`, `ErrExternalTokenInvalid`, `ErrExternalTokenReplayed`, `ErrExternalProviderUnavailable`, `ErrExternalEmailUnverified`, `ErrExternalAccountNotFound`, `ErrExternalAccountLinkRequired`, `ErrExternalLinkRequiresVerification`, `ErrExternalIdentityInUse`, `ErrExternalSignupInvalid`, `ErrLastLoginMethod`, `ErrExternalLoginRateLimited` | var | External sign-in sentinels (see [error-model.md](error-model.md)). |
 | `ErrPasswordNotSet` | var | `ChangePassword` / `VerifyPassword` on an account that has no password. |
 
 ### Email Change
@@ -88,9 +94,9 @@ Opt-in change of an account's email address with proof of the new one. Off by de
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `RequestEmailChange` | method | `(ctx, userID, newEmail string) (*EmailChangeRequest, error)`. Stores a challenge bound to the user, the old and new identifiers and the account version; the app sends `Code` to the NEW address. Does not reveal whether the address is taken. |
-| `ConfirmEmailChange` | method | `(ctx, verificationID, code string, opts ConfirmEmailChangeOptions) (*EmailChangeResult, error)`. Verifies the code, installs the address through `EmailChangeProvider`, revokes other sessions unless `KeepOtherSessions`. |
+| `ConfirmEmailChange` | method | `(ctx, verificationID, code string, opts ConfirmEmailChangeOptions) (*EmailChangeResult, error)`. Verifies the code, installs the address through `EmailChangeProvider`, revokes other sessions unless `KeepOtherSessions`. Accepts an account that was pending verification while `EmailVerification.Enabled` and activates it; if the activation fails the result is returned together with the error. |
 | `CancelEmailChange` | method | `(ctx, userID string) error`. Idempotent. |
-| `EmailChangeRequest`, `ConfirmEmailChangeOptions`, `EmailChangeResult` | struct | `{VerificationID, Code}`, `{KeepSessionID}`, `{UserID, OldEmail, NewEmail, SessionsRevoked}`. |
+| `EmailChangeRequest`, `ConfirmEmailChangeOptions`, `EmailChangeResult` | struct | `{VerificationID, Code}`, `{KeepSessionID}`, `{UserID, OldEmail, NewEmail, SessionsRevoked, WasUnverified}`. `WasUnverified` is true when the account was pending verification: the confirmed code verified the new address, and the application must not send the old-address notice. |
 | `EmailChangeProvider` | interface | Optional `UserProvider` capability (required when `EmailChange.Enabled`): `UpdateIdentifier(ctx, tenantID, userID, oldIdentifier, newIdentifier)` is a tenant-scoped compare-and-set that bumps `AccountVersion`. |
 | `EmailChangeConfig` | type | `Config.EmailChange`. |
 | `ErrEmailChangeDisabled`, `ErrEmailChangeInvalid`, `ErrEmailChangeStale`, `ErrEmailInUse`, `ErrEmailChangeRateLimited` | var | Email-change sentinels (403, 400, 409, 409, 429). |

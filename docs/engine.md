@@ -17,6 +17,7 @@ The `Engine` is the runtime API surface of goAuth. It orchestrates all authentic
 | `WithRoles` | `(b *Builder) WithRoles(r map[string][]string) *Builder` | Map roles → permissions |
 | `WithUserProvider` | `(b *Builder) WithUserProvider(up UserProvider) *Builder` | Set user persistence. The provider may additionally implement the optional capability interfaces `TenantAwareUserProvider` (required when `MultiTenant.Enabled`, see [multi_tenancy.md](multi_tenancy.md)) and `WebAuthnCredentialProvider` (required when `WebAuthn.Enabled`) |
 | `WithAuditSink` | `(b *Builder) WithAuditSink(sink AuditSink) *Builder` | Set audit sink |
+| `WithClock` | `(b *Builder) WithClock(c Clock) *Builder` | Replace the time the engine reads (tests; see [testing.md](testing.md)) |
 | `Build()` | `(b *Builder) Build() (*Engine, error)` | Validate config, freeze registry, start background workers |
 
 ### Authentication

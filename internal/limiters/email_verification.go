@@ -22,6 +22,8 @@ type EmailVerificationConfig struct {
 	MaxAttempts                 int
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 type EmailVerificationLimiter struct {
@@ -31,7 +33,7 @@ type EmailVerificationLimiter struct {
 
 func NewEmailVerificationLimiter(redisClient redis.UniversalClient, cfg EmailVerificationConfig) *EmailVerificationLimiter {
 	return &EmailVerificationLimiter{
-		window: window.New(redisClient, cfg.WindowMode),
+		window: window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now),
 		config: cfg,
 	}
 }

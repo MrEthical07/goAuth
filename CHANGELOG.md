@@ -7,18 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.8.1] - 2026-10-27
+## [0.8.1] - 2026-10-31
 
 **Security release. Upgrading from v0.8.0 is recommended, and v0.8.0 is retracted**
 (`retract v0.8.0` in `go.mod`: MFA-login TOTP guessing was not limited per account;
 fixed in v0.8.1). It contains the fixes for the second security audit of v0.8.0
-(findings `R2-xx`), delivered as three pull requests. No exported signature changed:
+(findings `R2-xx`), delivered as three pull requests, plus four changes requested by
+the first application to adopt v0.8.0 (part 4, "Dressin request G-4" below). No exported
+signature changed:
 `gorelease -base=v0.8.0` reports only compatible changes, and every capability the
 fixes add is optional (new interfaces are detected by type assertion, new
 configuration keeps today's behavior unless a line below says otherwise).
 v0.8.0 and v0.8.1 can share a Redis during a rolling deploy; no stored format
 changed (read the notes under part 2 for what the revocation fence covers while
 both versions run).
+
+### Security review
+
+v0.8.0 was tagged before goAuth's own security review had finished. The review ran in
+three rounds, and v0.8.1 is what it produced:
+
+- **Run 1**: a single-agent exploratory pass over the v0.8.0 release candidate
+  (`a042dac`). It had no independent verification; its findings were carried into run 2.
+- **Run 2**: a full multi-agent audit of the same commit with independent verification of
+  every record: **29 confirmed findings (1 high, 10 medium, 18 low) and 1 needs-validation
+  record** (unbounded identifiers in queued audit events).
+- **Run 3**: verification of every run-2 record against the v0.8.1 fixes, plus a hunt for
+  defects the fixes introduced. Of the 30 run-2 records, **10 are fixed, 15 are fixed with
+  a documented residual and 5 are partially fixed**; none is unfixed, and the review found
+  **no regression** introduced by a fix. It recorded **5 new low-severity residuals**, each
+  of a defect class that already existed in v0.8.0.
+
+v0.8.1 contains the fixes for all run-2 findings. What remains is listed next: each item
+is low severity, needs the conditions stated, and is fixed in a later release.
+
+### Known residuals (low severity, fixed in a later release)
+
+One line each, with the conditions and the workaround, if any.
+
+- **R2-12, auto-lockout's revocation is not retried.** When auto-lockout locks an account
+  and Redis fails at the single revocation that follows, the account is Locked but its
+  earlier sessions live until they expire; only the audit event records it. Workaround:
+  call `LockAccount` again (it revokes on every call) or `InvalidateUserSessions`.
+- **R2-16, the auto-lockout write has no source-state guard.** An administrator's
+  disable or delete that lands between the login's status read and the lock write is
+  overwritten with Locked, so `UnlockAccount` then yields Active. Narrow window; no
+  provider capability closes it yet. Workaround: do not unlock accounts an administrator
+  disabled; re-apply the disable.
+- **R2-18 and C2, timing with hashes made under an older Argon2 cost.** After you raise
+  `Password.Memory/Time/Parallelism`, an account whose stored hash is cheaper than the
+  configured cost (or does not parse as Argon2) answers a wrong password faster than an
+  unknown identifier, until its owner logs in and `UpgradeOnLogin` rewrites the hash.
+  Needs a cost change and enough probes within the login limiters. Workaround: force a
+  rehash or expire stale hashes after changing the parameters.
+- **R2-25 and C1, `ChangePassword` does not supersede reset codes.** A party holding an
+  unredeemed reset code can redeem it within `ResetTTL` after the owner changed the
+  password with `ChangePassword` (not after a completed reset, which does supersede).
+  With `PasswordReset.RequireMFA` they also need the second factor. Workaround: a short
+  `ResetTTL`, or `RequireMFA`. The helper that fixes it (`supersedeResetCodes`) is in
+  this release and is wired to email change; wiring it to `ChangePassword` follows.
+- **R2-NV1, C4 and C7, audit identifiers.** The 320-byte truncation of an identifier
+  keeps the caller's full string alive while the event is queued (C7), and the
+  email-verification confirm audits an unbounded `verification_id` for the Token and UUID
+  strategies (C4). Needs `Audit.Enabled`, a stalled or slow sink and a host that accepts
+  large fields: retention of about `Audit.BufferSize` times the accepted size. Workaround:
+  cap request fields at your HTTP layer, keep the sink draining, lower `BufferSize`.
+- **C3, expired sessions count toward the per-user cap.** With `MaxSessionsPerUser` or
+  `ConcurrentLoginLimit` set, sessions that expire by TTL without a logout keep counting
+  until a revocation clears the user's set, so the owner's own login can be refused
+  (`ErrSessionLimitExceeded`). Workaround: `LogoutAll` for the user, or leave the caps off.
+- **R2-21 headline overstated.** The reset, verification, account-creation and login
+  limiter keys are digests (below), but the external sign-in limiter keys
+  (`rl:extlogin:ip:*`, `rl:extlogin:sub:*`) carry the client address exactly as given to
+  `WithClientIP`, as do a few limiters keyed by a server-resolved user ID. Exploitable
+  only if the host feeds an unvalidated header into `WithClientIP`. Workaround: give it
+  only an address from your own proxy chain.
+- **R2-28 residual, a refused save can still purge.** In single-session mode the script
+  that stores a session ends the user's other sessions before it checks the tenant cap,
+  so a save refused for the tenant cap still ends them; this needs a valid second factor
+  and a race between the engine's pre-check and the save. Workaround: do not combine
+  `EnforceSingleSession` with `MaxSessionsPerTenant`.
+- **R2-11, a documentation gap.** `docs/session.md` ("Guarantees") still lists
+  permission, role and account version drift without the caveat that strict `Validate`
+  compares the token with the session only. The behavior is as described under R2-11
+  below; use `Security.RecheckUserOnRefresh` and `InvalidateUserSessions`.
 
 ### Behavior changes when upgrading from v0.8.0
 
@@ -95,6 +167,23 @@ below and in `docs/migrations.md`.
   (both INFO) for every config that has not enabled those options. Redis traffic:
   see the Redis keys listed in each part.
 
+*Dressin request G-4 (part 4)*
+
+- A reset or verification code requested for the new address in the same second as a
+  confirmed email change: accepted by the mailer and then refused at confirm → valid.
+  A code requested before the change is still refused. Supersession is decided by write
+  order, not by time. (G-4 2.4)
+- `RequestEmailVerification`: every earlier code stayed valid → only the newest request's
+  code redeems, as for password reset.
+- `RequestEmailChange` for a `PendingVerification` account, with `EmailChange` and
+  `EmailVerification` both enabled: `ErrAccountUnverified` → accepted (the confirmed code
+  verifies the new address). With email verification off it is still refused. (G-4 2.2)
+- With `EmailChange` enabled, a reset or verification request that was in flight while a
+  change committed: a code for the old address → `ErrPasswordResetUnavailable` /
+  `ErrEmailVerificationUnavailable` and no code. One extra by-ID lookup per such request.
+- Redis traffic: a verification request adds a `SET aevg:*`, a verification confirm a
+  `GET aevg:*`; the `aeci:` marker is read only for a record with no pointer.
+
 ### If you use…
 
 - **`EmailChange` with `Strategy: VerificationUUID`**: `Build` now fails. In that
@@ -152,10 +241,13 @@ that enables nothing new is under **Behavior changes** below.
   it is answered with the rate-limit error (that is what stops the mail), which with
   a case-insensitive provider tells a caller trying spellings that the account
   exists. See `docs/rate_limiting.md`.
-- **R2-21: limiter keys never carry caller input.** The password-reset,
+- **R2-21: the identifier-scoped limiter keys are hashed.** The password-reset,
   email-verification and account-creation limiter keys use SHA-256 digests of the
-  tenant and the identifier or ID, as the login key does. Their counters start from
-  zero on upgrade (`docs/migrations.md`).
+  tenant and the identifier or ID, as the login key does, so an oversized identifier
+  no longer becomes an oversized Redis key. The external sign-in limiter keys
+  (`rl:extlogin:*`) are not hashed: they carry the client address passed to
+  `WithClientIP` (see the known residuals above). Their counters start from zero on
+  upgrade (`docs/migrations.md`).
 - **R2-23 and the unbounded-identifier record: input caps.** Login refuses an
   identifier over `MaxIdentifierBytes` (320) or a password over the hasher's limit
   before the limiter, the lookup or any hashing, on one cheap path (`ErrInvalidCredentials`)
@@ -248,7 +340,7 @@ three follow-ups found while reviewing these fixes (marked below).
 
 #### Fixed
 
-- **R2-08 (high): a login can no longer store a session after a revocation that
+- **R2-08 (medium): a login can no longer store a session after a revocation that
   it raced.** Every delete-all (password change or reset, account disable, TOTP
   change, email change, `LogoutAll`, `InvalidateUserSessions`) now also bumps a
   per-user revocation epoch (`aue:<tenant>:<user>`, kept for at least 24 hours). Password
@@ -264,7 +356,7 @@ three follow-ups found while reviewing these fixes (marked below).
   instead of being read as the epoch to issue under (follow-up, found in review).
   Residual window: auto-login after `CreateAccount` reads the epoch right after
   the account is created.
-- **R2-27 (high): the session caps cannot be exceeded by parallel logins.** The
+- **R2-27 (low): the session caps cannot be exceeded by parallel logins.** The
   per-user, concurrent-login and tenant caps are checked inside the script that
   stores the session, and they are checked again at the MFA confirmation, which
   used to store as many sessions as there were challenges. A tenant counter that
@@ -476,6 +568,104 @@ Listed above under "Behavior changes when upgrading from v0.8.0" (part 3).
   pointer for that user is refused; the user requests another.
 
 ---
+
+### Dressin request G-4: test clock, unverified email change, change-email boundary, two-step external sign-up
+
+Four gaps found by the first application to adopt v0.8.0, delivered in one pull request
+and shipped with the fixes above. Everything is additive; with none of the new options
+used the only difference is the boundary fix under **Fixed**.
+
+#### Added (Dressin request G-4)
+
+- **A test clock: `Clock` and `Builder.WithClock(c Clock)`** (nil = the system clock).
+  Session lifetimes, idle windows, profile ceilings and challenge expiry read the time
+  from an internal, process-wide clock that an application's tests could not move. The
+  clock is now per engine and reaches the session store, the JWT manager's issue and
+  validation, the reset, verification, email-change, MFA and sign-up challenge stores,
+  the sliding-window limiters, the external ID-token checks and replay TTLs, credential
+  and audit timestamps and the `now` handed to the Lua scripts. Redis key lifetimes are
+  Redis's own time: with miniredis advance the clock and `FastForward` by the same
+  amount; a real Redis cannot be time-travelled. Intended for tests; safe in production
+  only with a monotonic, real-time-tracking clock. The new `session.Store.WithClock`,
+  `jwt.Config.Now`, and the clock arguments of the internal stores are additive. The
+  acceptance test (`test/clock_session_profiles_test.go`) walks a mobile session through
+  60-day refreshes to its 365-day ceiling and another to its 90-day idle limit through
+  the public API. See `docs/testing.md`.
+- **Email change for an account that is still unverified.** A user who signed up with a
+  mistyped address can now fix it: with `EmailVerification.Enabled`, `RequestEmailChange`
+  accepts a `PendingVerification` account; everything else (the code to the new address,
+  the strategies, limiters, one pending change per user, no hint whether the new address is
+  taken) is as for a verified account. At confirm the new address is installed and the
+  account moves Pending → Active (`AccountStatusCASUpdater` when the provider has it,
+  otherwise a re-read that writes only if still pending), because the confirmed code
+  proves the new address; no second mail. A disable that lands meanwhile stays in force.
+  If the activation fails after the address changed, the result is returned **together
+  with** the error and the application can send `RequestEmailVerification` for the new
+  address. `EmailChangeResult.WasUnverified` is true on this path: **do not send the
+  old-address notice then**, the old address was never proven. Nothing is reserved before
+  the code is confirmed. Audit: the existing events plus `account_was_unverified=true`.
+- **Two-step external sign-up.** `ExternalLoginOptions.DeferSignup` (with
+  `AllowSignup`) stops the sign-in where an account would be created and returns
+  `LoginResult.ExternalSignup`, an `ExternalSignupTicket` (single-use `Handle`, provider,
+  subject, email, flags, display name, `ExpiresAt`), creating nothing. The application
+  runs its own step (an age check that must store nothing on refusal) and then calls
+  `CompleteExternalSignup(ctx, handle, ExternalSignupOptions{DisplayName, RememberMe})`,
+  which consumes the handle, resolves the identity again (linked meanwhile:
+  `ErrExternalIdentityInUse`; a local account holds the email now:
+  `ErrExternalAccountLinkRequired`, never an auto-link), creates the account under the
+  account-creation limiter exactly as the one-call sign-up does and finishes through the
+  shared login tail (`NewAccount = true`), or `CancelExternalSignup(ctx, handle)`. New
+  sentinel `ErrExternalSignupInvalid` (`AUTH_EXTERNAL_SIGNUP_INVALID`, 400) for an
+  unknown, used, expired or foreign handle; new config
+  `ExternalAuth.SignupTicketTTL` (default 10m, 1m to 1h); new audit event
+  `external_signup_deferred` (provider only). The handle is a bearer secret: only its
+  SHA-256 is a Redis key, and it never reaches an audit event, a log line or the
+  ticket's printed forms. It is consumed even if step two fails after that; the
+  application restarts the sign-up. See `docs/external_identity.md#two-step-sign-up`.
+- **New Redis keys:** `axs:<tenant>:<sha256(handle)>` (a deferred sign-up, `SignupTicketTTL`;
+  taken by a GET-then-DEL script, so Redis 6.0 is enough), `aevg:<tenant>:<user>` (the newest verification record,
+  or a tombstone; `VerificationTTL`) and `aecu:<tenant>:<verification id>` (marks an email
+  change requested by a pending account; the challenge's lifetime). The email-change
+  tombstones are also written to the existing `aprg:<tenant>:<user>`. No stored format
+  changed (`session/golden_bytes_test.go` and `internal/stores/golden_bytes_test.go` are
+  untouched).
+- Real-Redis `TestRedisCompat` coverage for the sign-up handle's single-use script, the verification
+  pointer and the unverified-change script.
+
+#### Fixed
+
+- **Requests made right after an email change work (G-4 2.4).** After a confirmed change,
+  reset and verification records whose issue time (expiry minus TTL, whole seconds) was at
+  or before the commit second were refused, so a reset requested for the **new** address
+  in the commit's own second was mailed and then refused at confirm. Supersession is now
+  decided by write order: the change commit writes a tombstone into the user's
+  newest-record pointers (`aprg:` for resets, the new `aevg:` for verification), so every
+  code issued before the commit is refused and one requested afterwards is valid. The
+  time-based `aeci:` marker remains only as the fallback for a record whose owner has no
+  pointer, which is what an instance older than v0.8.1 issues. A reset or verification
+  request that was in flight while the change committed re-reads the account after writing
+  its pointer and fails instead of handing out a code for the old address (found in
+  review). The reusable helper is `supersedeResetCodes` (not yet wired to
+  `ChangePassword`, see the known residuals).
+
+#### Behavior changes (nothing new enabled)
+
+Listed above under "Behavior changes when upgrading from v0.8.0" (part 4): the boundary
+fix, only the newest verification request's code redeems, a pending account may request
+an email change when both features are on, and the in-flight recheck.
+
+#### Notes
+
+- A pending account whose old address was verified through goAuth between the request and
+  the confirm cannot confirm: verifying revokes the user's sessions, which cancels a staged
+  email change (the existing recovery rule). A provider-side activation that leaves
+  `AccountVersion` alone is treated as an ordinary verified change.
+- Without `AccountStatusCASUpdater` the activation re-reads the account right before the
+  write; that narrows the window in which a concurrent disable could be overwritten but
+  cannot close it. Implement the interface if your accounts can be disabled while an email
+  change is in flight (the same advice as for email verification).
+- During a rolling deploy a code requested from a v0.8.0 instance after a change finds the
+  tombstone and is refused; the user requests another.
 
 ## [0.8.0] - 2026-10-25
 

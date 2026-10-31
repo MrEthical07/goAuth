@@ -16,6 +16,8 @@ type Config struct {
 	LoginCooldownDuration     time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 
 	// IPLimiterEnabled turns on the per-client-IP login throttle; IPMaxAttempts
 	// and IPCooldown size it.
@@ -33,7 +35,7 @@ type Limiter struct {
 // New creates a rate [Limiter] backed by the given Redis client.
 func New(redisClient redis.UniversalClient, cfg Config) *Limiter {
 	return &Limiter{
-		window: window.New(redisClient, cfg.WindowMode),
+		window: window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now),
 		config: cfg,
 	}
 }

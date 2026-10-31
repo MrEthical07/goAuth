@@ -163,6 +163,60 @@ Part 3 of the audit fixes (the CHANGELOG lists each with its finding ID):
 - Password-reset confirmation does not check password reuse (the documentation said
   it did); `ChangePassword` does.
 
+### Dressin request G-4: what changes with nothing enabled
+
+The four requests are additive (see the CHANGELOG, "Dressin request G-4"); an application
+that adopts none of them sees only these differences:
+
+- **A code requested right after an email change works.** With `EmailChange` enabled, a
+  reset or verification code requested for the *new* address, even in the same second as
+  the confirmed change, is valid; before it was mailed and then refused. Codes requested
+  before the change are still refused. Supersession is decided by write order: the change
+  writes a tombstone into the user's newest-record pointers (`aprg:<tenant>:<user>` for
+  resets, the new `aevg:<tenant>:<user>` for verification). The time-based marker
+  `aeci:<tenant>:<user>` is still written and is read only as the **fallback** for a record
+  whose owner has no pointer: what an instance older than v0.8.1 issues. No action.
+- **Only the newest `RequestEmailVerification` code redeems**, as for password reset. An
+  application that sends the same code again for a resend is unaffected; one that issues
+  several and expects all to work must send the latest.
+- **A pending account may request an email change** when `EmailChange.Enabled` and
+  `EmailVerification.Enabled` are both on (it was `ErrAccountUnverified`). The confirmed
+  code verifies the new address and the account becomes Active. Application work: if you
+  show "change email" only to verified users, you may now offer it to pending ones; and
+  when `EmailChangeResult.WasUnverified` is true **do not send the old-address notice**.
+  If `ConfirmEmailChange` returns a result *and* an error, the address changed and the
+  account is still pending: send `RequestEmailVerification` for `result.NewEmail`.
+- **A request that races a committed change fails.** With `EmailChange` enabled, a
+  `RequestPasswordReset` or `RequestEmailVerification` that resolved the account just
+  before a change committed re-reads the account after writing its pointer and returns the
+  flow's *unavailable* error (no code) when the address moved; the user asks again. It
+  costs one by-ID lookup per request, only while `EmailChange` is enabled.
+- **Redis traffic.** A verification request adds a `SET aevg:*`, a verification confirm a
+  `GET aevg:*`; the marker `GET aeci:*` that every confirm paid while `EmailChange` was
+  enabled is now paid only by records with no pointer.
+
+New keys, all expiring by TTL: `aevg:<tenant>:<user>` (`EmailVerification.VerificationTTL`),
+`aecu:<tenant>:<id>` (only for email changes requested by pending accounts; the
+challenge's lifetime), and, only with `DeferSignup`, `axs:<tenant>:<sha256(handle)>`
+(`ExternalAuth.SignupTicketTTL`, default 10m). No stored
+format changed.
+
+### Optional: the test clock (`WithClock`)
+
+`Builder.WithClock(c Clock)` moves the time the engine reads, per engine, for tests. It
+changes nothing until you call it. Redis key lifetimes stay real: pair it with
+miniredis (`SetTime`, `FastForward`). Not for production unless the clock is monotonic and
+tracks real time. See [testing.md](testing.md).
+
+### Optional: two-step external sign-up
+
+Set `ExternalLoginOptions.DeferSignup` on the sign-in whose result you want to pause at
+account creation (it needs `ExternalAuth.AllowSignup`), run your own step on the returned
+`LoginResult.ExternalSignup`, then `CompleteExternalSignup` or `CancelExternalSignup`. The
+handle is a bearer secret and is consumed by the first `CompleteExternalSignup`, even if it
+then fails. Map the new `ErrExternalSignupInvalid` (`AUTH_EXTERNAL_SIGNUP_INVALID`, 400).
+See [external_identity.md](external_identity.md#two-step-sign-up).
+
 ### Rolling deploys and the provider contract
 
 - **Rolling deploy from v0.8.0.** Redis can be shared by v0.8.0 and v0.8.1 instances: new
@@ -170,7 +224,10 @@ Part 3 of the audit fixes (the CHANGELOG lists each with its finding ID):
   a v0.8.0 instance does not move the revocation epoch, so the login fence covers
   only revocations made by v0.8.1 instances; a reset code issued by a v0.8.0 instance
   is refused if a v0.8.1 instance wrote the user's reset pointer since (the user
-  requests another); an MFA challenge issued by a v0.8.0 instance has no recorded
+  requests another); a verification or reset code requested from a v0.8.0 instance after a
+  change that a v0.8.1 instance confirmed finds the tombstone and is refused (the user
+  requests another), while a record with no pointer at all is judged by the old `aeci:`
+  marker; an MFA challenge issued by a v0.8.0 instance has no recorded
   factors or epoch and behaves as it did.
 - **Provider contract.** Where the engine must tell "the user is gone" from "the
   provider is down" (`Security.RecheckUserOnRefresh`, email change, role switching),

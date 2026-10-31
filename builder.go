@@ -20,6 +20,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Clock is a source of the current time. The engine's own clock is the system
+// clock; [Builder.WithClock] replaces it, for tests that need to move time.
+//
+//	Docs: docs/testing.md, docs/config.md
+type Clock interface {
+	Now() time.Time
+}
+
 // Builder constructs an [Engine] through a fluent API. Call [New] to start,
 // chain With* methods, then call [Builder.Build] to validate configuration
 // and produce an immutable Engine. A Builder can only be built once.
@@ -35,6 +43,7 @@ type Builder struct {
 	userProvider UserProvider
 	auditSink    AuditSink
 	httpClient   *http.Client
+	clock        Clock
 
 	built bool
 }
@@ -112,6 +121,29 @@ func (b *Builder) WithAuditSink(sink AuditSink) *Builder {
 //	Docs: docs/external_identity.md
 func (b *Builder) WithHTTPClient(client *http.Client) *Builder {
 	b.httpClient = client
+	return b
+}
+
+// WithClock makes the engine read the current time from c instead of the
+// system clock; nil (the default) is the system clock. The clock is per engine:
+// two engines in one process with different clocks do not affect each other.
+//
+// It governs every time the engine decides on: session creation and expiry,
+// idle windows and profile ceilings, JWT issue and validation (iat, exp, nbf),
+// the expiry of password-reset, email-verification, email-change, MFA and
+// sign-up challenges, external ID-token exp/iat/nbf checks and replay TTLs,
+// the sliding-window limiters' buckets, credential and audit timestamps, and
+// the "now" passed to the Redis scripts. It does NOT move Redis: key lifetimes
+// are Redis's own time, so with miniredis advance the clock and call
+// FastForward by the same amount (real Redis cannot be time-travelled). Latency
+// measurements and the anti-enumeration response floor stay on the wall clock.
+//
+// WithClock is meant for tests. It is safe in production only with a clock
+// that is monotonic and tracks real time.
+//
+//	Docs: docs/testing.md, docs/config.md
+func (b *Builder) WithClock(c Clock) *Builder {
+	b.clock = c
 	return b
 }
 
@@ -240,6 +272,9 @@ func (b *Builder) Build() (*Engine, error) {
 		cfg.Session.JitterEnabled,
 		cfg.Session.JitterRange,
 	)
+	if b.clock != nil {
+		store.WithClock(b.clock)
+	}
 	if policies := sessionProfilePolicies(cfg.SessionProfiles.Profiles); policies != nil {
 		store.WithProfiles(policies)
 	}
@@ -252,7 +287,10 @@ func (b *Builder) Build() (*Engine, error) {
 		registry:     registry,
 		roleManager:  roleManager,
 		sessionStore: store,
+		clk:          b.clock,
 	}
+	now := engine.now
+	sessionNow := engine.sessionNow
 
 	windowMode := window.Fixed
 	if cfg.Security.LimiterWindowMode == "sliding" {
@@ -265,48 +303,55 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxLoginAttempts:          cfg.Security.MaxLoginAttempts,
 		LoginCooldownDuration:     cfg.Security.LoginCooldownDuration,
 		WindowMode:                windowMode,
+		Now:                       now,
 		IPLimiterEnabled:          cfg.Security.LoginIPLimiter.Enabled,
 		IPMaxAttempts:             cfg.Security.LoginIPLimiter.MaxAttempts,
 		IPCooldown:                cfg.Security.LoginIPLimiter.Cooldown,
 	})
-	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr")
+	engine.resetStore = stores.NewPasswordResetStore(b.redis, "apr").WithClock(now)
 	engine.resetLimiter = limiters.NewPasswordResetLimiter(b.redis, limiters.PasswordResetConfig{
 		EnableRequestLimiter:        cfg.PasswordReset.EnableRequestLimiter,
 		EnableConfirmFailureLimiter: cfg.PasswordReset.EnableConfirmFailureLimiter,
 		ResetTTL:                    cfg.PasswordReset.ResetTTL,
 		MaxAttempts:                 cfg.PasswordReset.MaxAttempts,
 		WindowMode:                  windowMode,
+		Now:                         now,
 	})
-	engine.verificationStore = stores.NewEmailVerificationStore(b.redis, "apv")
+	engine.verificationStore = stores.NewEmailVerificationStore(b.redis, "apv").WithClock(now)
 	engine.verificationLimiter = limiters.NewEmailVerificationLimiter(b.redis, limiters.EmailVerificationConfig{
 		EnableRequestLimiter:        cfg.EmailVerification.EnableRequestLimiter,
 		EnableConfirmFailureLimiter: cfg.EmailVerification.EnableConfirmFailureLimiter,
 		VerificationTTL:             cfg.EmailVerification.VerificationTTL,
 		MaxAttempts:                 cfg.EmailVerification.MaxAttempts,
 		WindowMode:                  windowMode,
+		Now:                         now,
 	})
 	engine.accountLimiter = limiters.NewAccountCreationLimiter(b.redis, limiters.AccountConfig{
 		EnableLimiter: cfg.Account.EnableCreationLimiter,
 		MaxAttempts:   cfg.Account.AccountCreationMaxAttempts,
 		Cooldown:      cfg.Account.AccountCreationCooldown,
 		WindowMode:    windowMode,
+		Now:           now,
 	})
 	engine.totpLimiter = limiters.NewTOTPLimiter(b.redis, limiters.TOTPLimiterConfig{
 		// Direct TOTP verification paths share the MFA attempt budget.
 		MaxAttempts: cfg.TOTP.MFALoginMaxAttempts,
 		Cooldown:    cfg.TOTP.VerifyAttemptCooldown,
 		WindowMode:  windowMode,
+		Now:         now,
 	})
 	engine.backupLimiter = limiters.NewBackupCodeLimiter(b.redis, limiters.BackupCodeConfig{
 		MaxAttempts: cfg.TOTP.BackupCodeMaxAttempts,
 		Cooldown:    cfg.TOTP.BackupCodeCooldown,
 		WindowMode:  windowMode,
+		Now:         now,
 	})
 	engine.lockoutLimiter = limiters.NewLockoutLimiter(b.redis, limiters.LockoutConfig{
 		Enabled:    cfg.Security.AutoLockoutEnabled,
 		Threshold:  cfg.Security.AutoLockoutThreshold,
 		Duration:   cfg.Security.AutoLockoutDuration,
 		WindowMode: windowMode,
+		Now:        now,
 	})
 	// Shares ChangePassword/VerifyPassword's own attempt budget with the
 	// login failure limiter's configured thresholds, in its own rl:pwdverify:*
@@ -316,8 +361,9 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxAttempts: cfg.Security.MaxLoginAttempts,
 		Cooldown:    cfg.Security.LoginCooldownDuration,
 		WindowMode:  windowMode,
+		Now:         now,
 	})
-	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc")
+	engine.mfaLoginStore = stores.NewMFALoginChallengeStore(b.redis, "amc").WithClock(now)
 	engine.backupGrants = stores.NewBackupGrantStore(b.redis, "abg")
 	// Optional: only a provider that can compare-and-swap a password hash opts
 	// in; without it the upgrade re-reads the user before it writes.
@@ -356,6 +402,7 @@ func (b *Builder) Build() (*Engine, error) {
 			MaxAttempts: cfg.RoleSwitch.MaxAttempts,
 			Cooldown:    cfg.RoleSwitch.Cooldown,
 			WindowMode:  windowMode,
+			Now:         now,
 		})
 	}
 	if cfg.EmailChange.Enabled {
@@ -365,11 +412,12 @@ func (b *Builder) Build() (*Engine, error) {
 		}
 		resolved := cfg.EmailChange.resolved()
 		engine.emailChangeProvider = provider
-		engine.emailChangeStore = stores.NewEmailChangeStore(b.redis, "aec")
+		engine.emailChangeStore = stores.NewEmailChangeStore(b.redis, "aec").WithClock(now)
 		engine.emailChangeLimiter = limiters.NewEmailChangeLimiter(b.redis, limiters.EmailChangeConfig{
 			MaxAttempts: resolved.RequestMaxAttempts,
 			Cooldown:    resolved.RequestCooldown,
 			WindowMode:  windowMode,
+			Now:         now,
 		})
 	}
 	if cfg.ExternalAuth.Enabled {
@@ -377,16 +425,18 @@ func (b *Builder) Build() (*Engine, error) {
 		if !ok {
 			return nil, errors.New("ExternalAuth is enabled but the user provider does not implement ExternalIdentityProvider")
 		}
-		verifier, err := newExternalVerifier(cfg, b.redis, b.httpClient)
+		verifier, err := newExternalVerifierWithClock(cfg, b.redis, b.httpClient, sessionNow)
 		if err != nil {
 			return nil, fmt.Errorf("invalid ExternalAuth configuration: %w", err)
 		}
 		engine.externalProvider = provider
 		engine.externalVerifier = verifier
+		engine.externalSignupStore = stores.NewExternalSignupStore(b.redis, "axs").WithClock(now)
 		engine.externalLimiter = limiters.NewExternalLimiter(b.redis, limiters.ExternalConfig{
 			MaxAttempts: cfg.ExternalAuth.MaxAttempts,
 			Cooldown:    cfg.ExternalAuth.Cooldown,
 			WindowMode:  windowMode,
+			Now:         now,
 		})
 	}
 	if cfg.WebAuthn.Enabled {
@@ -436,6 +486,7 @@ func (b *Builder) Build() (*Engine, error) {
 		MaxFutureIAT:  cfg.JWT.MaxFutureIAT,
 		KeyID:         cfg.JWT.KeyID,
 		VerifyKeys:    cloneVerifyKeys(cfg.JWT.VerifyKeys),
+		Now:           now,
 	})
 	if err != nil {
 		return nil, err

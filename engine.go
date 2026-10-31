@@ -74,11 +74,39 @@ type Engine struct {
 	externalProvider      ExternalIdentityProvider
 	externalVerifier      *oidc.Verifier
 	externalLimiter       *limiters.ExternalLimiter
+	externalSignupStore   *stores.ExternalSignupStore
 	emailChangeProvider   EmailChangeProvider
 	emailChangeStore      *stores.EmailChangeStore
 	emailChangeLimiter    *limiters.EmailChangeLimiter
 	logger                *slog.Logger
 	flows                 internalflows.Service
+
+	// clk is the injected time source; nil means the package default (the
+	// system clock). Read it only through now.
+	clk Clock
+}
+
+// now is the engine's time source: the clock given to [Builder.WithClock], or
+// the system clock. Every time-dependent decision the engine makes goes
+// through now or sessionNow, so an injected clock moves them all; latency
+// measurements are the one exception and read the wall clock directly.
+func (e *Engine) now() time.Time {
+	if e != nil && e.clk != nil {
+		return e.clk.Now()
+	}
+	return time.Now()
+}
+
+// sessionNow is now for the places that stamp or judge a session's life (and
+// the external ID-token checks). Without an injected clock it is the package
+// clock, which is the system clock unless a test in this module installed an
+// override with clock.Set; that older hook never moved token signing or the
+// challenge stores, and still does not.
+func (e *Engine) sessionNow() time.Time {
+	if e != nil && e.clk != nil {
+		return e.clk.Now()
+	}
+	return clock.Now()
 }
 
 // tenantScopedLookup reports whether user lookups must be scoped to the
@@ -1133,7 +1161,7 @@ func (e *Engine) initFlowDeps() {
 				mode, err := e.resolveRouteMode(RouteMode(routeMode))
 				return int(mode), err
 			},
-			Now:                       time.Now,
+			Now:                       e.now,
 			MaxClockSkew:              e.config.SessionHardening.MaxClockSkew,
 			ModeJWTOnly:               int(ModeJWTOnly),
 			ModeHybrid:                int(ModeHybrid),
@@ -1154,7 +1182,7 @@ func (e *Engine) initFlowDeps() {
 			ParseAccessAllowExpired: e.jwtManager.ParseAccessAllowExpired,
 			TenantIDFromContext:     tenantIDFromContext,
 			TenantIDFromToken:       tenantIDFromToken,
-			Now:                     time.Now,
+			Now:                     e.now,
 			SessionStore:            e.sessionStore,
 			PeekProfile:             e.logoutProfilePeeker(),
 		},
@@ -1436,7 +1464,7 @@ func (e *Engine) configureAccountLimiterDeps(deps *internalflows.AccountDeps, cf
 func (e *Engine) accountSessionDeps() internalflows.AccountSessionDeps {
 	deps := internalflows.AccountSessionDeps{
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 clock.Now,
+		Now:                 e.sessionNow,
 		NewSessionID: func() (string, error) {
 			sid, err := internal.NewSessionID()
 			if err != nil {
@@ -1819,7 +1847,7 @@ func (e *Engine) emitAudit(
 	}
 
 	event := AuditEvent{
-		Timestamp: time.Now().UTC(),
+		Timestamp: e.now().UTC(),
 		EventType: eventType,
 		UserID:    userID,
 		TenantID:  tenantID,
@@ -1975,6 +2003,8 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrExternalLinkVerify
 	case errors.Is(err, ErrExternalIdentityInUse):
 		return auditErrExternalInUse
+	case errors.Is(err, ErrExternalSignupInvalid):
+		return auditErrExternalSignupInvalid
 	case errors.Is(err, ErrLastLoginMethod):
 		return auditErrLastLoginMethod
 	case errors.Is(err, ErrPasswordNotSet):
@@ -2408,7 +2438,8 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 		ActiveStatus:        uint8(AccountActive),
 		PendingStatus:       uint8(AccountPendingVerification),
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 time.Now,
+		Now:                 e.now,
+		FloorNow:            time.Now,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
 		},
@@ -2504,6 +2535,13 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		deps.UpdateStatusAndInvalidate = func(ctx context.Context, userID string, status uint8) error {
 			return e.updateAccountStatusAndInvalidate(ctx, userID, AccountStatus(status))
 		}
+		deps.UpdateStatus = func(ctx context.Context, userID string, status uint8) error {
+			if e.userProvider == nil {
+				return ErrEngineNotReady
+			}
+			_, err := e.userProvider.UpdateAccountStatus(ctx, userID, AccountStatus(status))
+			return err
+		}
 		if e.statusCAS != nil {
 			deps.UpdateStatusIf = func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error) {
 				return e.statusCAS.UpdateAccountStatusIf(ctx, tenantID, userID, AccountStatus(expected), AccountStatus(next))
@@ -2527,14 +2565,17 @@ func (e *Engine) configureEmailVerificationProviderDeps(deps *internalflows.Emai
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}
-		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
+		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status), Identifier: user.Identifier}, nil
+	}
+	if e.emailChangeEnabled() {
+		deps.RecheckIdentifier = e.identifierUnchanged
 	}
 	deps.GetUserByIDInTenant = func(ctx context.Context, tenantID, userID string) (internalflows.EmailVerificationUser, error) {
 		user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
 		if err != nil {
 			return internalflows.EmailVerificationUser{}, err
 		}
-		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status)}, nil
+		return internalflows.EmailVerificationUser{UserID: user.UserID, TenantID: user.TenantID, Status: uint8(user.Status), Identifier: user.Identifier}, nil
 	}
 }
 
@@ -2552,32 +2593,38 @@ func (e *Engine) configureEmailVerificationStoreDeps(deps *internalflows.EmailVe
 			Strategy:   record.Strategy,
 		}, ttl)
 	}
+	deps.SupersedeVerifications = e.verificationStore.SetCurrent
 	deps.ConsumeVerificationRecord = e.consumeVerificationRecord
 }
 
-// consumeResetRecord consumes a password-reset challenge and refuses one issued
-// before the user's last email change: it was mailed to the old address. The
-// marker is read only while EmailChange is enabled.
+// consumeResetRecord consumes a password-reset challenge and refuses one that
+// was superseded: by a newer request, by a completed reset, or by an email
+// change, which was mailed to the old address. Supersession is decided by write
+// order, through the user's pointer. The time-based identifier-change marker is
+// only the fallback for a record whose owner has no pointer (issued by an
+// instance older than v0.8.1) and is read only while EmailChange is enabled.
 func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.PasswordResetStoreRecord, error) {
 	record, err := e.resetStore.Consume(ctx, tenantID, resetID, providedHash, expectedStrategy, maxAttempts)
 	if err != nil {
 		return internalflows.PasswordResetStoreRecord{}, err
 	}
-	// A newer request, or a reset that completed since this one was issued,
-	// superseded the record: the secret was right, the code is dead.
-	current, pointerErr := e.resetStore.IsCurrent(ctx, tenantID, record.UserID, resetID)
+	// A newer request, a reset that completed since this one was issued, or an
+	// email change superseded the record: the secret was right, the code is dead.
+	state, pointerErr := e.resetStore.PointerState(ctx, tenantID, record.UserID, resetID)
 	if pointerErr != nil {
 		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
 	}
-	if !current {
+	switch state {
+	case stores.PointerSuperseded:
 		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
-	}
-	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
-	if markerErr != nil {
-		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
-	}
-	if stale {
-		return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
+	case stores.PointerAbsent:
+		stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.PasswordReset.ResetTTL)
+		if markerErr != nil {
+			return internalflows.PasswordResetStoreRecord{}, stores.ErrResetRedisUnavailable
+		}
+		if stale {
+			return internalflows.PasswordResetStoreRecord{}, stores.ErrResetNotFound
+		}
 	}
 	return internalflows.PasswordResetStoreRecord{
 		UserID:     record.UserID,
@@ -2588,18 +2635,73 @@ func (e *Engine) consumeResetRecord(ctx context.Context, tenantID, resetID strin
 	}, nil
 }
 
+// identifierUnchanged reports whether the user still has identifier. A request
+// for a reset or verification code calls it after it has written its pointer,
+// while EmailChange is enabled: a change that committed in between has already
+// tombstoned the pointer, and the request's own write must not leave a valid
+// code for the old address on top of that tombstone.
+func (e *Engine) identifierUnchanged(ctx context.Context, tenantID, userID, identifier string) (bool, error) {
+	user, err := e.lookupUserByIDInTenant(ctx, tenantID, userID)
+	if err != nil {
+		return false, err
+	}
+	return user.Identifier == identifier, nil
+}
+
+// supersedeResetCodes makes every password-reset code the user holds
+// unredeemable, in every tenant a revocation of the user covers (the context
+// tenant and tenantID): it tombstones the user's newest-reset pointer, so a
+// code issued before the call is refused and one requested after it is valid.
+// Decided by write order, never by time. It is a no-op while password reset is
+// disabled.
+func (e *Engine) supersedeResetCodes(ctx context.Context, tenantID, userID string) error {
+	if e.resetStore == nil || !e.config.PasswordReset.Enabled {
+		return nil
+	}
+	var errs []error
+	for _, tenant := range sessionRevocationTenants(ctx, tenantID) {
+		if err := e.resetStore.InvalidateOutstanding(ctx, tenant, userID, e.config.PasswordReset.ResetTTL); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// supersedeVerificationCodes is supersedeResetCodes for email verification.
+func (e *Engine) supersedeVerificationCodes(ctx context.Context, tenantID, userID string) error {
+	if e.verificationStore == nil || !e.config.EmailVerification.Enabled {
+		return nil
+	}
+	var errs []error
+	for _, tenant := range sessionRevocationTenants(ctx, tenantID) {
+		if err := e.verificationStore.InvalidateOutstanding(ctx, tenant, userID, e.config.EmailVerification.VerificationTTL); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // consumeVerificationRecord is consumeResetRecord for email verification.
 func (e *Engine) consumeVerificationRecord(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy int, maxAttempts int) (internalflows.EmailVerificationStoreRecord, error) {
 	record, err := e.verificationStore.Consume(ctx, tenantID, verificationID, providedHash, expectedStrategy, maxAttempts)
 	if err != nil {
 		return internalflows.EmailVerificationStoreRecord{}, err
 	}
-	stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.EmailVerification.VerificationTTL)
-	if markerErr != nil {
+	state, pointerErr := e.verificationStore.PointerState(ctx, tenantID, record.UserID, verificationID)
+	if pointerErr != nil {
 		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationRedisUnavailable
 	}
-	if stale {
+	switch state {
+	case stores.PointerSuperseded:
 		return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationNotFound
+	case stores.PointerAbsent:
+		stale, markerErr := e.issuedBeforeEmailChange(ctx, tenantID, record.UserID, record.ExpiresAt, e.config.EmailVerification.VerificationTTL)
+		if markerErr != nil {
+			return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationRedisUnavailable
+		}
+		if stale {
+			return internalflows.EmailVerificationStoreRecord{}, stores.ErrVerificationNotFound
+		}
 	}
 	return internalflows.EmailVerificationStoreRecord{
 		UserID:     record.UserID,
@@ -3009,7 +3111,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		TenantIDFromContext:       tenantIDFromContext,
 		ClientIPFromContext:       clientIPFromContext,
 		UserAgentFromContext:      userAgentFromContext,
-		Now:                       clock.Now,
+		Now:                       e.sessionNow,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
 		},
@@ -3471,7 +3573,8 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 		MaxAttempts:         cfg.PasswordReset.MaxAttempts,
 		RequireMFA:          cfg.TOTP.Enabled && (cfg.TOTP.RequireTOTPForPasswordReset || cfg.TOTP.RequireForPasswordReset),
 		TenantIDFromContext: tenantIDFromContext,
-		Now:                 time.Now,
+		Now:                 e.now,
+		FloorNow:            time.Now,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))
 		},
@@ -3526,10 +3629,14 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 				return internalflows.PasswordResetUser{}, err
 			}
 			return internalflows.PasswordResetUser{
-				UserID:   user.UserID,
-				TenantID: user.TenantID,
-				Status:   uint8(user.Status),
+				UserID:     user.UserID,
+				TenantID:   user.TenantID,
+				Status:     uint8(user.Status),
+				Identifier: user.Identifier,
 			}, nil
+		}
+		if e.emailChangeEnabled() {
+			deps.RecheckIdentifier = e.identifierUnchanged
 		}
 		deps.GetUserByID = func(ctx context.Context, userID string) (internalflows.PasswordResetUser, error) {
 			user, err := e.lookupUserByID(ctx, userID)
@@ -3861,7 +3968,7 @@ func (e *Engine) totpFlowDeps() internalflows.TOTPDeps {
 	deps := internalflows.TOTPDeps{
 		Enabled:                 cfg.TOTP.Enabled,
 		EnforceReplayProtection: cfg.TOTP.EnforceReplayProtection,
-		Now:                     time.Now,
+		Now:                     e.now,
 		TenantIDFromContext:     tenantIDFromContext,
 		AccountStatusError: func(status uint8) error {
 			return accountStatusToError(AccountStatus(status))

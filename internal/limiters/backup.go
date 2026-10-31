@@ -20,6 +20,8 @@ type BackupCodeConfig struct {
 	Cooldown    time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 type BackupCodeLimiter struct {
@@ -31,7 +33,7 @@ type BackupCodeLimiter struct {
 func NewBackupCodeLimiter(redisClient redis.UniversalClient, cfg BackupCodeConfig) *BackupCodeLimiter {
 	var w *window.Window
 	if redisClient != nil {
-		w = window.New(redisClient, cfg.WindowMode)
+		w = window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now)
 	}
 	return &BackupCodeLimiter{
 		window:      w,

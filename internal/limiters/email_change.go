@@ -26,6 +26,8 @@ type EmailChangeConfig struct {
 	Cooldown    time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 // EmailChangeLimiter rate-limits email-change requests per (tenant, user), so
@@ -48,7 +50,7 @@ func NewEmailChangeLimiter(redisClient redis.UniversalClient, cfg EmailChangeCon
 		cd = defaultEmailChangeCooldown
 	}
 	return &EmailChangeLimiter{
-		window:      window.New(redisClient, cfg.WindowMode),
+		window:      window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now),
 		maxAttempts: int64(max),
 		cooldown:    cd,
 	}

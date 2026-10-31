@@ -54,6 +54,27 @@ redis.call('SET', KEYS[2], ARGV[4], 'PX', ARGV[2])
 return 1
 `)
 
+// saveEmailChangeUnverifiedLua is saveEmailChangeLua for a change requested by
+// an account that was still pending verification. It also stores a flag key,
+// "<prefix>u:<tenant>:<verification id>", with the record's lifetime, which
+// ConfirmEmailChange reads to know the old address was never proven. The
+// record itself is unchanged. The challenge a previous request left behind is
+// deleted together with its flag.
+//
+// KEYS: record, per-user pointer, flag. ARGV: encoded record, ttl (ms), record
+// key prefix, verification id, flag key prefix.
+var saveEmailChangeUnverifiedLua = redis.NewScript(`
+local old = redis.call('GET', KEYS[2])
+if old and old ~= ARGV[4] then
+  redis.call('DEL', ARGV[3] .. old)
+  redis.call('DEL', ARGV[5] .. old)
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+redis.call('SET', KEYS[2], ARGV[4], 'PX', ARGV[2])
+redis.call('SET', KEYS[3], '1', 'PX', ARGV[2])
+return 1
+`)
+
 // consumeEmailChangeLua checks a code against a challenge atomically: a match
 // deletes the challenge (one use), a mismatch counts an attempt and deletes it
 // when the attempts run out, and an expired or foreign-strategy challenge is
@@ -147,6 +168,14 @@ return 0
 type EmailChangeStore struct {
 	redis  redis.UniversalClient
 	prefix string
+	now    func() time.Time
+}
+
+// WithClock sets the time source the store compares challenge expiry against
+// (the wall clock by default) and returns the store. Call it before use.
+func (s *EmailChangeStore) WithClock(now func() time.Time) *EmailChangeStore {
+	s.now = nowFn(now)
+	return s
 }
 
 // NewEmailChangeStore creates the store. An empty prefix selects "aec".
@@ -154,7 +183,7 @@ func NewEmailChangeStore(redisClient redis.UniversalClient, prefix string) *Emai
 	if prefix == "" {
 		prefix = "aec"
 	}
-	return &EmailChangeStore{redis: redisClient, prefix: prefix}
+	return &EmailChangeStore{redis: redisClient, prefix: prefix, now: time.Now}
 }
 
 func (s *EmailChangeStore) recordPrefix(tenantID string) string {
@@ -189,6 +218,41 @@ func (s *EmailChangeStore) Save(ctx context.Context, tenantID, verificationID st
 	return nil
 }
 
+func (s *EmailChangeStore) unverifiedPrefix(tenantID string) string {
+	return s.prefix + "u:" + normalizeTenantID(tenantID) + ":"
+}
+
+// SaveUnverified is Save for a change requested by an account that was pending
+// verification: the same record, plus the flag WasUnverified reads.
+func (s *EmailChangeStore) SaveUnverified(ctx context.Context, tenantID, verificationID string, record *EmailChangeRecord, ttl time.Duration) error {
+	encoded, err := encodeEmailChangeRecord(record)
+	if err != nil {
+		return err
+	}
+	_, err = saveEmailChangeUnverifiedLua.Run(ctx, s.redis,
+		[]string{
+			s.key(tenantID, verificationID),
+			s.pointerKey(tenantID, record.UserID),
+			s.unverifiedPrefix(tenantID) + verificationID,
+		},
+		encoded, ttl.Milliseconds(), s.recordPrefix(tenantID), verificationID, s.unverifiedPrefix(tenantID),
+	).Result()
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrEmailChangeUnavailable, err)
+	}
+	return nil
+}
+
+// WasUnverified reports whether the challenge was requested by an account that
+// was pending verification. A challenge saved with Save has no flag.
+func (s *EmailChangeStore) WasUnverified(ctx context.Context, tenantID, verificationID string) (bool, error) {
+	n, err := s.redis.Exists(ctx, s.unverifiedPrefix(tenantID)+verificationID).Result()
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrEmailChangeUnavailable, err)
+	}
+	return n == 1, nil
+}
+
 // Consume checks code hash against the challenge. See consumeEmailChangeLua for
 // what each outcome does to the stored record.
 func (s *EmailChangeStore) Consume(ctx context.Context, tenantID, verificationID string, providedHash [32]byte, expectedStrategy, maxAttempts int) (*EmailChangeRecord, error) {
@@ -210,7 +274,7 @@ func (s *EmailChangeStore) Consume(ctx context.Context, tenantID, verificationID
 
 	result, err := consumeEmailChangeLua.Run(ctx, s.redis,
 		[]string{s.key(tenantID, verificationID), s.pointerKey(tenantID, peeked.UserID)},
-		string(providedHash[:]), expectedStrategy, maxAttempts, time.Now().Unix(), verificationID,
+		string(providedHash[:]), expectedStrategy, maxAttempts, s.now().Unix(), verificationID,
 	).Result()
 	if err != nil {
 		switch err.Error() {

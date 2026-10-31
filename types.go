@@ -366,6 +366,71 @@ type LoginResult struct {
 	// verified email matched and Config.ExternalAuth.AutoLinkVerifiedEmail
 	// is on. Always false for every other login.
 	LinkedIdentity bool
+
+	// ExternalSignup is non-nil when [Engine.LoginWithExternalIdentity] was
+	// called with ExternalLoginOptions.DeferSignup and the identity has no
+	// account: nothing was created, no session or token was issued, and the
+	// ticket's Handle is what [Engine.CompleteExternalSignup] or
+	// [Engine.CancelExternalSignup] takes. Always nil for every other login.
+	ExternalSignup *ExternalSignupTicket
+}
+
+// ExternalSignupTicket is the pause between "the ID token was verified and the
+// identity has no account" and "the account is created", returned in
+// [LoginResult.ExternalSignup] when sign-up is deferred. The application runs
+// its own step (an age check, terms acceptance) and then completes or cancels
+// the ticket.
+//
+// Handle is a single-use bearer secret: whoever holds it can create the account
+// for this identity. Keep it out of logs, audit trails and URLs; goAuth stores
+// only its hash and never prints it. The ticket's String and slog form redact it.
+//
+//	Docs: docs/external_identity.md
+type ExternalSignupTicket struct {
+	// Handle is opaque. It is accepted once, within SignupTicketTTL.
+	Handle string
+	// Provider and Subject identify the person at the provider.
+	Provider string
+	Subject  string
+	// Email is the address the provider verified; the account is created with
+	// it as its identifier.
+	Email          string
+	EmailVerified  bool
+	IsPrivateEmail bool
+	// DisplayName is the (trimmed, capped) name passed to step one.
+	DisplayName string
+	// ExpiresAt is when the handle stops being accepted, by the engine's clock.
+	ExpiresAt time.Time
+}
+
+// String describes the ticket without its handle.
+func (t ExternalSignupTicket) String() string {
+	return "ExternalSignupTicket{Provider:" + t.Provider + " Handle:[redacted]}"
+}
+
+// GoString is String, so %#v does not print the handle either.
+func (t ExternalSignupTicket) GoString() string { return t.String() }
+
+// LogValue implements slog.LogValuer: a ticket logged as a value carries its
+// provider and expiry, never the handle.
+func (t ExternalSignupTicket) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("provider", t.Provider),
+		slog.Time("expires_at", t.ExpiresAt),
+		slog.String("handle", "[redacted]"),
+	)
+}
+
+// ExternalSignupOptions carries the inputs of [Engine.CompleteExternalSignup].
+//
+//	Docs: docs/external_identity.md
+type ExternalSignupOptions struct {
+	// DisplayName, when non-empty, replaces the name given to step one.
+	DisplayName string
+	// RememberMe has the meaning it has in [LoginOptions], including the
+	// session-profile rules. It is read at step two, not remembered from step
+	// one.
+	RememberMe bool
 }
 
 // ExternalIdentity is a link between a local account and an identity at an
@@ -494,6 +559,12 @@ type EmailChangeResult struct {
 	NewEmail string
 	// SessionsRevoked reports whether the user's other sessions were revoked.
 	SessionsRevoked bool
+	// WasUnverified is true when the account was still pending verification
+	// when the change was requested. Its old address was never proven to belong
+	// to the user, so the application MUST NOT send the old-address notice
+	// (OldEmail is not a verified owner); the confirmed code proved the new
+	// address, so the account is now Active and no verification mail is needed.
+	WasUnverified bool
 }
 
 // ExternalLoginOptions carries the per-sign-in inputs of
@@ -512,6 +583,13 @@ type ExternalLoginOptions struct {
 	// RememberMe has the meaning it has in [LoginOptions], including the
 	// session-profile rules.
 	RememberMe bool
+	// DeferSignup, with Config.ExternalAuth.AllowSignup, stops the sign-in at
+	// the point where an account would be created: nothing is created and the
+	// result carries an [ExternalSignupTicket] (LoginResult.ExternalSignup)
+	// instead of tokens. Every other branch (an existing link, an auto-link, a
+	// refusal) is unchanged. Without AllowSignup it has no effect: an identity
+	// with no account is [ErrExternalAccountNotFound].
+	DeferSignup bool
 }
 
 // BackupCodeRecord stores the SHA-256 hash of a single backup code.

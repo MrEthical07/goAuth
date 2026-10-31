@@ -26,6 +26,8 @@ type RoleSwitchConfig struct {
 	Cooldown    time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 // RoleSwitchLimiter rate-limits switch attempts per (tenant, session). The
@@ -51,7 +53,7 @@ func NewRoleSwitchLimiter(redisClient redis.UniversalClient, cfg RoleSwitchConfi
 		cd = defaultRoleSwitchCooldown
 	}
 	return &RoleSwitchLimiter{
-		window:      window.New(redisClient, cfg.WindowMode),
+		window:      window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now),
 		maxAttempts: int64(max),
 		cooldown:    cd,
 	}

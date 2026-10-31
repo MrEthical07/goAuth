@@ -22,7 +22,7 @@ func (e *Engine) CancelEmailChange(ctx, userID string) error
 
 type EmailChangeRequest struct{ VerificationID, Code string }
 type ConfirmEmailChangeOptions struct{ KeepSessionID string }
-type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoked bool }
+type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoked, WasUnverified bool }
 ```
 
 `userID` for Request and Cancel comes from the session, never from the request body. `VerificationID` is `<tenant>:<id>`: it carries the tenant, is safe to log, and may be handed to the browser; nothing about `Code` can be derived from it (which is why `VerificationUUID` is not available for email change). `Code` is a secret: send it to the new address, never log it. goAuth never writes it to the audit trail or its own logs.
@@ -32,7 +32,7 @@ type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoke
 1. Refused with `ErrEmailChangeDisabled` unless `EmailChange.Enabled`.
 2. Rate limited per `(tenant, user)`: `RequestMaxAttempts` per `RequestCooldown` (default 5 per hour), honoring `Security.LimiterWindowMode` and `Security.LimiterFailClosed`. A denial is `ErrEmailChangeRateLimited`.
 3. The user is resolved through the tenant-scoped lookup with the record-tenant backstop. Only `ErrUserNotFound` means "not found"; any other provider error is a 503.
-4. The account must be **Active**. Pending, disabled, locked and deleted accounts get the matching status error (`ErrAccountUnverified`, `ErrAccountDisabled`, `ErrAccountLocked`, `ErrAccountDeleted`).
+4. The account must be **Active**, or **PendingVerification** while `EmailVerification.Enabled` (see [An account that is still unverified](#an-account-that-is-still-unverified)). Disabled, locked and deleted accounts get the matching status error (`ErrAccountDisabled`, `ErrAccountLocked`, `ErrAccountDeleted`), and a pending account with email verification off gets `ErrAccountUnverified`.
 5. `newEmail` is trimmed and must be a bare address (no display name, angle brackets, whitespace or control characters, at most 254 bytes) and must differ, case-insensitively, from the current identifier: `ErrEmailChangeInvalid` otherwise. This is stricter than account creation, which only requires a non-empty identifier, because a code is about to be mailed to it.
 6. **Whether `newEmail` already has an account is not checked**, so the call cannot be used to enumerate accounts: the result, the audit trail and the Redis footprint are the same for a taken and a free address. Uniqueness is enforced at confirm.
 7. One change is pending per user: a new request replaces the old challenge.
@@ -42,13 +42,34 @@ type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoke
 
 1. The code is compared in constant time; each wrong attempt is counted, and the challenge is deleted when `MaxAttempts` run out. An unknown, expired or foreign challenge is `ErrEmailChangeInvalid`. The challenge belongs to the tenant its id carries; with multi-tenancy on, a caller whose context names a different tenant cannot use it.
 2. The challenge is **one use**: a correct code deletes it. Any failure after that (stale, in use, status, provider outage) needs a new request.
-3. The account is loaded again. It must still be Active, still at the `AccountVersion` the request saw and still have the identifier the request replaced; otherwise `ErrEmailChangeStale` ("something changed the account, start again").
+3. The account is loaded again. It must still be Active (or, for a challenge requested by a pending account, still pending), still at the `AccountVersion` the request saw and still have the identifier the request replaced; otherwise `ErrEmailChangeStale` ("something changed the account, start again").
 4. The provider's `UpdateIdentifier` installs the new identifier with a compare-and-set (see below):
    - `ErrProviderDuplicateIdentifier` becomes **`ErrEmailInUse`**. Saying so is safe: the caller has just proved they own that address.
    - `ErrEmailChangeStale` passes through.
    - Any other error is a 503 (`ErrSystemUnavailable`).
 5. Sessions: unless `KeepOtherSessions`, every session of the user is revoked **except** `opts.KeepSessionID`, when that is a live session of the same user and tenant (otherwise it is ignored and everything is revoked). The kept session stays in the user's index and in the tenant count; revoked sessions' MFA-proof keys go with them. If the change succeeded but the sessions could not be revoked, you get both the result and `ErrSessionInvalidationFailed`: the address did change, so notify and retry `LogoutAll`.
-6. `EmailChangeResult.OldEmail` is the address that was replaced. **Your application SHOULD notify it**: it is the only way a previous owner (or the real owner of a hijacked account) learns the account moved.
+6. `EmailChangeResult.OldEmail` is the address that was replaced. **Your application SHOULD notify it**: it is the only way a previous owner (or the real owner of a hijacked account) learns the account moved. The exception is `WasUnverified`: see below.
+
+### An account that is still unverified
+
+A user who signed up with a mistyped address can never receive the verification mail, so with the verified-only rule they could never fix it. While `EmailVerification.Enabled`, `RequestEmailChange` therefore also accepts a `PendingVerification` account. Everything else is identical: the code goes to the new address, the strategies, limiters, one-pending-change-per-user rule and the enumeration safety (no hint whether the new address is taken) are the same.
+
+At `ConfirmEmailChange` the account is loaded again and must still be pending (or already Active if it was activated by a route that leaves its `AccountVersion` alone; goAuth's own verification revokes the user's sessions, which cancels the staged change, so it never reaches this point). Then, in order:
+
+1. the identifier is installed with the usual compare-and-set (a taken address is `ErrEmailInUse`);
+2. the account moves **PendingVerification → Active**: through `AccountStatusCASUpdater.UpdateAccountStatusIf(Pending, Active)` when the provider implements it, otherwise by re-reading the account and writing only if it is still pending. **The code proves the new address, so it *is* the verification**: no second mail. A disable, lock or delete that landed since the account was loaded stays in force;
+3. outstanding reset and verification codes are superseded (below);
+4. sessions follow the verified flow's rule (`KeepOtherSessions`, `KeepSessionID`).
+
+**If step 2 fails after step 1 succeeded** (a blocking status appeared, or the provider failed) the address *has* changed and the account is still unverified. goAuth returns the `*EmailChangeResult` **together with** the error, so a caller that keeps the result knows the address moved: act on `result.NewEmail` and send the user a normal verification for it with `RequestEmailVerification`. A caller that discards the result on error would miss the change; check `result != nil`.
+
+**`WasUnverified`.** `EmailChangeResult.WasUnverified` is true for this path. The old address was never proven to belong to the user (it may belong to whoever typed it by mistake), so **do not send the old-address notice when `WasUnverified` is true**; the notice would tell a stranger that an account exists at their address.
+
+Nothing is reserved before the code is confirmed. The new address is claimed only at confirm, so nobody can squat an address they cannot read, and two pending accounts can request the same new address.
+
+Without a `AccountStatusCASUpdater` the activation re-reads the account right before writing, which narrows the window in which a concurrent disable could be overwritten but cannot close it. Implement the interface (see [email_verification.md](email_verification.md)) if your accounts can be disabled while a verification is in flight.
+
+Audit: `email_change_requested` and `email_change_confirmed` carry `account_was_unverified=true`; nothing else about them changes. The challenge is flagged by a separate key (`aecu:<tenant>:<verification id>`), so the stored challenge record is the one a verified account's is.
 
 ### Cancel
 
@@ -85,14 +106,22 @@ UPDATE users
 |------|--------------|
 | **External identities** | Links stay. A link is `(provider, subject)`, so signing in through it keeps working and keeps resolving to the same account. With `ExternalAuth.AutoLinkVerifiedEmail`, later auto-links match the **new** identifier (which was just proved) and no longer the old one; the old address becomes a free address. |
 | **Password-less accounts** | They can change their email. The code mailed to the new address proves the new address, but nothing proves the *current user* is who they say: the application must step them up before calling `RequestEmailChange` (below). |
-| **Pending email-verification challenges** for the old address | Refused after a change: `ConfirmEmailVerification*` returns `ErrEmailVerificationInvalid`. |
-| **Password-reset challenges** issued to the old address | Refused after a change: `ConfirmPasswordReset*` returns `ErrPasswordResetInvalid`. |
+| **Pending email-verification challenges** for the old address | Refused after a change: `ConfirmEmailVerification*` returns `ErrEmailVerificationInvalid`. A code requested for the *new* address afterwards, even in the same second as the change, is valid. |
+| **Password-reset challenges** issued to the old address | Refused after a change: `ConfirmPasswordReset*` returns `ErrPasswordResetInvalid`. A reset requested for the *new* address afterwards, even in the same second as the change, is valid. |
 | **`AccountVersion`** | The provider bumps it. It makes a *pending email change* stale if anything else changes the account in between. |
 | **Sessions** | See Confirm, step 5. Strict validation is unaffected for kept sessions: sessions carry their own copy of the version. |
 
 ### How old challenges are invalidated
 
-A reset or verification record holds only its user, secret hash, expiry, attempts and strategy: no identifier and no account version. The `AccountVersion` bump therefore does **not** stop an old reset code (a test pins this). With `EmailChange` enabled, a confirmed change writes a per-user marker (`aeci:<tenant>:<user>`, the change time) before the provider call and again right after it commits (so a code requested for the old address while the call ran is refused too; a failure of the second write is only logged), and the reset and verification confirm paths read it after consuming a record: a record whose issue time (its expiry minus the configured TTL) is at or before the marker is refused as invalid. The marker lives for the longer of the two TTLs plus an hour. It costs one `GET` on those two confirm paths while the feature is on, and nothing while it is off. Consequences: a code requested within the same second as the change is also refused (ask again); changing a TTL in the configuration shifts the computed issue time of codes already issued by the difference; a marker that cannot be read refuses the challenge (a 503) rather than guess.
+A reset or verification record holds only its user, secret hash, expiry, attempts and strategy: no identifier and no account version. The `AccountVersion` bump therefore does **not** stop an old reset code (a test pins this). Supersession is decided by **write order**, not by time:
+
+- each user has a pointer to their newest reset record (`aprg:<tenant>:<user>`) and to their newest verification record (`aevg:<tenant>:<user>`, same lifetime as the record). A request writes its record and then points the pointer at it; a confirm accepts a record only if it is the pointer's current one;
+- a confirmed change writes a **tombstone** into both pointers before the provider call and again right after it commits, so every code issued before the commit is refused, and a code requested afterwards writes a new pointer and is valid. This holds in the very second of the commit, which the earlier time-based rule could not do: it refused every record issued at or before the commit second, so a reset requested for the new address in that second was mailed and then refused;
+- a request that resolved the account before the commit and writes its pointer after the tombstone would leave a valid code for the old address. The request therefore re-reads the account after writing the pointer and fails with the flow's *unavailable* error (handing out no code) when the address is no longer the one it resolved. The check runs only while `EmailChange` is enabled.
+
+The time-based marker (`aeci:<tenant>:<user>`, the change time) is still written, but it is read only as a **fallback** for a record whose owner has no pointer: a record issued by an instance older than v0.8.1 never wrote one. During a rolling deploy a code requested from an older instance *after* a change finds the tombstone and is refused; the user requests another. The marker costs one `GET` on those confirms only.
+
+The helper that writes the tombstone (`supersedeResetCodes`) covers every tenant a revocation of the user covers (the context tenant and the record's) and is written to be reused by other flows.
 
 ## Step-up before you call it
 
@@ -139,8 +168,8 @@ Account status failures use the existing status errors, and a provider or Redis 
 
 | Event | `metadata` |
 |-------|-----------|
-| `email_change_requested` | `old_email`, `new_email`, both masked (`j***@example.com`); never the code |
-| `email_change_confirmed` | `old_email`, `new_email` (masked), `sessions_revoked` |
+| `email_change_requested` | `old_email`, `new_email`, both masked (`j***@example.com`); never the code; `account_was_unverified=true` when the account is pending |
+| `email_change_confirmed` | `old_email`, `new_email` (masked), `sessions_revoked`; `account_was_unverified=true` when the account was pending |
 | `email_change_cancelled` | `reason` (`recovery`): a pending change was dropped because the user's sessions were revoked |
 | `email_change_failure` | `stage` (`request`, `confirm` or `cancel`), `reason` |
 
@@ -148,7 +177,7 @@ Failure reasons: `disabled`, `user_not_found`, `status`, `invalid_email`, `same_
 
 ## Redis keys
 
-Only while enabled: `aec:<tenant>:<id>` (challenge), `aecp:<tenant>:<user>` (the user's pending id), `aeci:<tenant>:<user>` (identifier-change marker), `rl:emailchange:<tenant>:<user>` (request limiter). Rolling back is `EmailChange.Enabled = false`; the keys expire by TTL.
+Only while enabled: `aec:<tenant>:<id>` (challenge), `aecp:<tenant>:<user>` (the user's pending id), `aecu:<tenant>:<id>` (flag on a challenge requested by a pending account; the challenge's lifetime), `aeci:<tenant>:<user>` (identifier-change marker; fallback only), `rl:emailchange:<tenant>:<user>` (request limiter). A confirmed change also writes the tombstones `aprg:<tenant>:<user>` and `aevg:<tenant>:<user>` (see above). Rolling back is `EmailChange.Enabled = false`; the keys expire by TTL.
 
 ## Related
 

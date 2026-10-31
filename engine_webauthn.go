@@ -60,7 +60,7 @@ func (e *Engine) FinishWebAuthnRegistration(ctx context.Context, userID, ceremon
 	if err != nil {
 		return nil, mapToAuthError(err)
 	}
-	stored := fromLibWebAuthnCredential(*credential, time.Now())
+	stored := fromLibWebAuthnCredential(*credential, e.now())
 	return &stored, nil
 }
 
@@ -234,7 +234,7 @@ func (e *Engine) webauthnFlowDeps() internalflows.WebAuthnDeps {
 		RejectClonedAuthenticators: cfg.WebAuthn.RejectClonedAuthenticators,
 		CeremonyTTL:                cfg.WebAuthn.CeremonyTTL,
 		TenantIDFromContext:        tenantIDFromContext,
-		Now:                        time.Now,
+		Now:                        e.now,
 		MapSessionStoreError:       mapWebAuthnSessionStoreError,
 		MapMFAStoreError:           mapMFALoginStoreError,
 		Errors: internalflows.WebAuthnErrors{
@@ -289,7 +289,7 @@ func (e *Engine) webauthnFlowDeps() internalflows.WebAuthnDeps {
 			return credentials, nil
 		}
 		deps.AddCredential = func(ctx context.Context, userID string, credential webauthn.Credential) error {
-			return e.webauthnProvider.AddWebAuthnCredential(ctx, userID, fromLibWebAuthnCredential(credential, time.Now()))
+			return e.webauthnProvider.AddWebAuthnCredential(ctx, userID, fromLibWebAuthnCredential(credential, e.now()))
 		}
 		deps.UpdateCredentialSignCount = e.webauthnProvider.UpdateWebAuthnCredentialSignCount
 	}

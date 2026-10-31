@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MrEthical07/goAuth/internal/clock"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -515,7 +514,7 @@ func (s *Store) SwapSession(
 		newAssurance = EncodeAssurance(*assurance)
 	}
 
-	now := clock.Now()
+	now := s.now()
 	args := []interface{}{
 		oldSessionID,
 		s.userKey(tenantID, ""),

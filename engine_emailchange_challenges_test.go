@@ -118,6 +118,9 @@ func TestEmailChangeInvalidatesChallengesIssuedToTheOldAddress(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The marker is only read for a record without a pointer (one an older
+		// instance issued): drop the pointer to be that record.
+		env.mr.Del("aprg:" + env.tenant + ":" + rsUserID)
 		hook := &keyFailHook{substr: "aeci:"}
 		env.rdb.AddHook(hook)
 		hook.on.Store(true)
@@ -129,13 +132,15 @@ func TestEmailChangeInvalidatesChallengesIssuedToTheOldAddress(t *testing.T) {
 }
 
 // With the feature on but no change ever made, a reset or verification confirm
-// reads one extra key (the marker); nothing else is added.
+// whose record has a pointer reads no marker; one without a pointer (issued by
+// an older instance) reads the one extra key.
 func TestEmailChangeOnCostsOneReadOnTheConfirmPaths(t *testing.T) {
 	env := newECEnv(t, nil)
 	reset, err := env.engine.RequestPasswordReset(env.ctx(), rsIdentifier)
 	if err != nil {
 		t.Fatal(err)
 	}
+	env.mr.Del("aprg:" + env.tenant + ":" + rsUserID)
 	env.cmds.reset()
 	if err := env.engine.ConfirmPasswordReset(env.ctx(), reset, "brand-new-password-9"); err != nil {
 		t.Fatal(err)

@@ -93,7 +93,13 @@ func TestRequestEmailChangeRefusesNonActiveAccounts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.want.Message, func(t *testing.T) {
-			env := newECEnv(t, nil)
+			// A pending account may change its address while email
+			// verification is on; it is refused only when it is off.
+			env := newECEnv(t, nil, rsConfig(func(c *Config) {
+				if tc.status == AccountPendingVerification {
+					c.EmailVerification.Enabled = false
+				}
+			}))
 			u := env.user(rsUserID)
 			u.Status = tc.status
 			env.setUser(u)

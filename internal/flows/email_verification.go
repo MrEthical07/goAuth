@@ -10,6 +10,9 @@ type EmailVerificationUser struct {
 	UserID   string
 	TenantID string
 	Status   uint8
+	// Identifier is the address the account had when it was resolved. It is
+	// only read by RecheckIdentifier.
+	Identifier string
 }
 
 type EmailVerificationStoreRecord struct {
@@ -93,10 +96,21 @@ type EmailVerificationDeps struct {
 	// UpdateStatusAndInvalidate for the pending-to-active transition: the
 	// status is written only if it is still the expected one, and the user's
 	// sessions are ended after a write that applied.
-	UpdateStatusIf     func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error)
+	UpdateStatusIf func(ctx context.Context, tenantID, userID string, expected, next uint8) (bool, error)
+	// UpdateStatus writes a status without touching sessions. Only
+	// ActivatePendingAccountKeepSessions uses it.
+	UpdateStatus       func(ctx context.Context, userID string, status uint8) error
 	InvalidateSessions func(ctx context.Context, tenantID, userID string) error
 
-	SaveVerificationRecord    func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
+	SaveVerificationRecord func(context.Context, string, string, EmailVerificationStoreRecord, time.Duration) error
+	// SupersedeVerifications makes verificationID the user's only valid
+	// verification record, so a request cancels the codes of earlier ones. It
+	// runs after the record is saved. Nil leaves earlier codes valid.
+	SupersedeVerifications func(ctx context.Context, tenantID, userID, verificationID string, ttl time.Duration) error
+	// RecheckIdentifier, when set, runs after SupersedeVerifications and
+	// reports whether the account still has the identifier it was resolved
+	// with (see PasswordResetDeps.RecheckIdentifier). Nil skips the check.
+	RecheckIdentifier         func(ctx context.Context, tenantID, userID, identifier string) (bool, error)
 	ConsumeVerificationRecord func(context.Context, string, string, [32]byte, int, int) (EmailVerificationStoreRecord, error)
 
 	GenerateChallenge  func(int, int, string) (string, string, [32]byte, error)
@@ -108,6 +122,11 @@ type EmailVerificationDeps struct {
 	// (nil: a context-aware sleep).
 	EnumerationFloor func() time.Duration
 	SleepFor         func(context.Context, time.Duration) error
+	// FloorNow is the time source the floor measures its elapsed time with.
+	// The floor is a real-time defence against timing measurement, so an
+	// engine with an injected test clock passes the wall clock here; nil falls
+	// back to Now.
+	FloorNow func() time.Time
 
 	MetricInc     func(int)
 	EmitAudit     func(context.Context, string, bool, string, string, string, error, func() map[string]string)
@@ -120,7 +139,7 @@ type EmailVerificationDeps struct {
 
 func RunRequestEmailVerification(ctx context.Context, identifier string, deps EmailVerificationDeps) (string, error) {
 	normalizeEmailVerificationDeps(&deps)
-	floor := startEnumerationFloor(deps.Now, deps.EnumerationFloor, deps.SleepFor)
+	floor := startEnumerationFloor(floorClock(deps.FloorNow, deps.Now), deps.EnumerationFloor, deps.SleepFor)
 
 	if !deps.Enabled {
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.EmailVerificationDisabled, nil)
@@ -299,6 +318,39 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			}
 		})
 		return "", mapped
+	}
+
+	// The record exists; only now does it cancel the earlier ones, so a request
+	// that fails to store its record does not cost the user the code they hold.
+	// Until this returns the new code has not been mailed either.
+	if deps.SupersedeVerifications != nil {
+		if err := deps.SupersedeVerifications(ctx, effectiveTenant, user.UserID, verificationID, deps.VerificationTTL); err != nil {
+			mapped := deps.MapStoreError(err)
+			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"reason":     "supersede_failed",
+				}
+			})
+			return "", mapped
+		}
+	}
+
+	// See RunRequestPasswordReset: an email change that committed while this
+	// request was in flight must not leave a valid code for the old address.
+	if deps.RecheckIdentifier != nil {
+		same, recheckErr := deps.RecheckIdentifier(ctx, effectiveTenant, user.UserID, user.Identifier)
+		if recheckErr != nil || !same {
+			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
+			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, effectiveTenant, "", deps.Errors.EmailVerificationUnavailable, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"reason":     "identifier_changed",
+				}
+			})
+			return "", deps.Errors.EmailVerificationUnavailable
+		}
 	}
 
 	deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, user.UserID, effectiveTenant, "", nil, func() map[string]string {
@@ -589,6 +641,37 @@ func activatePendingAccount(ctx context.Context, tenantID string, user EmailVeri
 		return outcome, err
 	}
 	return activationDone, deps.UpdateStatusAndInvalidate(scoped, user.UserID, deps.ActiveStatus)
+}
+
+// ActivatePendingAccountKeepSessions is activatePendingAccount for a caller
+// that settles the account's sessions itself (a confirmed email change): the
+// same compare-and-set, or re-read and write only from pending, but no session
+// is invalidated. It reports whether the account was found Active already, in
+// which case nothing was written; a blocking status is returned as its error.
+func ActivatePendingAccountKeepSessions(ctx context.Context, tenantID, userID string, deps EmailVerificationDeps) (alreadyActive bool, err error) {
+	normalizeEmailVerificationDeps(&deps)
+	scoped := deps.WithTenant(ctx, tenantID)
+
+	if deps.UpdateStatusIf != nil {
+		applied, err := deps.UpdateStatusIf(scoped, tenantID, userID, deps.PendingStatus, deps.ActiveStatus)
+		if err != nil {
+			return false, err
+		}
+		if applied {
+			return false, nil
+		}
+		outcome, err := judgeStatusBeforeActivation(ctx, tenantID, userID, deps)
+		return outcome == activationAlreadyActive, err
+	}
+
+	outcome, err := judgeStatusBeforeActivation(ctx, tenantID, userID, deps)
+	if err != nil || outcome == activationAlreadyActive {
+		return outcome == activationAlreadyActive, err
+	}
+	if deps.UpdateStatus == nil {
+		return false, deps.Errors.EmailVerificationUnavailable
+	}
+	return false, deps.UpdateStatus(scoped, userID, deps.ActiveStatus)
 }
 
 // judgeStatusBeforeActivation reads the account and reports whether it can

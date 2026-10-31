@@ -26,6 +26,8 @@ type ExternalConfig struct {
 	Cooldown    time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 // ExternalLimiter rate-limits external (third-party) sign-in attempts in two
@@ -58,7 +60,7 @@ func NewExternalLimiter(redisClient redis.UniversalClient, cfg ExternalConfig) *
 		cd = defaultExternalCooldown
 	}
 	return &ExternalLimiter{
-		window:      window.New(redisClient, cfg.WindowMode),
+		window:      window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now),
 		maxAttempts: int64(max),
 		cooldown:    cd,
 	}

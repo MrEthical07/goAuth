@@ -97,6 +97,7 @@ const (
 	CodeAuthExternalLinkRequired           AuthCode = "AUTH_EXTERNAL_LINK_REQUIRED"
 	CodeAuthExternalLinkRequiresVerify     AuthCode = "AUTH_EXTERNAL_LINK_REQUIRES_VERIFICATION"
 	CodeAuthExternalIdentityInUse          AuthCode = "AUTH_EXTERNAL_IDENTITY_IN_USE"
+	CodeAuthExternalSignupInvalid          AuthCode = "AUTH_EXTERNAL_SIGNUP_INVALID"
 	CodeAuthLastLoginMethod                AuthCode = "AUTH_LAST_LOGIN_METHOD"
 	CodeAuthPasswordNotSet                 AuthCode = "AUTH_PASSWORD_NOT_SET"
 	CodeAuthExternalLoginRateLimited       AuthCode = "AUTH_EXTERNAL_LOGIN_RATE_LIMITED"
@@ -325,6 +326,8 @@ var (
 	ErrExternalLinkRequiresVerification = NewAuthError(CategoryAuthState, string(CodeAuthExternalLinkRequiresVerify), "account email must be verified before linking")
 	// ErrExternalIdentityInUse is returned when the identity is already linked to a different user. User providers return it from ExternalIdentityProvider for a uniqueness conflict.
 	ErrExternalIdentityInUse = NewAuthError(CategoryAuthState, string(CodeAuthExternalIdentityInUse), "external identity already linked to another account")
+	// ErrExternalSignupInvalid is returned by CompleteExternalSignup when the signup handle is unknown, already used, expired or belongs to another tenant (suggested HTTP status: 400). The handle is single use and is consumed by the first attempt, so after any failure the application restarts the sign-up with a new token.
+	ErrExternalSignupInvalid = NewAuthError(CategoryAuthValidation, string(CodeAuthExternalSignupInvalid), "external sign-up ticket invalid")
 	// ErrLastLoginMethod is returned when unlinking would leave an account with no way to sign in.
 	ErrLastLoginMethod = NewAuthError(CategoryAuthState, string(CodeAuthLastLoginMethod), "cannot remove the last sign-in method")
 	// ErrPasswordNotSet is returned by ChangePassword and VerifyPassword for an account that has no password (one created through external sign-in). A password can be set through password reset.

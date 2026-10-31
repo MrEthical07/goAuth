@@ -11,6 +11,9 @@ type PasswordResetUser struct {
 	UserID   string
 	TenantID string
 	Status   uint8
+	// Identifier is the address the account had when it was resolved. It is
+	// only read by RecheckIdentifier.
+	Identifier string
 }
 
 type PasswordResetStoreRecord struct {
@@ -91,8 +94,13 @@ type PasswordResetDeps struct {
 	// is saved. InvalidateResets does the same for every record when a reset
 	// completed. Both are optional, and a failure of the second is audited, not
 	// returned: the password has already changed.
-	SupersedeResets  func(ctx context.Context, tenantID, userID, resetID string, ttl time.Duration) error
-	InvalidateResets func(ctx context.Context, tenantID, userID string, ttl time.Duration) error
+	SupersedeResets func(ctx context.Context, tenantID, userID, resetID string, ttl time.Duration) error
+	// RecheckIdentifier, when set, runs after SupersedeResets and reports
+	// whether the account still has the identifier it was resolved with. An
+	// email change that committed while the request was in flight would
+	// otherwise leave a valid code for the old address. Nil skips the check.
+	RecheckIdentifier func(ctx context.Context, tenantID, userID, identifier string) (bool, error)
+	InvalidateResets  func(ctx context.Context, tenantID, userID string, ttl time.Duration) error
 
 	SaveResetRecord    func(context.Context, string, string, PasswordResetStoreRecord, time.Duration) error
 	GetResetRecord     func(context.Context, string, string) (PasswordResetStoreRecord, error)
@@ -105,6 +113,11 @@ type PasswordResetDeps struct {
 	// no floor. SleepFor waits for a duration (nil: a context-aware sleep).
 	EnumerationFloor func() time.Duration
 	SleepFor         func(context.Context, time.Duration) error
+	// FloorNow is the time source the floor measures its elapsed time with.
+	// The floor is a real-time defence against timing measurement, so an
+	// engine with an injected test clock passes the wall clock here; nil falls
+	// back to Now.
+	FloorNow func() time.Time
 
 	VerifyTOTPForUser        func(context.Context, PasswordResetUser, string) error
 	VerifyBackupCodeInTenant func(context.Context, string, string, string) error
@@ -120,7 +133,7 @@ type PasswordResetDeps struct {
 
 func RunRequestPasswordReset(ctx context.Context, identifier string, deps PasswordResetDeps) (string, error) {
 	normalizePasswordResetDeps(&deps)
-	floor := startEnumerationFloor(deps.Now, deps.EnumerationFloor, deps.SleepFor)
+	floor := startEnumerationFloor(floorClock(deps.FloorNow, deps.Now), deps.EnumerationFloor, deps.SleepFor)
 
 	if !deps.Enabled {
 		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", deps.TenantIDFromContext(ctx), "", deps.Errors.PasswordResetDisabled, nil)
@@ -283,6 +296,24 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 				}
 			})
 			return "", mapped
+		}
+	}
+
+	// An email change that committed after the account was read tombstones the
+	// pointer before this request's pointer write lands on top of it, which
+	// would leave a valid code for the old address. The change commits before it
+	// tombstones, so if the address is still the one we resolved, any later
+	// change's tombstone lands after our pointer and supersedes it.
+	if deps.RecheckIdentifier != nil {
+		same, recheckErr := deps.RecheckIdentifier(ctx, effectiveTenant, user.UserID, user.Identifier)
+		if recheckErr != nil || !same {
+			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, effectiveTenant, "", deps.Errors.PasswordResetUnavailable, func() map[string]string {
+				return map[string]string{
+					"identifier": identifier,
+					"reason":     "identifier_changed",
+				}
+			})
+			return "", deps.Errors.PasswordResetUnavailable
 		}
 	}
 

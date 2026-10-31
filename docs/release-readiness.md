@@ -2,16 +2,18 @@
 
 ## v0.8.1 (security release)
 
-Date: 2026-10-27
+Date: 2026-10-31
 Release Target: v0.8.1
-Status: Ready for release once the pull request for part 3 is merged and CI is green on `main`. The tag is created by the maintainer; nothing in the pull requests creates, moves or deletes one.
+Status: Ready for release once the pull request for the Dressin G-4 requests (part 4) is merged and CI is green on `main`. The tag is created by the maintainer; nothing in the pull requests creates, moves or deletes one.
 
 ### Summary
 
 v0.8.1 is the fix release for the second security audit of v0.8.0 (findings `R2-xx`),
 delivered as three pull requests: part 1 limiters, brute force and enumeration (#30),
 part 2 session lifecycle and revocation (#31), part 3 MFA artifacts, recovery and
-docs (this one). **v0.8.0 is retracted** (`retract v0.8.0` in `go.mod`: MFA-login TOTP
+docs (#32), plus part 4, the four changes requested by the first adopter (G-4: a test
+clock, email change for an unverified account, the change-email boundary fix and a
+two-step external sign-up). **v0.8.0 is retracted** (`retract v0.8.0` in `go.mod`: MFA-login TOTP
 guessing was not limited per account). Upgrading from v0.8.0 is recommended; the
 CHANGELOG `[0.8.1]` section lists the behavior changes old → new and the two changes
 that can need action (`EmailChange.Strategy: VerificationUUID` is rejected by `Build`;
@@ -29,6 +31,11 @@ that can need action (`EmailChange.Strategy: VerificationUUID` is rejected by `B
   `amc:<challenge>:ep` (epoch and advertised factors of an MFA challenge),
   `abg:<tenant>:<user>` (first backup-code generation, 10 minutes),
   `aprg:<tenant>:<user>` (newest password-reset code), plus the limiter keys of part 1.
+  Part 4 adds `aevg:<tenant>:<user>` (newest verification code, or a tombstone),
+  `aecu:<tenant>:<id>` (an email change requested by a pending account) and, only with
+  `DeferSignup`, `axs:<tenant>:<sha256(handle)>`. The
+  time-based `aeci:<tenant>:<user>` marker stays as the fallback for records with no
+  pointer (issued by older instances).
 - **Rolling deploy.** v0.8.0 and v0.8.1 instances can share a Redis. The revocation
   fence covers revocations made by v0.8.1 instances only; a reset code issued by a
   v0.8.0 instance may be refused once a v0.8.1 instance wrote the user's pointer; an
@@ -40,18 +47,18 @@ that can need action (`EmailChange.Strategy: VerificationUUID` is rejected by `B
 
 ### Verification gates
 
-Run on the part 3 branch (Windows, Go 1.27):
+Run on the part 4 (G-4) branch (Windows, Go 1.27.1; scanners with Go 1.27.3):
 
 | Gate | Result |
 |------|--------|
 | `gofmt -l .`, `goimports -l .` | no output |
-| `go build ./...`, `go vet ./...`, `go vet -tags=integration ./...` | pass |
+| `go build ./...`, `go vet ./...`, `go vet -tags=integration ./...` | pass, also at every commit |
 | `go test ./... -count=1` | pass |
 | `go test -tags=integration ./test/...` (miniredis, and Redis 7.0.15 through `REDIS_ADDR`) | pass |
 | staticcheck (`-checks=all,-ST1000,-ST1003,-ST1005,-U1000`) | no findings |
 | `security/run_scanners.sh` (Go 1.27.3) | baseline passed |
 | `gorelease -base=v0.8.0` | only compatible changes |
-| `security/run_perf_sanity.sh` | `ns/op` of `BenchmarkRefresh` is above the recorded baseline locally exactly as on `main` on the same machine (the baseline was recorded on other hardware); a same-machine A/B of Login, Login+MFA, Refresh, Validate, Logout and LogoutAll is in the pull request |
+| `security/run_perf_sanity.sh` | `ns/op` of `BenchmarkRefresh` is above the recorded baseline locally exactly as on `main` on the same machine (the baseline was recorded on other hardware); a same-machine A/B against `main` of Login, Login+MFA, Refresh, Validate (strict and JWT-only), `RequestPasswordReset` and `LoginWithExternalIdentity` shows no difference (every row `~`) and is in the pull request |
 
 `go test -race ./...` is enforced by the `go-race` CI workflow (Ubuntu and macOS);
 local race builds are unavailable on the release machine.
@@ -60,10 +67,11 @@ local race builds are unavailable on the release machine.
 
 - [x] Parts 1 and 2 merged (#30, #31)
 - [x] Part 3 implemented with tests and docs
+- [x] Part 4 (G-4) implemented with tests and docs; CHANGELOG `[0.8.1]` carries the security-review summary and the known residuals
 - [x] CHANGELOG `[0.8.1]` dated, with the combined behavior changes and migration notes
 - [x] `go.mod` retracts v0.8.0
 - [x] Local gate passes
-- [ ] Part 3 pull request merged to `main`, `go-race` and CodeQL green on `main`
+- [ ] Part 4 pull request merged to `main`, `go-race` and CodeQL green on `main`
 - [ ] Annotated tag `v0.8.1` created after merge (maintainer); the retraction takes effect once it is published
 
 ---

@@ -138,6 +138,7 @@ The verification store uses a Lua script for the `Consume` operation, providing:
 - `RequireForLogin = true` blocks login with `ErrAccountUnverified` until verified.
 - Rate limiting is split into request and confirm-failure limiter paths.
 - OTP mode enforces stricter limits in production mode.
+- **One valid code per account.** Like password reset, each user has a pointer to their newest verification record (`aevg:<tenant>:<user>`, written after the record is stored, living as long as `VerificationTTL`). A confirm accepts a record only if it is the pointer's current one, so a newer `RequestEmailVerification` supersedes the codes of earlier requests. A confirmed email change writes a tombstone into the pointer: every code issued before the change is refused and a code requested afterwards (for the new address) is valid, even in the same second. A record whose owner has no pointer (issued by an instance older than v0.8.1) is judged by the time-based identifier-change marker instead. The pointer adds one `GET` to a confirm and one `SET` to a request. See [email_change.md](email_change.md#how-old-challenges-are-invalidated).
 
 ## Examples
 

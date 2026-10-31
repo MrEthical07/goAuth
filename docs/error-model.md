@@ -126,6 +126,7 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `CodeAuthExternalLinkRequired` | `AUTH_EXTERNAL_LINK_REQUIRED` |
 | `CodeAuthExternalLinkRequiresVerify` | `AUTH_EXTERNAL_LINK_REQUIRES_VERIFICATION` |
 | `CodeAuthExternalIdentityInUse` | `AUTH_EXTERNAL_IDENTITY_IN_USE` |
+| `CodeAuthExternalSignupInvalid` | `AUTH_EXTERNAL_SIGNUP_INVALID` |
 | `CodeAuthLastLoginMethod` | `AUTH_LAST_LOGIN_METHOD` |
 | `CodeAuthPasswordNotSet` | `AUTH_PASSWORD_NOT_SET` |
 | `CodeAuthExternalLoginRateLimited` | `AUTH_EXTERNAL_LOGIN_RATE_LIMITED` |
@@ -219,6 +220,7 @@ Any guardrail failure is a hard CI failure. There are no silent bypass paths for
 | `ErrExternalAccountLinkRequired` | `CategoryAuthState` | `CodeAuthExternalLinkRequired` | `account exists; sign in and link the external identity` |
 | `ErrExternalLinkRequiresVerification` | `CategoryAuthState` | `CodeAuthExternalLinkRequiresVerify` | `account email must be verified before linking` |
 | `ErrExternalIdentityInUse` | `CategoryAuthState` | `CodeAuthExternalIdentityInUse` | `external identity already linked to another account` |
+| `ErrExternalSignupInvalid` | `CategoryAuthValidation` | `CodeAuthExternalSignupInvalid` | `external sign-up ticket invalid` |
 | `ErrLastLoginMethod` | `CategoryAuthState` | `CodeAuthLastLoginMethod` | `cannot remove the last sign-in method` |
 | `ErrPasswordNotSet` | `CategoryAuthState` | `CodeAuthPasswordNotSet` | `account has no password` |
 | `ErrExternalLoginRateLimited` | `CategoryAuthAbuse` | `CodeAuthExternalLoginRateLimited` | `external sign-in attempts rate limited` |
@@ -269,6 +271,7 @@ These status mappings are recommended for API adapters wrapping goAuth.
 | `AUTH_SESSION_PROFILE_CONFLICT` | `409 Conflict` |
 | `AUTH_EXTERNAL_DISABLED`, `AUTH_EXTERNAL_EMAIL_UNVERIFIED` | `403 Forbidden` (see [external_identity.md](external_identity.md#http-mapping)) |
 | `AUTH_EXTERNAL_PROVIDER_UNKNOWN` | `400 Bad Request` |
+| `AUTH_EXTERNAL_SIGNUP_INVALID` | `400 Bad Request` (an unknown, used, expired or foreign sign-up handle: a single-use challenge like `AUTH_RESET_INVALID`, not an authentication failure; restart the sign-up) |
 | `AUTH_EXTERNAL_TOKEN_INVALID`, `AUTH_EXTERNAL_TOKEN_REPLAYED` | `401 Unauthorized` |
 | `AUTH_EXTERNAL_ACCOUNT_NOT_FOUND` | `404 Not Found` (the caller proved the identity, so nothing about anyone else is revealed, and a 401 would send clients into a re-login loop) |
 | `AUTH_EXTERNAL_LINK_REQUIRED`, `AUTH_EXTERNAL_LINK_REQUIRES_VERIFICATION`, `AUTH_EXTERNAL_IDENTITY_IN_USE`, `AUTH_LAST_LOGIN_METHOD`, `AUTH_PASSWORD_NOT_SET` | `409 Conflict` |

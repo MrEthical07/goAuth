@@ -504,6 +504,38 @@ type Store struct {
 	// epochTTL is how long a revocation epoch is kept after the last bump;
 	// zero means DefaultRevocationEpochTTL.
 	epochTTL time.Duration
+
+	// clk is the time source installed by WithClock; nil means the package
+	// default. It is a pointer so that Store stays comparable with ==.
+	clk *storeClock
+}
+
+// storeClock carries the time source of one Store.
+type storeClock struct {
+	now func() time.Time
+}
+
+// WithClock makes the store read the current time from c instead of the
+// package default (the system clock). It affects session creation and expiry,
+// idle windows, profile ceilings and the "now" handed to the Lua scripts; the
+// Redis key lifetimes themselves stay Redis's own time. A nil c restores the
+// default. Call it before the store is used; it returns the store.
+func (s *Store) WithClock(c interface{ Now() time.Time }) *Store {
+	if c == nil {
+		s.clk = nil
+		return s
+	}
+	s.clk = &storeClock{now: c.Now}
+	return s
+}
+
+// now returns the store's current time: the clock installed by WithClock, or
+// the package default.
+func (s *Store) now() time.Time {
+	if s != nil && s.clk != nil {
+		return s.clk.now()
+	}
+	return clock.Now()
 }
 
 // DefaultRevocationEpochTTL is how long the revocation epoch of a user is kept
@@ -753,7 +785,7 @@ func (s *Store) Get(ctx context.Context, tenantID, sessionID string, ttl time.Du
 	}
 	sess.SessionID = sessionID
 
-	now := clock.Now()
+	now := s.now()
 	if sess.Profile != "" {
 		return s.getProfiled(ctx, key, sess, now)
 	}
@@ -943,7 +975,7 @@ func (s *Store) GetReadOnly(ctx context.Context, tenantID, sessionID string) (*S
 		return nil, err
 	}
 	sess.SessionID = sessionID
-	now := clock.Now()
+	now := s.now()
 	if now.Unix() > sess.ExpiresAt {
 		return nil, redis.Nil
 	}
@@ -982,7 +1014,7 @@ func (s *Store) GetManyReadOnly(ctx context.Context, tenantID string, sessionIDs
 	}
 
 	sessions := make([]*Session, 0, len(sessionIDs))
-	now := clock.Now()
+	now := s.now()
 	nowUnix := now.Unix()
 	var idleKeys []string
 	var idleSessions []*Session
@@ -1242,7 +1274,7 @@ func (s *Store) RotateRefreshHash(
 	nextHash [32]byte,
 ) (*Session, error) {
 	key := s.key(tenantID, sessionID)
-	now := clock.Now()
+	now := s.now()
 	args := []interface{}{
 		sessionID,
 		s.userKey(tenantID, ""),
