@@ -35,6 +35,14 @@ type PasswordResetRecord struct {
 type PasswordResetStore struct {
 	redis  redis.UniversalClient
 	prefix string
+	now    func() time.Time
+}
+
+// WithClock sets the time source the store compares record expiry against
+// (the wall clock by default) and returns the store. Call it before use.
+func (s *PasswordResetStore) WithClock(now func() time.Time) *PasswordResetStore {
+	s.now = nowFn(now)
+	return s
 }
 
 func NewPasswordResetStore(redisClient redis.UniversalClient, prefix string) *PasswordResetStore {
@@ -44,6 +52,7 @@ func NewPasswordResetStore(redisClient redis.UniversalClient, prefix string) *Pa
 	return &PasswordResetStore{
 		redis:  redisClient,
 		prefix: prefix,
+		now:    time.Now,
 	}
 }
 
@@ -133,7 +142,7 @@ func (s *PasswordResetStore) Consume(
 				return err
 			}
 
-			now := time.Now()
+			now := s.now()
 			if now.Unix() > record.ExpiresAt {
 				_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 					pipe.Del(ctx, key)
@@ -169,7 +178,7 @@ func (s *PasswordResetStore) Consume(
 					return ErrResetAttemptsExceeded
 				}
 
-				ttl := time.Until(time.Unix(record.ExpiresAt, 0))
+				ttl := time.Unix(record.ExpiresAt, 0).Sub(now)
 				if ttl <= 0 {
 					_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 						pipe.Del(ctx, key)
@@ -239,7 +248,7 @@ func (s *PasswordResetStore) Get(ctx context.Context, tenantID, resetID string) 
 	if err != nil {
 		return nil, err
 	}
-	if time.Now().Unix() > record.ExpiresAt {
+	if s.now().Unix() > record.ExpiresAt {
 		return nil, ErrResetNotFound
 	}
 

@@ -22,6 +22,8 @@ type LockoutConfig struct {
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	// With Duration = 0 the counter never expires regardless of mode.
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 var (
@@ -38,7 +40,7 @@ type LockoutLimiter struct {
 
 // NewLockoutLimiter creates a new lockout limiter.
 func NewLockoutLimiter(redisClient redis.UniversalClient, cfg LockoutConfig) *LockoutLimiter {
-	return &LockoutLimiter{window: window.New(redisClient, cfg.WindowMode), config: cfg}
+	return &LockoutLimiter{window: window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now), config: cfg}
 }
 
 func (l *LockoutLimiter) key(tenantID, userID string) string {

@@ -46,6 +46,10 @@ type Config struct {
 	MaxFutureIAT  time.Duration
 	KeyID         string
 	VerifyKeys    map[string][]byte
+
+	// Now is the time source for token issue (iat, exp) and for validation
+	// (exp, nbf, the iat future bound). Nil is the wall clock.
+	Now func() time.Time
 }
 
 // Manager handles JWT access token creation and parsing. It holds the signing
@@ -198,6 +202,9 @@ func NewManager(cfg Config) (*Manager, error) {
 		return nil, err
 	}
 
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
 	m := &Manager{config: cfg}
 	m.methodAlg = m.getMethod().Alg()
 	m.accessParser = jwt.NewParser(buildAccessParserOptions(cfg, m.methodAlg)...)
@@ -364,7 +371,7 @@ func (j *Manager) createAccessFast(
 		ttl = 2 * time.Minute
 	}
 
-	now := time.Now()
+	now := j.config.Now()
 	payload := fastClaimsPayload{
 		UID: uid,
 		TID: tid,
@@ -450,13 +457,14 @@ func (j *Manager) createAccessLegacy(
 		}
 	}
 
+	now := j.config.Now()
 	claims := AccessClaims{
 		UID: uid,
 		TID: tid,
 		SID: sid,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(now),
 			Issuer:    j.config.Issuer,
 		},
 	}
@@ -606,7 +614,7 @@ func (j *Manager) validateClaimsExceptExpiry(claims *AccessClaims) error {
 		}
 	}
 	if claims.NotBefore != nil &&
-		time.Now().Add(j.config.Leeway).Before(claims.NotBefore.Time) {
+		j.config.Now().Add(j.config.Leeway).Before(claims.NotBefore.Time) {
 		return jwt.ErrTokenNotValidYet
 	}
 	return j.validateParsedAccessClaims(claims)
@@ -646,8 +654,11 @@ func checkSignVerifyConsistency(cfg Config) error {
 }
 
 func buildAccessParserOptions(cfg Config, methodAlg string) []jwt.ParserOption {
-	options := make([]jwt.ParserOption, 0, 5)
+	options := make([]jwt.ParserOption, 0, 6)
 	options = append(options, jwt.WithValidMethods([]string{methodAlg}))
+	if cfg.Now != nil {
+		options = append(options, jwt.WithTimeFunc(cfg.Now))
+	}
 	if cfg.Leeway > 0 {
 		options = append(options, jwt.WithLeeway(cfg.Leeway))
 	}
@@ -698,7 +709,7 @@ func (j *Manager) validateParsedAccessClaims(claims *AccessClaims) error {
 		return errors.New("token missing required iat claim")
 	}
 	if claims.IssuedAt != nil && j.config.MaxFutureIAT > 0 {
-		maxAllowed := time.Now().Add(j.config.MaxFutureIAT)
+		maxAllowed := j.config.Now().Add(j.config.MaxFutureIAT)
 		if claims.IssuedAt.Time.After(maxAllowed) {
 			return errors.New("token iat too far in the future")
 		}

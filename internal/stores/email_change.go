@@ -147,6 +147,14 @@ return 0
 type EmailChangeStore struct {
 	redis  redis.UniversalClient
 	prefix string
+	now    func() time.Time
+}
+
+// WithClock sets the time source the store compares challenge expiry against
+// (the wall clock by default) and returns the store. Call it before use.
+func (s *EmailChangeStore) WithClock(now func() time.Time) *EmailChangeStore {
+	s.now = nowFn(now)
+	return s
 }
 
 // NewEmailChangeStore creates the store. An empty prefix selects "aec".
@@ -154,7 +162,7 @@ func NewEmailChangeStore(redisClient redis.UniversalClient, prefix string) *Emai
 	if prefix == "" {
 		prefix = "aec"
 	}
-	return &EmailChangeStore{redis: redisClient, prefix: prefix}
+	return &EmailChangeStore{redis: redisClient, prefix: prefix, now: time.Now}
 }
 
 func (s *EmailChangeStore) recordPrefix(tenantID string) string {
@@ -210,7 +218,7 @@ func (s *EmailChangeStore) Consume(ctx context.Context, tenantID, verificationID
 
 	result, err := consumeEmailChangeLua.Run(ctx, s.redis,
 		[]string{s.key(tenantID, verificationID), s.pointerKey(tenantID, peeked.UserID)},
-		string(providedHash[:]), expectedStrategy, maxAttempts, time.Now().Unix(), verificationID,
+		string(providedHash[:]), expectedStrategy, maxAttempts, s.now().Unix(), verificationID,
 	).Result()
 	if err != nil {
 		switch err.Error() {

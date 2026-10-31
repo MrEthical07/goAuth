@@ -114,6 +114,14 @@ type EmailVerificationRecord struct {
 type EmailVerificationStore struct {
 	redis  redis.UniversalClient
 	prefix string
+	now    func() time.Time
+}
+
+// WithClock sets the time source the store compares record expiry against
+// (the wall clock by default) and returns the store. Call it before use.
+func (s *EmailVerificationStore) WithClock(now func() time.Time) *EmailVerificationStore {
+	s.now = nowFn(now)
+	return s
 }
 
 func NewEmailVerificationStore(redisClient redis.UniversalClient, prefix string) *EmailVerificationStore {
@@ -123,6 +131,7 @@ func NewEmailVerificationStore(redisClient redis.UniversalClient, prefix string)
 	return &EmailVerificationStore{
 		redis:  redisClient,
 		prefix: prefix,
+		now:    time.Now,
 	}
 }
 
@@ -156,7 +165,7 @@ func (s *EmailVerificationStore) Consume(
 	maxAttempts int,
 ) (*EmailVerificationRecord, error) {
 	key := s.key(tenantID, verificationID)
-	nowUnix := time.Now().Unix()
+	nowUnix := s.now().Unix()
 
 	result, err := consumeVerificationLua.Run(ctx, s.redis,
 		[]string{key},

@@ -21,6 +21,8 @@ type AccountConfig struct {
 	Cooldown      time.Duration
 	// WindowMode selects the counting algorithm (zero value = fixed window).
 	WindowMode window.Mode
+	// Now is the time source for the sliding window's buckets (nil = wall clock).
+	Now func() time.Time
 }
 
 type AccountCreationLimiter struct {
@@ -30,7 +32,7 @@ type AccountCreationLimiter struct {
 
 func NewAccountCreationLimiter(redisClient redis.UniversalClient, cfg AccountConfig) *AccountCreationLimiter {
 	return &AccountCreationLimiter{
-		window: window.New(redisClient, cfg.WindowMode),
+		window: window.NewWithClock(redisClient, cfg.WindowMode, cfg.Now),
 		config: cfg,
 	}
 }

@@ -126,6 +126,17 @@ func New(rdb redis.UniversalClient, mode Mode) *Window {
 	return &Window{redis: rdb, mode: mode, now: time.Now}
 }
 
+// NewWithClock is New with a time source for the sliding window's bucket
+// arithmetic; a nil now is the wall clock. Counter key lifetimes are always
+// Redis's own time.
+func NewWithClock(rdb redis.UniversalClient, mode Mode, now func() time.Time) *Window {
+	w := New(rdb, mode)
+	if now != nil {
+		w.now = now
+	}
+	return w
+}
+
 // Incr records one event for key and returns the effective count within the
 // window. A non-positive window means "no expiry": a plain INCR regardless of
 // mode (used by the lockout limiter's manual-unlock configuration).
