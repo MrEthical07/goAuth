@@ -94,6 +94,7 @@ var publicAuthSentinels = []*AuthError{
 	ErrExternalAccountLinkRequired,
 	ErrExternalLinkRequiresVerification,
 	ErrExternalIdentityInUse,
+	ErrExternalSignupInvalid,
 	ErrLastLoginMethod,
 	ErrPasswordNotSet,
 	ErrExternalLoginRateLimited,

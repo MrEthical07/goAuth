@@ -813,6 +813,12 @@ type ExternalAuthConfig struct {
 	// token is accepted ([ErrExternalProviderUnavailable]). Zero selects the
 	// default of 24 hours; the maximum is 30 days.
 	KeyMaxStale time.Duration
+
+	// SignupTicketTTL is how long the handle of a deferred sign-up
+	// (ExternalLoginOptions.DeferSignup) is accepted by CompleteExternalSignup.
+	// Zero selects the default of 10 minutes; the bounds are 1 minute and 1
+	// hour.
+	SignupTicketTTL time.Duration
 }
 
 // External provider kinds for [ExternalProviderConfig.Kind].
@@ -1986,11 +1992,17 @@ func (c *Config) lintSessionProfiles(warn func(LintSeverity, string, string)) {
 
 // Bounds of the external-auth durations.
 const (
-	maxExternalClockLeeway   = 5 * time.Minute
-	maxExternalKeyRefreshMin = 24 * time.Hour
-	maxExternalKeyMaxStale   = 30 * 24 * time.Hour
-	minExternalKeyRefreshMin = time.Second
-	externalKeyStaleLintAt   = 72 * time.Hour
+	maxExternalClockLeeway = 5 * time.Minute
+
+	// defaultExternalSignupTicketTTL is used when ExternalAuth.SignupTicketTTL is
+	// zero. The bounds apply to an explicit value.
+	defaultExternalSignupTicketTTL = 10 * time.Minute
+	minExternalSignupTicketTTL     = time.Minute
+	maxExternalSignupTicketTTL     = time.Hour
+	maxExternalKeyRefreshMin       = 24 * time.Hour
+	maxExternalKeyMaxStale         = 30 * 24 * time.Hour
+	minExternalKeyRefreshMin       = time.Second
+	externalKeyStaleLintAt         = 72 * time.Hour
 )
 
 // validateExternalAuth checks Config.ExternalAuth. A disabled feature is not
@@ -2043,6 +2055,10 @@ func (c *Config) validateExternalAuth() error {
 	}
 	if e.KeyMaxStale != 0 && e.KeyMaxStale < refreshMin {
 		return errors.New("ExternalAuth KeyMaxStale must be >= KeyRefreshMin (5m when unset)")
+	}
+
+	if e.SignupTicketTTL != 0 && (e.SignupTicketTTL < minExternalSignupTicketTTL || e.SignupTicketTTL > maxExternalSignupTicketTTL) {
+		return errors.New("ExternalAuth SignupTicketTTL must be between 1m and 1h (0 = default 10m)")
 	}
 
 	if e.AllowSignup && !c.Account.Enabled {

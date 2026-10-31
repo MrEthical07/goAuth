@@ -431,6 +431,7 @@ func (b *Builder) Build() (*Engine, error) {
 		}
 		engine.externalProvider = provider
 		engine.externalVerifier = verifier
+		engine.externalSignupStore = stores.NewExternalSignupStore(b.redis, "axs").WithClock(now)
 		engine.externalLimiter = limiters.NewExternalLimiter(b.redis, limiters.ExternalConfig{
 			MaxAttempts: cfg.ExternalAuth.MaxAttempts,
 			Cooldown:    cfg.ExternalAuth.Cooldown,

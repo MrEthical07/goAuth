@@ -74,6 +74,7 @@ type Engine struct {
 	externalProvider      ExternalIdentityProvider
 	externalVerifier      *oidc.Verifier
 	externalLimiter       *limiters.ExternalLimiter
+	externalSignupStore   *stores.ExternalSignupStore
 	emailChangeProvider   EmailChangeProvider
 	emailChangeStore      *stores.EmailChangeStore
 	emailChangeLimiter    *limiters.EmailChangeLimiter
@@ -2002,6 +2003,8 @@ func auditErrorCode(err error) AuditErrorCode {
 		return auditErrExternalLinkVerify
 	case errors.Is(err, ErrExternalIdentityInUse):
 		return auditErrExternalInUse
+	case errors.Is(err, ErrExternalSignupInvalid):
+		return auditErrExternalSignupInvalid
 	case errors.Is(err, ErrLastLoginMethod):
 		return auditErrLastLoginMethod
 	case errors.Is(err, ErrPasswordNotSet):

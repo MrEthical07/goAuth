@@ -3,6 +3,7 @@ package goAuth
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/oidc"
+	"github.com/MrEthical07/goAuth/internal/stores"
 	"github.com/MrEthical07/goAuth/password"
 	"github.com/redis/go-redis/v9"
 )
@@ -25,6 +27,12 @@ const (
 	auditEventExternalUnlinked      = "external_identity_unlinked"
 	auditEventExternalLinkFailure   = "external_identity_link_failure"
 	auditEventExternalUnlinkFailure = "external_identity_unlink_failure"
+	// auditEventExternalSignupDeferred is emitted when a sign-in stopped at
+	// account creation and handed back a signup ticket. It names the provider;
+	// the handle and the token never reach it.
+	auditEventExternalSignupDeferred = "external_signup_deferred"
+
+	auditErrExternalSignupInvalid AuditErrorCode = "external_signup_invalid"
 )
 
 // external_login_failure and external_identity_link_failure metadata.reason
@@ -54,6 +62,8 @@ const (
 	externalReasonUnavailable              = "unavailable"
 	externalReasonLastLoginMethod          = "last_login_method"
 	externalReasonUserNotFound             = "user_not_found"
+	externalReasonSignupTicketInvalid      = "signup_ticket_invalid"
+	externalReasonSignupDeferFailed        = "signup_defer_failed"
 )
 
 // maxExternalDisplayName bounds the name handed to the user provider.
@@ -471,11 +481,28 @@ func (e *Engine) loginWithExternalIdentity(ctx context.Context, provider, idToke
 		return nil, e.externalLoginFail(ctx, tenantID, provider, "", reason, err)
 	}
 
-	res, reason, err := e.resolveExternalAccount(ctx, tenantID, claims, cleanExternalDisplayName(opts.DisplayName))
+	res, reason, err := e.resolveExternalAccount(ctx, tenantID, claims, cleanExternalDisplayName(opts.DisplayName), opts.DeferSignup)
 	if err != nil {
 		return nil, e.externalLoginFail(ctx, tenantID, provider, res.user.UserID, reason, err)
 	}
+	if res.ticket != nil {
+		// The sign-in stops where an account would be created. The token is
+		// spent; the handle replaces it. No session, account, link or
+		// account-creation limiter slot exists yet.
+		e.resetExternal(ctx, tenantID, att.sources, att.subject)
+		e.emitAudit(ctx, auditEventExternalSignupDeferred, true, "", tenantID, "", nil, func() map[string]string {
+			return map[string]string{"provider": provider}
+		})
+		return &LoginResult{ExternalSignup: res.ticket}, nil
+	}
+	return e.finishExternalLogin(ctx, tenantID, provider, profile, opts.RememberMe, res, att)
+}
 
+// finishExternalLogin is the tail every external sign-in that ends in a session
+// shares, the one-call sign-in and CompleteExternalSignup alike: it reads the
+// account again behind the revocation epoch, runs the shared login tail
+// (status, hardening, MFA decision, fenced session issue) and audits.
+func (e *Engine) finishExternalLogin(ctx context.Context, tenantID, provider, profile string, rememberMe bool, res externalResolution, att externalAttempt) (*LoginResult, error) {
 	// The revocation epoch is read before the account is read again, so a
 	// password change or status change that lands in between is caught when
 	// the session is stored.
@@ -497,7 +524,7 @@ func (e *Engine) loginWithExternalIdentity(ctx context.Context, provider, idToke
 	if identifier == "" {
 		identifier = res.user.UserID
 	}
-	flowResult, err := e.flows.CompleteLogin(ctx, identifier, toFlowLoginUser(res.user), internalflows.LoginOptions{RememberMe: opts.RememberMe, Epoch: epoch})
+	flowResult, err := e.flows.CompleteLogin(ctx, identifier, toFlowLoginUser(res.user), internalflows.LoginOptions{RememberMe: rememberMe, Epoch: epoch})
 	if err != nil {
 		// The shared tail has already audited and counted the failure.
 		return nil, err
@@ -535,15 +562,17 @@ type externalResolution struct {
 	user       UserRecord
 	newAccount bool
 	linked     bool
+	// ticket is set instead of user when the sign-up was deferred.
+	ticket *ExternalSignupTicket
 }
 
 // resolveExternalAccount finds, links or creates the account for a verified
 // identity. A concurrent first sign-in of the same person makes the provider
 // report a duplicate; the resolution is then run once more, which finds what
 // the winner created.
-func (e *Engine) resolveExternalAccount(ctx context.Context, tenantID string, claims *oidc.Claims, displayName string) (externalResolution, string, error) {
+func (e *Engine) resolveExternalAccount(ctx context.Context, tenantID string, claims *oidc.Claims, displayName string, deferSignup bool) (externalResolution, string, error) {
 	for attempt := 0; ; attempt++ {
-		res, reason, err, retry := e.resolveExternalAccountOnce(ctx, tenantID, claims, displayName, attempt > 0)
+		res, reason, err, retry := e.resolveExternalAccountOnce(ctx, tenantID, claims, displayName, attempt > 0, deferSignup)
 		if retry && attempt == 0 {
 			continue
 		}
@@ -565,7 +594,7 @@ func (e *Engine) externalIdentityFor(claims *oidc.Claims, displayName string) Ex
 
 // resolveExternalAccountOnce is one pass of the resolution. retry is true when
 // the provider reported a concurrent creation that a second pass would see.
-func (e *Engine) resolveExternalAccountOnce(ctx context.Context, tenantID string, claims *oidc.Claims, displayName string, retried bool) (res externalResolution, reason string, err error, retry bool) {
+func (e *Engine) resolveExternalAccountOnce(ctx context.Context, tenantID string, claims *oidc.Claims, displayName string, retried, deferSignup bool) (res externalResolution, reason string, err error, retry bool) {
 	identity := e.externalIdentityFor(claims, displayName)
 
 	// 1. The identity is already linked.
@@ -607,7 +636,215 @@ func (e *Engine) resolveExternalAccountOnce(ctx context.Context, tenantID string
 	if !e.config.ExternalAuth.AllowSignup {
 		return externalResolution{}, externalReasonAccountNotFound, ErrExternalAccountNotFound, false
 	}
+	if deferSignup {
+		return e.deferExternalSignup(ctx, tenantID, claims, displayName)
+	}
 	return e.createExternalAccount(ctx, tenantID, claims, identity, retried)
+}
+
+// externalSignupTicketTTL is how long a deferred sign-up's handle is accepted.
+func (e *Engine) externalSignupTicketTTL() time.Duration {
+	if ttl := e.config.ExternalAuth.SignupTicketTTL; ttl > 0 {
+		return ttl
+	}
+	return defaultExternalSignupTicketTTL
+}
+
+// deferExternalSignup stores the verified identity under a fresh handle instead
+// of creating the account, and returns the ticket. It creates nothing else: no
+// account, no link, no account-creation limiter slot.
+func (e *Engine) deferExternalSignup(ctx context.Context, tenantID string, claims *oidc.Claims, displayName string) (externalResolution, string, error, bool) {
+	if e.config.MultiTenant.Enabled {
+		// The ticket is bound to the tenant that will create the account.
+		if _, ok := tenantIDFromContextExplicit(ctx); !ok {
+			return externalResolution{}, externalReasonSignupFailed, ErrAccountCreationInvalid, false
+		}
+	}
+	if e.externalSignupStore == nil {
+		return externalResolution{}, externalReasonSignupDeferFailed, ErrEngineNotReady, false
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return externalResolution{}, externalReasonSignupDeferFailed, externalUnavailable(err), false
+	}
+	handle := base64.RawURLEncoding.EncodeToString(raw[:])
+	ttl := e.externalSignupTicketTTL()
+	expiresAt := e.now().Add(ttl)
+	record := stores.ExternalSignupRecord{
+		Provider:       claims.Provider,
+		Subject:        claims.Subject,
+		Email:          claims.Email,
+		EmailVerified:  claims.EmailVerified,
+		IsPrivateEmail: claims.IsPrivateEmail,
+		DisplayName:    displayName,
+		ExpiresAt:      expiresAt.Unix(),
+	}
+	if err := e.externalSignupStore.Save(ctx, tenantID, handle, record, ttl); err != nil {
+		return externalResolution{}, externalReasonSignupDeferFailed, externalUnavailable(err), false
+	}
+	return externalResolution{ticket: &ExternalSignupTicket{
+		Handle:         handle,
+		Provider:       claims.Provider,
+		Subject:        claims.Subject,
+		Email:          claims.Email,
+		EmailVerified:  claims.EmailVerified,
+		IsPrivateEmail: claims.IsPrivateEmail,
+		DisplayName:    displayName,
+		ExpiresAt:      time.Unix(expiresAt.Unix(), 0),
+	}}, "", nil, false
+}
+
+// ---------------------------------------------------------------------------
+// CompleteExternalSignup, CancelExternalSignup
+// ---------------------------------------------------------------------------
+
+// CompleteExternalSignup is the second step of a two-step external sign-up: it
+// consumes the handle from [LoginResult.ExternalSignup], creates the account
+// for the identity step one verified, and signs the user in through the same
+// tail as [Engine.LoginWithExternalIdentity] (NewAccount is true).
+//
+// The handle is consumed first and atomically, so of any number of concurrent
+// calls exactly one proceeds; it is consumed even if a later step fails, and the
+// application then restarts the sign-up with a new token. A handle that is
+// unknown, used, expired or from another tenant is [ErrExternalSignupInvalid].
+// The session profile is resolved before the handle is touched, as for every
+// sign-in. The identity is resolved again with no token: if it has been linked
+// meanwhile the result is [ErrExternalIdentityInUse], and if a local account now
+// holds the email it is [ErrExternalAccountLinkRequired] (the identity is never
+// auto-linked here). Otherwise the account-creation limiter applies and the
+// account is created exactly as the one-call sign-up creates it.
+//
+// opts.DisplayName, when non-empty, replaces the name given to step one.
+//
+//	Flow:        External Sign-up (step 2)
+//	Docs:        docs/external_identity.md
+//	Security:    the handle is a single-use bearer secret, kept in Redis only as a hash and never audited or logged.
+func (e *Engine) CompleteExternalSignup(ctx context.Context, handle string, opts ExternalSignupOptions) (*LoginResult, error) {
+	result, err := e.completeExternalSignup(ctx, handle, opts)
+	if err != nil {
+		return nil, mapToAuthError(err)
+	}
+	return result, nil
+}
+
+func (e *Engine) completeExternalSignup(ctx context.Context, handle string, opts ExternalSignupOptions) (*LoginResult, error) {
+	tenantID := tenantIDFromContext(ctx)
+
+	if !e.externalEnabled() || e.externalSignupStore == nil {
+		return nil, e.externalLoginFail(ctx, tenantID, "", "", externalReasonDisabled, ErrExternalAuthDisabled)
+	}
+
+	// The profile is chosen before the handle is touched, so an unknown profile
+	// does not spend it.
+	profile, status := e.resolveSessionProfile(ctx, opts.RememberMe)
+	switch status {
+	case internalflows.SessionProfileUnknown:
+		return nil, e.externalLoginFail(ctx, tenantID, "", "", externalReasonSessionProfile, ErrUnknownSessionProfile)
+	case internalflows.SessionProfileConflict:
+		return nil, e.externalLoginFail(ctx, tenantID, "", "", externalReasonSessionProfile, ErrSessionProfileConflict)
+	}
+	ctx = internalflows.WithResolvedSessionProfile(ctx, profile)
+
+	if handle == "" {
+		return nil, e.externalLoginFail(ctx, tenantID, "", "", externalReasonSignupTicketInvalid, ErrExternalSignupInvalid)
+	}
+	record, err := e.externalSignupStore.Take(ctx, tenantID, handle)
+	if err != nil {
+		if errors.Is(err, stores.ErrExternalSignupNotFound) {
+			return nil, e.externalLoginFail(ctx, tenantID, "", "", externalReasonSignupTicketInvalid, ErrExternalSignupInvalid)
+		}
+		return nil, e.externalLoginFail(ctx, tenantID, "", "", externalReasonStoreUnavailable, externalUnavailable(err))
+	}
+	provider := record.Provider
+
+	if !e.externalVerifier.Has(provider) {
+		return nil, e.externalLoginFail(ctx, tenantID, provider, "", externalReasonProviderUnknown, ErrExternalProviderUnknown)
+	}
+	if !e.config.ExternalAuth.AllowSignup {
+		return nil, e.externalLoginFail(ctx, tenantID, provider, "", externalReasonAccountNotFound, ErrExternalAccountNotFound)
+	}
+
+	claims := &oidc.Claims{
+		Provider:       record.Provider,
+		Subject:        record.Subject,
+		Email:          record.Email,
+		EmailVerified:  record.EmailVerified,
+		IsPrivateEmail: record.IsPrivateEmail,
+	}
+	displayName := record.DisplayName
+	if name := cleanExternalDisplayName(opts.DisplayName); name != "" {
+		displayName = name
+	}
+
+	res, reason, err := e.resolveDeferredSignup(ctx, tenantID, claims, displayName)
+	if err != nil {
+		return nil, e.externalLoginFail(ctx, tenantID, provider, res.user.UserID, reason, err)
+	}
+	return e.finishExternalLogin(ctx, tenantID, provider, profile, opts.RememberMe, res, externalAttempt{})
+}
+
+// resolveDeferredSignup re-runs the resolution for a stored identity with no
+// token, once more after a concurrent creation, like resolveExternalAccount.
+func (e *Engine) resolveDeferredSignup(ctx context.Context, tenantID string, claims *oidc.Claims, displayName string) (externalResolution, string, error) {
+	for attempt := 0; ; attempt++ {
+		res, reason, err, retry := e.resolveDeferredSignupOnce(ctx, tenantID, claims, displayName, attempt > 0)
+		if retry && attempt == 0 {
+			continue
+		}
+		return res, reason, err
+	}
+}
+
+// resolveDeferredSignupOnce is one pass. Between the two steps the identity may
+// have been linked (ErrExternalIdentityInUse) or a local account may hold the
+// email (ErrExternalAccountLinkRequired, never an auto-link); otherwise the
+// account is created.
+func (e *Engine) resolveDeferredSignupOnce(ctx context.Context, tenantID string, claims *oidc.Claims, displayName string, retried bool) (res externalResolution, reason string, err error, retry bool) {
+	identity := e.externalIdentityFor(claims, displayName)
+
+	user, lookupErr := e.externalProvider.GetUserByExternalIdentity(ctx, tenantID, claims.Provider, claims.Subject)
+	switch {
+	case lookupErr == nil && e.externalUserInTenant(user, tenantID):
+		return externalResolution{}, externalReasonIdentityInUse, ErrExternalIdentityInUse, false
+	case lookupErr == nil:
+		// Another tenant's record: as if there were none.
+	case errors.Is(lookupErr, ErrUserNotFound):
+	default:
+		return externalResolution{}, externalReasonLookupFailed, externalUnavailable(lookupErr), false
+	}
+
+	local, localErr := e.lookupUserByIdentifier(ctx, claims.Email)
+	if localErr == nil && e.tenantScopedLookup() && tenantID != "" && local.TenantID != tenantID {
+		e.warn("goAuth: tenant-scoped lookup returned a user from another tenant; check the TenantAwareUserProvider implementation")
+		localErr = ErrUserNotFound
+	}
+	switch {
+	case localErr == nil:
+		return externalResolution{}, externalReasonLinkRequired, ErrExternalAccountLinkRequired, false
+	case !errors.Is(localErr, ErrUserNotFound):
+		return externalResolution{}, externalReasonLookupFailed, externalUnavailable(localErr), false
+	}
+	return e.createExternalAccount(ctx, tenantID, claims, identity, retried)
+}
+
+// CancelExternalSignup discards a signup handle, for an application whose own
+// step refused the sign-up. It is idempotent: an unknown, used or expired
+// handle is not an error. Nothing was created in step one, so nothing else
+// needs undoing.
+//
+//	Flow:        External Sign-up (cancel)
+//	Docs:        docs/external_identity.md
+func (e *Engine) CancelExternalSignup(ctx context.Context, handle string) error {
+	if !e.externalEnabled() || e.externalSignupStore == nil {
+		return mapToAuthError(ErrExternalAuthDisabled)
+	}
+	if handle == "" {
+		return nil
+	}
+	if err := e.externalSignupStore.Delete(ctx, tenantIDFromContext(ctx), handle); err != nil {
+		return mapToAuthError(externalUnavailable(err))
+	}
+	return nil
 }
 
 // linkMatchedAccount handles a local account whose identifier is the token's

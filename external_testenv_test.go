@@ -432,9 +432,15 @@ type extEnv struct {
 	cmds   *redisCommandLog
 	cfg    Config
 	tenant string
+	clk    Clock // nil unless a test installed one with extClock
 }
 
 type extOption func(*extEnv, *Config)
+
+// extClock builds the engine with WithClock(c).
+func extClock(c Clock) extOption {
+	return func(env *extEnv, _ *Config) { env.clk = c }
+}
 
 func extConfig(mutate func(*Config)) extOption {
 	return func(_ *extEnv, c *Config) { mutate(c) }
@@ -529,6 +535,7 @@ func newExtEnv(t testing.TB, opts ...extOption) *extEnv {
 		WithRoles(map[string][]string{"member": {"perm.read"}, "admin": {"perm.read"}}).
 		WithUserProvider(env.up).
 		WithAuditSink(env.sink).
+		WithClock(env.clk).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
