@@ -90,9 +90,9 @@ Opt-in change of an account's email address with proof of the new one. Off by de
 | Symbol | Kind | Description |
 |--------|------|-------------|
 | `RequestEmailChange` | method | `(ctx, userID, newEmail string) (*EmailChangeRequest, error)`. Stores a challenge bound to the user, the old and new identifiers and the account version; the app sends `Code` to the NEW address. Does not reveal whether the address is taken. |
-| `ConfirmEmailChange` | method | `(ctx, verificationID, code string, opts ConfirmEmailChangeOptions) (*EmailChangeResult, error)`. Verifies the code, installs the address through `EmailChangeProvider`, revokes other sessions unless `KeepOtherSessions`. |
+| `ConfirmEmailChange` | method | `(ctx, verificationID, code string, opts ConfirmEmailChangeOptions) (*EmailChangeResult, error)`. Verifies the code, installs the address through `EmailChangeProvider`, revokes other sessions unless `KeepOtherSessions`. Accepts an account that was pending verification while `EmailVerification.Enabled` and activates it; if the activation fails the result is returned together with the error. |
 | `CancelEmailChange` | method | `(ctx, userID string) error`. Idempotent. |
-| `EmailChangeRequest`, `ConfirmEmailChangeOptions`, `EmailChangeResult` | struct | `{VerificationID, Code}`, `{KeepSessionID}`, `{UserID, OldEmail, NewEmail, SessionsRevoked}`. |
+| `EmailChangeRequest`, `ConfirmEmailChangeOptions`, `EmailChangeResult` | struct | `{VerificationID, Code}`, `{KeepSessionID}`, `{UserID, OldEmail, NewEmail, SessionsRevoked, WasUnverified}`. `WasUnverified` is true when the account was pending verification: the confirmed code verified the new address, and the application must not send the old-address notice. |
 | `EmailChangeProvider` | interface | Optional `UserProvider` capability (required when `EmailChange.Enabled`): `UpdateIdentifier(ctx, tenantID, userID, oldIdentifier, newIdentifier)` is a tenant-scoped compare-and-set that bumps `AccountVersion`. |
 | `EmailChangeConfig` | type | `Config.EmailChange`. |
 | `ErrEmailChangeDisabled`, `ErrEmailChangeInvalid`, `ErrEmailChangeStale`, `ErrEmailInUse`, `ErrEmailChangeRateLimited` | var | Email-change sentinels (403, 400, 409, 409, 429). |
