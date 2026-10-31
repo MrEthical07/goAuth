@@ -71,8 +71,12 @@ Sign in with a Google, Sign in with Apple or OIDC ID token the application alrea
 
 | Symbol | Kind | Description |
 |--------|------|-------------|
-| `LoginWithExternalIdentity` | method | `(ctx, provider, idToken string, opts ExternalLoginOptions) (*LoginResult, error)`. Verifies the token, resolves/links/creates the account, then continues like a password login (status, session hardening, MFA, session issue). `LoginResult` gains `NewAccount` and `LinkedIdentity`. |
-| `ExternalLoginOptions` | struct | `Nonce` (required, the raw nonce the server issued), `DisplayName` (passed to the provider on sign-up), `RememberMe`. |
+| `LoginWithExternalIdentity` | method | `(ctx, provider, idToken string, opts ExternalLoginOptions) (*LoginResult, error)`. Verifies the token, resolves/links/creates the account, then continues like a password login (status, session hardening, MFA, session issue). `LoginResult` gains `NewAccount`, `LinkedIdentity` and `ExternalSignup` (non-nil only for a deferred sign-up: no account, no tokens). |
+| `ExternalLoginOptions` | struct | `Nonce` (required, the raw nonce the server issued), `DisplayName` (passed to the provider on sign-up), `RememberMe`, `DeferSignup` (with `AllowSignup`: stop at account creation and return a ticket). |
+| `CompleteExternalSignup` | method | `(ctx, handle string, opts ExternalSignupOptions) (*LoginResult, error)`. Step two of a two-step sign-up: consumes the single-use handle, creates the account, signs in (`NewAccount = true`). `ErrExternalSignupInvalid` for an unknown, used, expired or foreign handle. See [external_identity.md](external_identity.md#two-step-sign-up). |
+| `CancelExternalSignup` | method | `(ctx, handle string) error`. Discards a handle; idempotent. |
+| `ExternalSignupOptions` | struct | `DisplayName` (replaces the step-one name when non-empty), `RememberMe`. |
+| `ExternalSignupTicket` | struct | `Handle` (single-use bearer secret; redacted when printed or logged), `Provider`, `Subject`, `Email`, `EmailVerified`, `IsPrivateEmail`, `DisplayName`, `ExpiresAt`. Returned in `LoginResult.ExternalSignup`. |
 | `LinkExternalIdentity` | method | `(ctx, userID, provider, idToken, nonce string) (*ExternalIdentity, error)`. Links an identity to the authenticated user; idempotent; `ErrExternalIdentityInUse` if another user has it. |
 | `UnlinkExternalIdentity` | method | `(ctx, userID, provider, subject string) error`. `ErrLastLoginMethod` when the user has no password and this is their only identity. |
 | `ListExternalIdentities` | method | `(ctx, userID string) ([]ExternalIdentity, error)`. |
@@ -80,7 +84,7 @@ Sign in with a Google, Sign in with Apple or OIDC ID token the application alrea
 | `ExternalIdentity` | struct | `Provider`, `Subject`, `Email`, `EmailVerified`, `IsPrivateEmail`, `DisplayName`, `LinkedAt`. |
 | `ExternalIdentityProvider` | interface | Optional `UserProvider` capability (required when `ExternalAuth.Enabled`): `GetUserByExternalIdentity`, `CreateUserWithExternalIdentity`, `LinkExternalIdentity`, `UnlinkExternalIdentity`, `ListExternalIdentities`, all tenant-scoped; unique `(tenant, provider, subject)`. |
 | `ExternalAuthConfig`, `ExternalProviderConfig` | type | `Config.ExternalAuth`. `ExternalKindGoogle`, `ExternalKindApple`, `ExternalKindOIDC` are the `Kind` values. |
-| `ErrExternalAuthDisabled`, `ErrExternalProviderUnknown`, `ErrExternalTokenInvalid`, `ErrExternalTokenReplayed`, `ErrExternalProviderUnavailable`, `ErrExternalEmailUnverified`, `ErrExternalAccountNotFound`, `ErrExternalAccountLinkRequired`, `ErrExternalLinkRequiresVerification`, `ErrExternalIdentityInUse`, `ErrLastLoginMethod`, `ErrExternalLoginRateLimited` | var | External sign-in sentinels (see [error-model.md](error-model.md)). |
+| `ErrExternalAuthDisabled`, `ErrExternalProviderUnknown`, `ErrExternalTokenInvalid`, `ErrExternalTokenReplayed`, `ErrExternalProviderUnavailable`, `ErrExternalEmailUnverified`, `ErrExternalAccountNotFound`, `ErrExternalAccountLinkRequired`, `ErrExternalLinkRequiresVerification`, `ErrExternalIdentityInUse`, `ErrExternalSignupInvalid`, `ErrLastLoginMethod`, `ErrExternalLoginRateLimited` | var | External sign-in sentinels (see [error-model.md](error-model.md)). |
 | `ErrPasswordNotSet` | var | `ChangePassword` / `VerifyPassword` on an account that has no password. |
 
 ### Email Change

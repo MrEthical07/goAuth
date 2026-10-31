@@ -328,6 +328,7 @@ Zero value = disabled. With it disabled, behavior is exactly what it was before 
 | `ClockLeeway`           | `time.Duration`                     | `0` (= 60s)   | Tolerance for the token's `exp`, `iat`, `nbf`; at most 5m |
 | `KeyRefreshMin`         | `time.Duration`                     | `0` (= 5m)    | Minimum interval between key-set fetches per provider (also bounds refetches for an unknown key id) and the shortest cache lifetime honoured; 1s to 24h |
 | `KeyMaxStale`           | `time.Duration`                     | `0` (= 24h)   | How long the last good key set may keep verifying while the provider is unreachable; at least `KeyRefreshMin` (5m when unset), at most 30d (lint warns above 72h) |
+| `SignupTicketTTL`       | `time.Duration`                     | `0` (= 10m)   | How long the handle of a deferred sign-up (`ExternalLoginOptions.DeferSignup`) is accepted by `CompleteExternalSignup`; 1m to 1h. See [external_identity.md](external_identity.md#two-step-sign-up) |
 
 `ExternalProviderConfig`:
 
@@ -408,7 +409,7 @@ It is per engine and governs session creation and expiry, idle windows and profi
 - WebAuthn (when enabled): RPID/RPDisplayName/RPOrigins present, valid attestation and user-verification enums, CeremonyTTL within 10s–10m; `RequireForLogin` requires `Enabled`
 - RoleSwitch: `MaxAttempts`, `Cooldown` and every `StepUp[...].MaxAge` are `>= 0`; `StepUp` keys are non-empty; `RequireMFA` requires `TOTP.Enabled` or `WebAuthn.Enabled`; `StepUp` keys must be registered roles and `Enabled` requires a `RoleSwitchProvider` (both checked by Builder)
 - EmailChange (when enabled): the user provider implements `EmailChangeProvider`; a known `Strategy`; `VerificationTTL` 0 or 1m..24h; non-negative counts and windows; in OTP mode `OTPDigits` 6..10, `MaxAttempts` <= 5 and `VerificationTTL` <= 15m; `MaxAttempts` is at most 65535 in every mode
-- ExternalAuth (when enabled): at least one provider; names `[a-z0-9_-]{1,32}`; a known `Kind`; non-empty `ClientIDs`; https `Issuer` and `JWKSURL` (required for `oidc`); `AllowedHostedDomains` only for google; `Algorithms` only for oidc and from the allowed set; `MaxAttempts`, `Cooldown` `>= 0`, `ClockLeeway` 0-5m, `KeyRefreshMin` 1s-24h, `KeyMaxStale` 0-30d and `>= KeyRefreshMin` (5m when unset); no two providers may share an issuer and a client ID (a token would verify under both); `AllowSignup` requires `Account.Enabled`; `AutoLinkVerifiedEmail` requires `EmailVerification.Enabled`; the user provider must implement `ExternalIdentityProvider` (checked by Builder)
+- ExternalAuth (when enabled): at least one provider; names `[a-z0-9_-]{1,32}`; a known `Kind`; non-empty `ClientIDs`; https `Issuer` and `JWKSURL` (required for `oidc`); `AllowedHostedDomains` only for google; `Algorithms` only for oidc and from the allowed set; `MaxAttempts`, `Cooldown` `>= 0`, `ClockLeeway` 0-5m, `KeyRefreshMin` 1s-24h, `KeyMaxStale` 0-30d and `>= KeyRefreshMin` (5m when unset); `SignupTicketTTL` 0 (= 10m) or 1m-1h; no two providers may share an issuer and a client ID (a token would verify under both); `AllowSignup` requires `Account.Enabled`; `AutoLinkVerifiedEmail` requires `EmailVerification.Enabled`; the user provider must implement `ExternalIdentityProvider` (checked by Builder)
 
 ## Config Linting
 
