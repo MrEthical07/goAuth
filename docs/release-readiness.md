@@ -47,18 +47,18 @@ that can need action (`EmailChange.Strategy: VerificationUUID` is rejected by `B
 
 ### Verification gates
 
-Run on the part 3 branch (Windows, Go 1.27):
+Run on the part 4 (G-4) branch (Windows, Go 1.27.1; scanners with Go 1.27.3):
 
 | Gate | Result |
 |------|--------|
 | `gofmt -l .`, `goimports -l .` | no output |
-| `go build ./...`, `go vet ./...`, `go vet -tags=integration ./...` | pass |
+| `go build ./...`, `go vet ./...`, `go vet -tags=integration ./...` | pass, also at every commit |
 | `go test ./... -count=1` | pass |
 | `go test -tags=integration ./test/...` (miniredis, and Redis 7.0.15 through `REDIS_ADDR`) | pass |
 | staticcheck (`-checks=all,-ST1000,-ST1003,-ST1005,-U1000`) | no findings |
 | `security/run_scanners.sh` (Go 1.27.3) | baseline passed |
 | `gorelease -base=v0.8.0` | only compatible changes |
-| `security/run_perf_sanity.sh` | `ns/op` of `BenchmarkRefresh` is above the recorded baseline locally exactly as on `main` on the same machine (the baseline was recorded on other hardware); a same-machine A/B of Login, Login+MFA, Refresh, Validate, Logout and LogoutAll is in the pull request |
+| `security/run_perf_sanity.sh` | `ns/op` of `BenchmarkRefresh` is above the recorded baseline locally exactly as on `main` on the same machine (the baseline was recorded on other hardware); a same-machine A/B against `main` of Login, Login+MFA, Refresh, Validate (strict and JWT-only), `RequestPasswordReset` and `LoginWithExternalIdentity` shows no difference (every row `~`) and is in the pull request |
 
 `go test -race ./...` is enforced by the `go-race` CI workflow (Ubuntu and macOS);
 local race builds are unavailable on the release machine.
