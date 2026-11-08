@@ -981,6 +981,11 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 		invalidateTenant = user.TenantID
 	}
 
+	// The password is changed: a reset code issued before now is dead, whoever
+	// holds it, as after a completed reset. Written before the session
+	// revocation, whose failure fails the call but not the change.
+	e.supersedeResetCodesAfterPasswordChange(ctx, user.TenantID, userID, invalidateTenant)
+
 	if err := e.revokeUserSessions(ctx, user.TenantID, userID); err != nil {
 		e.warn("goAuth: session invalidation failed after password change")
 		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, invalidateTenant, "", ErrSessionInvalidationFailed, func() map[string]string {
@@ -2665,6 +2670,22 @@ func (e *Engine) supersedeResetCodes(ctx context.Context, tenantID, userID strin
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// supersedeResetCodesAfterPasswordChange kills the reset codes the user holds
+// once ChangePassword has written the new hash, in every tenant the session
+// revocation covers. The password is already changed, so a failure never fails
+// the call: it is logged and audited with the reason reset_invalidation_failed,
+// the one a completed reset uses for the same step.
+func (e *Engine) supersedeResetCodesAfterPasswordChange(ctx context.Context, recordTenant, userID, auditTenant string) {
+	if err := e.supersedeResetCodes(ctx, recordTenant, userID); err != nil {
+		e.warn("goAuth: outstanding password reset codes could not be invalidated after password change")
+		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, auditTenant, "", ErrPasswordResetUnavailable, func() map[string]string {
+			return map[string]string{
+				"reason": "reset_invalidation_failed",
+			}
+		})
+	}
 }
 
 // supersedeVerificationCodes is supersedeResetCodes for email verification.

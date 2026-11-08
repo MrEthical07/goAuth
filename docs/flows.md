@@ -474,9 +474,10 @@ err := engine.LogoutAll(ctx, userID)
 4. **Policy check** — min length, max bytes.
 5. **Hash new password** — `password.Argon2.Hash`.
 6. **Update hash** — `UserProvider.UpdatePasswordHash` (or `TenantAwarePasswordUpdater.UpdatePasswordHashInTenant` with the resolved tenant when `MultiTenant.Enabled` and the provider implements it).
-7. **Invalidate sessions** — `session.Store.DeleteAllForUser`.
-8. **Audit emit** — `password_change_success` or `password_change_invalid_old`.
-9. **Metrics** — `MetricPasswordChangeSuccess` / `MetricPasswordChangeInvalidOld` / `MetricPasswordChangeReuseRejected`.
+7. **Supersede reset codes** — tombstone the user's `aprg:<tenant>:<user>` pointer in every tenant the session revocation covers, so a reset code issued before the change is refused. Best-effort: a failure is logged and audited (`password_change_failure`, `reason=reset_invalidation_failed`) and does not fail the change. No-op while `PasswordReset.Enabled` is false.
+8. **Invalidate sessions** — `session.Store.DeleteAllForUser`.
+9. **Audit emit** — `password_change_success` or `password_change_invalid_old`.
+10. **Metrics** — `MetricPasswordChangeSuccess` / `MetricPasswordChangeInvalidOld` / `MetricPasswordChangeReuseRejected`.
 
 ### Failure Modes
 

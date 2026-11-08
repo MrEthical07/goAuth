@@ -146,7 +146,7 @@ Part 3 of the audit fixes (the CHANGELOG lists each with its finding ID):
   `VerificationID` you may hand to the browser. **Action if you set it:** use
   `VerificationToken` (the default) or `VerificationOTP`.
 - **Password reset: one valid code per account.** A new request supersedes the
-  codes of earlier ones and a completed reset invalidates every outstanding code.
+  codes of earlier ones, and a completed reset or a successful `ChangePassword` invalidates every outstanding code.
   A pointer `aprg:<tenant>:<user>` (`ResetTTL`) holds the newest reset ID. Anyone who
   can request a reset can supersede a code that is waiting for its owner (the owner
   gets a new mail); the request limiters bound that.
