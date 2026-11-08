@@ -3163,6 +3163,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 			return e.lockoutLimiter.Reset(ctx, tenantIDFromContext(ctx), userID)
 		}
 		deps.LockAccount = e.LockAccount
+		deps.RevokeSessions = e.revokeUserSessions
 	}
 	if e != nil && e.userProvider != nil {
 		e.configureLoginUserLookupDeps(&deps)
@@ -3308,6 +3309,8 @@ func loginErrors() internalflows.LoginErrors {
 		WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
 		WebAuthnUnavailable:      ErrWebAuthnUnavailable,
 		TOTPRateLimited:          ErrTOTPRateLimited,
+
+		SessionInvalidationFailed: ErrSessionInvalidationFailed,
 	}
 }
 

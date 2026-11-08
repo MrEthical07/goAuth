@@ -122,6 +122,11 @@ type LoginErrors struct {
 	// error from a hook means "rate limited". Nil keeps that meaning for every
 	// error.
 	SystemUnavailable error
+
+	// SessionInvalidationFailed is what LockAccount returns when the account was
+	// locked but its sessions could not be ended, and the error audited when the
+	// retry fails too.
+	SessionInvalidationFailed error
 }
 
 // LoginDeps captures login+mfa dependencies.
@@ -181,6 +186,10 @@ type LoginDeps struct {
 	RecordLockoutFailure func(context.Context, string) (bool, error)
 	ResetLockoutCounter  func(context.Context, string) error
 	LockAccount          func(context.Context, string) error
+	// RevokeSessions ends every session of a user whose account was just locked.
+	// The lockout calls it once more when LockAccount reports that it locked the
+	// account but could not end the sessions.
+	RevokeSessions func(ctx context.Context, recordTenant, userID string) error
 
 	// EnforceTenantMatch requires a resolved user's TenantID to equal the
 	// request's tenant. Set only when multi-tenancy is enabled; with it
@@ -561,13 +570,14 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil && user.Status == deps.ActiveStatus {
 			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
 				deps.MetricInc(deps.Metrics.LockoutTrigger)
-				_ = deps.LockAccount(ctx, user.UserID)
+				lockErr := deps.LockAccount(ctx, user.UserID)
 				deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
 					return map[string]string{
 						"identifier": username,
 						"reason":     "auto_lockout",
 					}
 				})
+				retryLockRevocation(ctx, username, user, tenantID, lockErr, deps)
 				return nil, deps.Errors.InvalidCredentials
 			}
 		}
@@ -600,6 +610,30 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 			upgradePasswordHash(ctx, tenantID, user, password, deps)
 		}
 		password = ""
+	})
+}
+
+// retryLockRevocation finishes an automatic lockout whose LockAccount committed
+// the status but failed to end the account's sessions (a Redis blip at that one
+// step): a locked account whose existing sessions stay alive until they expire
+// is not locked. It revokes once more; if that fails too the failure is logged
+// and audited with the reason auto_lockout_sessions_not_ended. It never changes
+// what the caller is told (R2-14: the attempt that crosses the threshold
+// answers like any wrong password). Any other LockAccount error means the
+// status was not written, and nothing is revoked.
+func retryLockRevocation(ctx context.Context, username string, user LoginUserRecord, tenantID string, lockErr error, deps LoginDeps) {
+	if lockErr == nil || deps.RevokeSessions == nil || !errors.Is(lockErr, deps.Errors.SessionInvalidationFailed) {
+		return
+	}
+	if err := deps.RevokeSessions(ctx, user.TenantID, user.UserID); err == nil {
+		return
+	}
+	deps.Warn("goAuth: sessions of an automatically locked account could not be ended")
+	deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.SessionInvalidationFailed, func() map[string]string {
+		return map[string]string{
+			"identifier": username,
+			"reason":     "auto_lockout_sessions_not_ended",
+		}
 	})
 }
 
