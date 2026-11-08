@@ -178,6 +178,54 @@ func TestRedisCompat_FencedSaveSingleSessionPurge(t *testing.T) {
 	}
 }
 
+// C3: the user's set keeps the ID of a session that expired by TTL. The script
+// must count live sessions only and remove the dead IDs it finds. The expiry is
+// stood in for by deleting the session key, which leaves the set exactly as a
+// TTL expiry does.
+func TestRedisCompat_FencedSaveCountsLiveSessionsOnly(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			store := session.NewStore(rdb, "as", true, false, 0)
+			ctx := context.Background()
+			limits := session.SaveLimits{MaxPerUser: 2}
+
+			for i, sid := range []string{"dead", "live"} {
+				if err := store.SaveFenced(ctx, fencedSess("t-live", "u-live", sid, byte(i+1)), time.Hour, 0, limits); err != nil {
+					t.Fatalf("save %s: %v", sid, err)
+				}
+			}
+			if err := store.SaveFenced(ctx, fencedSess("t-live", "u-live", "over", 9), time.Hour, 0, limits); !errors.Is(err, session.ErrUserSessionLimit) {
+				t.Fatalf("two live sessions at a cap of 2 = %v, want ErrUserSessionLimit", err)
+			}
+
+			if err := rdb.Del(ctx, "as:t-live:dead").Err(); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := store.LiveSessionCount(ctx, "t-live", "u-live", 2); err != nil || n != 1 {
+				t.Fatalf("LiveSessionCount = %d, %v; want 1", n, err)
+			}
+			if err := store.SaveFenced(ctx, fencedSess("t-live", "u-live", "new", 3), time.Hour, 0, limits); err != nil {
+				t.Fatalf("one live and one expired session at a cap of 2 = %v", err)
+			}
+			ids, _ := store.ActiveSessionIDs(ctx, "t-live", "u-live")
+			if len(ids) != 2 {
+				t.Fatalf("user set = %v, want [live new]", ids)
+			}
+			for _, id := range ids {
+				if id == "dead" {
+					t.Fatalf("the expired ID was not pruned: %v", ids)
+				}
+			}
+			if rdb.Exists(ctx, "as:t-live:live").Val() != 1 {
+				t.Fatal("the live session was removed")
+			}
+		})
+	}
+}
+
 // scanHook runs fn once, right after the first SCAN returned.
 type scanHook struct {
 	fn   func()

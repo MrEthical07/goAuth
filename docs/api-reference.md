@@ -391,7 +391,8 @@ Redis-backed session storage with binary encoding.
 | `Peek` | method | Reads a session exactly as stored: no expiry filter, no schema migration, no Redis write. |
 | `SaveAssurance` / `GetAssurance` | method | Store and read a session's step-up assurance (`asa:<tenant>:<sid>`), outside the session blob. |
 | `Assurance` | struct | MFA time + method and last-proof time. `EncodeAssurance`/`DecodeAssurance` serialize it; `ErrAssuranceCorrupt` reports a bad value. |
-| `ActiveSessionCount` | method | Returns the number of active sessions for a user. |
+| `ActiveSessionCount` | method | Returns the number of session IDs in a user's set, including IDs of sessions that expired by TTL. |
+| `LiveSessionCount` | method | Returns a user's live session count for comparing with a per-user cap; removes dead IDs once the set reaches the cap. |
 | `ActiveSessionIDs` | method | Returns all session IDs for a user. |
 | `EstimateActiveSessions` | method | HyperLogLog-based estimate of total active sessions. |
 | `SetTenantSessionCount` | method | Increments/decrements the per-tenant session gauge. |

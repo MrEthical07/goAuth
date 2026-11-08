@@ -1255,15 +1255,14 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	// so they do not count here; the caps are enforced again, atomically with
 	// the write, at that point.
 	if !h.EnforceSingleSession {
-		currentUserSessions, err := e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
+		// Live sessions only: the user's set keeps the ID of a session that
+		// expired by TTL, which must not count against the cap.
+		limit := smallestSessionCap(h)
+		currentUserSessions, err := e.sessionStore.LiveSessionCount(ctx, tenantID, userID, limit)
 		if err != nil {
 			return err
 		}
-
-		if h.ConcurrentLoginLimit > 0 && currentUserSessions >= h.ConcurrentLoginLimit {
-			return ErrSessionLimitExceeded
-		}
-		if h.MaxSessionsPerUser > 0 && currentUserSessions >= h.MaxSessionsPerUser {
+		if limit > 0 && currentUserSessions >= limit {
 			return ErrSessionLimitExceeded
 		}
 	}
@@ -1289,6 +1288,17 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	}
 
 	return nil
+}
+
+// smallestSessionCap is the lowest per-user cap in force (MaxSessionsPerUser or
+// ConcurrentLoginLimit), or 0 when neither is set. A user is refused when the
+// live sessions reach it.
+func smallestSessionCap(h SessionHardeningConfig) int {
+	limit := h.MaxSessionsPerUser
+	if h.ConcurrentLoginLimit > 0 && (limit <= 0 || h.ConcurrentLoginLimit < limit) {
+		limit = h.ConcurrentLoginLimit
+	}
+	return max(limit, 0)
 }
 
 // sessionSaveLimits are the session caps enforced atomically with a login

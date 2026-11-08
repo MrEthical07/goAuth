@@ -113,6 +113,40 @@ return deleted
 
 var deleteAllForUserLua = redis.NewScript(deleteAllForUserScript)
 
+// pruneDeadSessionsLua defines prune_dead_sessions(set, prefix) for the
+// scripts that count a user's sessions: it removes from the user's session set
+// every ID whose session key (prefix .. id) no longer exists and returns the
+// number of live sessions left. The session keys are built from the set's
+// members, so, like the delete-all script, it reaches keys outside KEYS.
+const pruneDeadSessionsLua = `
+local function prune_dead_sessions(set, prefix)
+  local live = 0
+  for _, sid in ipairs(redis.call("SMEMBERS", set)) do
+    if redis.call("EXISTS", prefix .. sid) == 1 then
+      live = live + 1
+    else
+      redis.call("SREM", set, sid)
+    end
+  end
+  return live
+end
+`
+
+// liveSessionCountScript counts a user's live sessions for the read-only
+// pre-check at the password step. KEYS[1] is the user's session set; ARGV[1] is
+// the session key prefix and ARGV[2] the smallest cap in force. A set below the
+// cap is answered with its cardinality, because the answer cannot change the
+// decision; a set at or over it is pruned and the live sessions counted.
+const liveSessionCountScript = pruneDeadSessionsLua + `
+local n = redis.call("SCARD", KEYS[1])
+if tonumber(ARGV[2]) <= 0 or n < tonumber(ARGV[2]) then
+  return n
+end
+return prune_dead_sessions(KEYS[1], ARGV[1])
+`
+
+var liveSessionCountLua = redis.NewScript(liveSessionCountScript)
+
 // saveFencedScript stores a new session only if the user's revocation epoch is
 // still the one the caller read before it read the account, and enforces the
 // session caps in the same step, so neither a revocation nor a parallel login
@@ -129,7 +163,15 @@ var deleteAllForUserLua = redis.NewScript(deleteAllForUserScript)
 // mode ends the other sessions only once the epoch check has passed, and does
 // not bump the epoch: a login replacing the user's sessions is not a
 // revocation that other in-flight logins must be fenced against.
-const saveFencedScript = `
+//
+// The user's set keeps the ID of a session that expired by TTL until something
+// removes it, so the per-user caps count live sessions only: when the set
+// reaches the smaller cap, the entries whose session key no longer exists are
+// removed (pruneDeadSessionsLua) and the live ones are counted. A set below the
+// cap is not touched, so the work is one SCARD in the common case and, when the
+// set is at the cap, one EXISTS per entry; saves are refused at the cap, so
+// the set cannot grow past it again once pruned.
+const saveFencedScript = pruneDeadSessionsLua + `
 local epoch = tonumber(redis.call("GET", KEYS[4]) or "0") or 0
 if epoch ~= tonumber(ARGV[3]) then
   return 0
@@ -152,14 +194,19 @@ if ARGV[8] == "1" then
     end
   end
 end
-local n = redis.call("SCARD", KEYS[2])
 local concurrent = tonumber(ARGV[7])
-if concurrent > 0 and n >= concurrent then
-  return 1
-end
 local perUser = tonumber(ARGV[5])
-if perUser > 0 and n >= perUser then
-  return 1
+local cap = 0
+if concurrent > 0 then
+  cap = concurrent
+end
+if perUser > 0 and (cap == 0 or perUser < cap) then
+  cap = perUser
+end
+if cap > 0 and redis.call("SCARD", KEYS[2]) >= cap then
+  if prune_dead_sessions(KEYS[2], ARGV[9]) >= cap then
+    return 1
+  end
 end
 local perTenant = tonumber(ARGV[6])
 if perTenant > 0 then
@@ -946,6 +993,33 @@ func (s *Store) ActiveSessionCount(ctx context.Context, tenantID, userID string)
 		return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
 	}
 	return int(count), nil
+}
+
+// LiveSessionCount returns how many sessions the user holds, for comparing
+// with a per-user cap. The user's session set keeps the ID of a session that
+// expired by TTL, so when the set has reached atLeast (the smallest cap in
+// force) the dead entries are removed and the live ones counted; below that the
+// raw size is returned, which is under the cap either way. atLeast <= 0
+// returns the raw size.
+//
+//	Performance: 1 SCARD with no cap; otherwise 1 Lua EVALSHA, O(set size) only
+//	when the set has reached atLeast.
+//	Docs: docs/session.md
+func (s *Store) LiveSessionCount(ctx context.Context, tenantID, userID string, atLeast int) (int, error) {
+	if atLeast <= 0 {
+		return s.ActiveSessionCount(ctx, tenantID, userID)
+	}
+	res, err := liveSessionCountLua.Run(
+		ctx,
+		s.redis,
+		[]string{s.userKey(tenantID, userID)},
+		s.key(tenantID, ""),
+		atLeast,
+	).Int64()
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrRedisUnavailable, err)
+	}
+	return int(res), nil
 }
 
 // ActiveSessionIDs returns tracked session IDs for a user in a tenant.
