@@ -494,7 +494,9 @@ Two stages, both with the atomic reserve pattern and the same budget
 (`MaxAttempts` per `Cooldown`), honouring `Security.LimiterWindowMode`:
 
 1. **Before verification, per client IP** (`rl:extlogin:ip:<tenant>:<ip>`, each segment a SHA-256 hex digest). Pass
-   the IP with `WithClientIP`. **Without an IP this stage is skipped**: a bucket
+   the IP with `WithClientIP`. The address is grouped exactly as the password login's IP budget groups it, before
+   it is hashed: a port and a zone are dropped, an IPv4-mapped IPv6 form is read as the IPv4 address, and an IPv6
+   address counts as its /64, so rotating addresses inside one /64 does not start a new budget. **Without an IP this stage is skipped**: a bucket
    shared by every request without one could be exhausted by anyone, locking out
    every user of the provider. Behind a proxy, set the IP only from a header you
    trust.

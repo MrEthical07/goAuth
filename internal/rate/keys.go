@@ -24,6 +24,11 @@ func loginIPKey(tenantID, ip string) string {
 	return "rl:login:ip:" + safeID(tenantID) + ":" + safeID(canonicalIP(ip))
 }
 
+// CanonicalIP is canonicalIP for the other limiters that budget a client
+// address, so that every per-address budget in the module groups addresses the
+// same way: one function, not one per limiter.
+func CanonicalIP(raw string) string { return canonicalIP(raw) }
+
 // canonicalIP returns the form of a client address that budgets are keyed by.
 // A string that is not an address is returned as it is, so it still counts
 // against something.
