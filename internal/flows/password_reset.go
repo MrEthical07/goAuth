@@ -51,8 +51,11 @@ type PasswordResetErrors struct {
 }
 
 type PasswordResetDeps struct {
-	Enabled     bool
-	Strategy    int
+	Enabled  bool
+	Strategy int
+	// SecretID is true when the record ID is the whole secret (the UUID
+	// strategy), so audit events carry a fingerprint of it, never the ID.
+	SecretID    bool
 	OTPDigits   int
 	ResetTTL    time.Duration
 	MaxAttempts int
@@ -371,20 +374,14 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 		deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 		if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": auditIdentifier(resetID),
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 			deps.EmitRateLimit(ctx, "password_reset_confirm", tenantID, func() map[string]string {
-				return map[string]string{
-					"reset_id": auditIdentifier(resetID),
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": auditIdentifier(resetID),
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		}
 		return mapped
@@ -396,9 +393,7 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 			mapped := deps.MapStoreError(err)
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": auditIdentifier(resetID),
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 			return mapped
 		}
@@ -435,25 +430,20 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 		if deps.IsStoreNotFound(err) {
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetReplay, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": auditIdentifier(resetID),
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		} else if errors.Is(mapped, deps.Errors.PasswordResetAttempts) {
 			deps.MetricInc(deps.Metrics.PasswordResetAttemptsExceeded)
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": auditIdentifier(resetID),
-					"reason":   "attempts_exceeded",
-				}
+				meta := challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
+				meta["reason"] = "attempts_exceeded"
+				return meta
 			})
 		} else {
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": auditIdentifier(resetID),
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		}
 		return mapped

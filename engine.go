@@ -2436,6 +2436,7 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 	deps := internalflows.EmailVerificationDeps{
 		Enabled:             cfg.EmailVerification.Enabled,
 		Strategy:            int(cfg.EmailVerification.Strategy),
+		SecretID:            cfg.EmailVerification.Strategy == VerificationUUID,
 		OTPDigits:           cfg.EmailVerification.OTPDigits,
 		VerificationTTL:     cfg.EmailVerification.VerificationTTL,
 		MaxAttempts:         cfg.EmailVerification.MaxAttempts,
@@ -3602,6 +3603,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 	deps := internalflows.PasswordResetDeps{
 		Enabled:             cfg.PasswordReset.Enabled,
 		Strategy:            int(cfg.PasswordReset.Strategy),
+		SecretID:            cfg.PasswordReset.Strategy == ResetUUID,
 		OTPDigits:           cfg.PasswordReset.OTPDigits,
 		ResetTTL:            cfg.PasswordReset.ResetTTL,
 		MaxAttempts:         cfg.PasswordReset.MaxAttempts,

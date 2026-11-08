@@ -63,6 +63,10 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 - All existing sessions are invalidated after successful reset.
 - Reuse of the current password is **not** checked: confirming a reset applies the password policy to the new password and nothing more (`ChangePassword` is the flow that rejects a new password equal to the current one with `ErrPasswordReuse`). Enforce reuse rules in your own layer if you need them on reset.
 
+## Audit and the UUID strategy
+
+With `ResetUUID` the reset ID is the whole secret, so confirm failures do not audit it: `password_reset_confirm` and `password_reset_replay` events carry `metadata.reset_id_fp`, the first 12 hex characters of SHA-256 over the tenant, a zero byte and the ID, in place of `reset_id`. Token and OTP strategies still record `reset_id`. See [audit.md](audit.md#uuid-strategies-record-a-fingerprint).
+
 ## Challenge ID shapes
 
 Every entry point that takes a challenge ID from a caller checks its shape first, with one rule per generator (`internal/challenge_shape.go`). A value that does not fit cannot name a live record, so it is refused with the flow's invalid error (`ErrPasswordResetInvalid`, `ErrEmailVerificationInvalid`, `ErrEmailChangeInvalid`, `ErrExternalSignupInvalid`) before any Redis call, limiter or audit event:

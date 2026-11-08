@@ -16,9 +16,18 @@ import (
 // helpers in auditCallerTextHelpers, so no queued event holds more of the
 // request than the cap allows and none keeps the request's memory alive.
 var auditCallerTextKeys = map[string]bool{
-	"identifier":      true,
-	"verification_id": true,
-	"reset_id":        true,
+	"identifier": true,
+}
+
+// auditChallengeIDKeys are the fields that carry a challenge ID. The ID is the
+// whole secret with a UUID strategy, so these are never written as a literal
+// key: challengeIDMeta (internal/flows) decides between the bounded ID and a
+// fingerprint of it, and is the only writer.
+var auditChallengeIDKeys = map[string]bool{
+	"verification_id":    true,
+	"verification_id_fp": true,
+	"reset_id":           true,
+	"reset_id_fp":        true,
 }
 
 var auditCallerTextHelpers = map[string]bool{
@@ -56,6 +65,10 @@ func TestAuditMetadataCallerTextIsBounded(t *testing.T) {
 				return true
 			}
 			key, err := strconv.Unquote(lit.Value)
+			if err == nil && auditChallengeIDKeys[key] {
+				t.Errorf("%s: audit metadata %q is written by hand; use challengeIDMeta", fset.Position(kv.Pos()), key)
+				return true
+			}
 			if err != nil || !auditCallerTextKeys[key] {
 				return true
 			}

@@ -1,6 +1,10 @@
 package flows
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
 
 // MaxIdentifierBytes is the longest identifier (login name, email address) the
 // unauthenticated entry points accept. It is the length of the longest valid
@@ -33,4 +37,31 @@ func auditIdentifier(identifier string) string {
 // metadata outside this one.
 func AuditIdentifier(value string) string {
 	return auditIdentifier(value)
+}
+
+// challengeIDMeta is the audit metadata for the ID of a challenge record, under
+// field ("reset_id", "verification_id").
+//
+// With a token or OTP strategy the ID names the record and the secret is a
+// separate value, so the ID is recorded as it is (bounded like any caller
+// text). With a UUID strategy the ID is the whole secret: whoever reads the
+// audit stream could redeem it while the record is live. Then the event
+// carries a fingerprint under field+"_fp" instead, the first 12 hex characters
+// of SHA-256 over the tenant, a zero byte and the ID: enough to match two
+// events about the same record, useless for redeeming it.
+func challengeIDMeta(field string, secretID bool, tenantID, id string) map[string]string {
+	if !secretID {
+		return map[string]string{field: auditIdentifier(id)}
+	}
+	return map[string]string{field + "_fp": ChallengeFingerprint(tenantID, id)}
+}
+
+// ChallengeFingerprint returns the short, non-reversible audit fingerprint of a
+// challenge ID: the first 12 hex characters of SHA-256(tenantID, 0x00, id).
+func ChallengeFingerprint(tenantID, id string) string {
+	h := sha256.New()
+	h.Write([]byte(tenantID))
+	h.Write([]byte{0})
+	h.Write([]byte(id))
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }

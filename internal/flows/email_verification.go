@@ -46,8 +46,11 @@ type EmailVerificationErrors struct {
 }
 
 type EmailVerificationDeps struct {
-	Enabled         bool
-	Strategy        int
+	Enabled  bool
+	Strategy int
+	// SecretID is true when the record ID is the whole secret (the UUID
+	// strategy), so audit events carry a fingerprint of it, never the ID.
+	SecretID        bool
 	OTPDigits       int
 	VerificationTTL time.Duration
 	MaxAttempts     int
@@ -403,20 +406,14 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"verification_id": auditIdentifier(verificationID),
-				}
+				return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 			})
 			deps.EmitRateLimit(ctx, "email_verification_confirm", tenantID, func() map[string]string {
-				return map[string]string{
-					"verification_id": auditIdentifier(verificationID),
-				}
+				return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"verification_id": auditIdentifier(verificationID),
-				}
+				return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 			})
 		}
 		return mapped
@@ -430,9 +427,7 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 			deps.MetricInc(deps.Metrics.EmailVerificationAttemptsExceeded)
 		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-			return map[string]string{
-				"verification_id": auditIdentifier(verificationID),
-			}
+			return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 		})
 		return mapped
 	}
@@ -520,20 +515,14 @@ func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code s
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"verification_id": auditIdentifier(verificationID),
-				}
+				return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 			})
 			deps.EmitRateLimit(ctx, "email_verification_confirm", tenantID, func() map[string]string {
-				return map[string]string{
-					"verification_id": auditIdentifier(verificationID),
-				}
+				return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"verification_id": auditIdentifier(verificationID),
-				}
+				return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 			})
 		}
 		return mapped
@@ -547,9 +536,7 @@ func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code s
 			deps.MetricInc(deps.Metrics.EmailVerificationAttemptsExceeded)
 		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-			return map[string]string{
-				"verification_id": auditIdentifier(verificationID),
-			}
+			return challengeIDMeta("verification_id", deps.SecretID, tenantID, verificationID)
 		})
 		return mapped
 	}

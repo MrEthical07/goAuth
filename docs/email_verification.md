@@ -79,6 +79,8 @@ tenant:verificationID:code
 
 **Clarification on UUID strategy:** The UUID serves as *both* the record identifier and the secret code. This means the verificationID alone is sufficient to confirm — treat it as sensitive in this mode.
 
+With `VerificationUUID` the verification ID is the whole secret, so confirm failures do not audit it: `email_verification_confirm` events carry `metadata.verification_id_fp`, the first 12 hex characters of SHA-256 over the tenant, a zero byte and the ID, in place of `verification_id`. Token and OTP strategies still record `verification_id`. See [audit.md](audit.md#uuid-strategies-record-a-fingerprint).
+
 ## Config
 
 ```go

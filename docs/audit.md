@@ -98,6 +98,10 @@ Text a caller typed never reaches an event unbounded. `metadata.identifier` (log
 
 The challenge IDs of the confirm paths are checked before they get that far: an ID that is not the length and alphabet its generator produces is refused with the flow's usual invalid error before any Redis call, limiter or event, so `verification_id` and `reset_id` hold at most a 36-character ID. See [Challenge ID shapes](password_reset.md#challenge-id-shapes).
 
+### UUID strategies record a fingerprint
+
+With `ResetUUID` or `VerificationUUID` the record ID is the whole secret, so an event must not carry it: anyone who can read the audit stream could redeem a live record. The confirm events of those strategies (`password_reset_confirm`, `password_reset_replay`, `email_verification_confirm`, and the `rate_limit_triggered` event of the two confirm limiters) carry `metadata.reset_id_fp` / `metadata.verification_id_fp` instead of `reset_id` / `verification_id`: the first 12 hex characters of SHA-256 over the tenant, a zero byte and the ID. It is enough to match two events about the same record and cannot be turned back into the ID. Token and OTP strategies are unchanged: their ID only names the record, and the secret is a separate value that is never recorded.
+
 ## Strategies
 
 - **Drop-if-full** (`DropIfFull = true`): Non-blocking. Increments atomic `dropped` counter on overflow. Preferred for latency-sensitive deployments.
