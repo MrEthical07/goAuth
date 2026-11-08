@@ -123,9 +123,8 @@ type LoginErrors struct {
 	// error.
 	SystemUnavailable error
 
-	// SessionInvalidationFailed is what LockAccount returns when the account was
-	// locked but its sessions could not be ended, and the error audited when the
-	// retry fails too.
+	// SessionInvalidationFailed is the error audited when an automatic lockout
+	// could not end the locked account's sessions.
 	SessionInvalidationFailed error
 }
 
@@ -185,10 +184,13 @@ type LoginDeps struct {
 	AutoLockoutEnabled   bool
 	RecordLockoutFailure func(context.Context, string) (bool, error)
 	ResetLockoutCounter  func(context.Context, string) error
-	LockAccount          func(context.Context, string) error
+	// LockAccount writes Active to Locked for an automatic lockout, from Active
+	// only, and reports whether this call wrote it: (false, nil) means the
+	// account was no longer Active and nothing was written. recordTenant is the
+	// account record's tenant.
+	LockAccount func(ctx context.Context, recordTenant, userID string) (locked bool, err error)
 	// RevokeSessions ends every session of a user whose account was just locked.
-	// The lockout calls it once more when LockAccount reports that it locked the
-	// account but could not end the sessions.
+	// The lockout calls it a second time when the first fails.
 	RevokeSessions func(ctx context.Context, recordTenant, userID string) error
 
 	// EnforceTenantMatch requires a resolved user's TenantID to equal the
@@ -570,15 +572,11 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil && user.Status == deps.ActiveStatus {
 			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
 				deps.MetricInc(deps.Metrics.LockoutTrigger)
-				lockErr := deps.LockAccount(ctx, user.UserID)
-				deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-						"reason":     "auto_lockout",
-					}
-				})
-				retryLockRevocation(ctx, username, user, tenantID, lockErr, deps)
-				return nil, deps.Errors.InvalidCredentials
+				if autoLockAccount(ctx, username, user, tenantID, deps) {
+					return nil, deps.Errors.InvalidCredentials
+				}
+				// Not locked (the account is no longer Active, or the write
+				// failed): an ordinary wrong password, answered and audited as one.
 			}
 		}
 
@@ -613,28 +611,49 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 	})
 }
 
-// retryLockRevocation finishes an automatic lockout whose LockAccount committed
-// the status but failed to end the account's sessions (a Redis blip at that one
-// step): a locked account whose existing sessions stay alive until they expire
-// is not locked. It revokes once more; if that fails too the failure is logged
-// and audited with the reason auto_lockout_sessions_not_ended. It never changes
-// what the caller is told (R2-14: the attempt that crosses the threshold
-// answers like any wrong password). Any other LockAccount error means the
-// status was not written, and nothing is revoked.
-func retryLockRevocation(ctx context.Context, username string, user LoginUserRecord, tenantID string, lockErr error, deps LoginDeps) {
-	if lockErr == nil || deps.RevokeSessions == nil || !errors.Is(lockErr, deps.Errors.SessionInvalidationFailed) {
-		return
+// autoLockAccount locks an account whose failure threshold was just reached and
+// ends its sessions, and reports whether it locked it. It never changes what the
+// caller is told (R2-14: the attempt that crosses the threshold answers like any
+// wrong password); it only decides what is written and audited.
+//
+// The lock is written from Active only: an account an administrator disabled or
+// deleted since this login read it is left as it is, with no revocation and no
+// lock audit. The revocation is retried once, since a lock that leaves the
+// account's existing sessions alive until they expire is not a lock; if the
+// retry fails too the failure is logged and audited with the reason
+// auto_lockout_sessions_not_ended.
+func autoLockAccount(ctx context.Context, username string, user LoginUserRecord, tenantID string, deps LoginDeps) bool {
+	locked, err := deps.LockAccount(ctx, user.TenantID, user.UserID)
+	if err != nil {
+		deps.Warn("goAuth: automatic account lockout could not be written")
+		return false
 	}
-	if err := deps.RevokeSessions(ctx, user.TenantID, user.UserID); err == nil {
-		return
+	if !locked {
+		return false
 	}
-	deps.Warn("goAuth: sessions of an automatically locked account could not be ended")
-	deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.SessionInvalidationFailed, func() map[string]string {
+
+	var revokeErr error
+	if deps.RevokeSessions != nil {
+		if revokeErr = deps.RevokeSessions(ctx, user.TenantID, user.UserID); revokeErr != nil {
+			revokeErr = deps.RevokeSessions(ctx, user.TenantID, user.UserID)
+		}
+	}
+	deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
 		return map[string]string{
 			"identifier": username,
-			"reason":     "auto_lockout_sessions_not_ended",
+			"reason":     "auto_lockout",
 		}
 	})
+	if revokeErr != nil {
+		deps.Warn("goAuth: sessions of an automatically locked account could not be ended")
+		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.SessionInvalidationFailed, func() map[string]string {
+			return map[string]string{
+				"identifier": username,
+				"reason":     "auto_lockout_sessions_not_ended",
+			}
+		})
+	}
+	return true
 }
 
 // upgradePasswordHash re-hashes a password that was just verified with the

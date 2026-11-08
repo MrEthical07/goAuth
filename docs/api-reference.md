@@ -284,7 +284,7 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `UserProvider` | type | Unified user-store adapter used by the engine. |
 | `TenantAwareUserProvider` | interface | Optional `UserProvider` capability: tenant-scoped user lookup (required when `MultiTenant.Enabled`). |
 | `PasswordHashCASUpdater` | interface | Optional `UserProvider` capability: `CompareAndSwapPasswordHash(ctx, tenantID, userID, expectedOldHash, newHash) (applied bool, err error)`; makes the rehash-on-login upgrade exact. |
-| `AccountStatusCASUpdater` | interface | Optional `UserProvider` capability: `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)`; used for the pending-to-active write of email verification. |
+| `AccountStatusCASUpdater` | interface | Optional `UserProvider` capability: `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)`; used for the pending-to-active write of email verification and the Active-to-Locked write of an automatic lockout. |
 | `TenantAwarePasswordUpdater` | interface | Optional `UserProvider` capability: `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)`; used instead of `UpdatePasswordHash` by `ChangePassword`, password-reset confirm and rehash-on-login when `MultiTenant.Enabled`. |
 | `RoleSwitchProvider` | interface | Optional `UserProvider` capability for `SwitchRole` (see above). |
 | `ExternalIdentityProvider` | interface | Optional `UserProvider` capability for external sign-in (see External Identity above). |

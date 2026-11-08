@@ -3162,7 +3162,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.ResetLockoutCounter = func(ctx context.Context, userID string) error {
 			return e.lockoutLimiter.Reset(ctx, tenantIDFromContext(ctx), userID)
 		}
-		deps.LockAccount = e.LockAccount
+		deps.LockAccount = e.lockAccountFromActive
 		deps.RevokeSessions = e.revokeUserSessions
 	}
 	if e != nil && e.userProvider != nil {

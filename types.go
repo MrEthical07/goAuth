@@ -216,9 +216,12 @@ type PasswordHashCASUpdater interface {
 // The engine uses it for the pending-verification to active transition that
 // confirming an email address performs; a disabled, locked or deleted account
 // is then never made active again by a verification that was in flight when it
-// was blocked. Without it the engine reads the account again immediately before
-// the write and transitions only from pending-verification, which narrows the
-// window to the gap between that read and the write but cannot close it.
+// was blocked. It also uses it for the active to locked write of an automatic
+// lockout, so a disable or delete that landed after the login read the account
+// is not overwritten. Without it the engine reads the account again immediately
+// before either write and transitions only from the expected status, which
+// narrows the window to the gap between that read and the write but cannot
+// close it.
 //
 //	Docs: docs/email_verification.md
 type AccountStatusCASUpdater interface {
