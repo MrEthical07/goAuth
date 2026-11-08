@@ -942,6 +942,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 
 	oldOK, err := e.verifyHash(oldPassword, user.PasswordHash)
 	if err != nil || !oldOK {
+		e.padCheapRejection(user.PasswordHash)
 		e.metricInc(MetricPasswordChangeInvalidOld)
 		e.emitAudit(ctx, auditEventPasswordChangeInvalidOld, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
 		return mapToAuthError(ErrInvalidCredentials)
@@ -976,10 +977,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 
 	// Only for the audit trail: the revocation itself covers the context
 	// tenant and the record's (see revokeUserSessions).
-	invalidateTenant := tenantIDFromContext(ctx)
-	if user.TenantID != "" {
-		invalidateTenant = user.TenantID
-	}
+	invalidateTenant := recordOrContextTenant(ctx, user.TenantID)
 
 	// The password is changed: a reset code issued before now is dead, whoever
 	// holds it, as after a completed reset. Written before the session
@@ -1079,6 +1077,7 @@ func (e *Engine) VerifyPassword(ctx context.Context, userID, password string) er
 	ok, err := e.verifyHash(password, user.PasswordHash)
 	password = ""
 	if err != nil || !ok {
+		e.padCheapRejection(user.PasswordHash)
 		e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
 		return mapToAuthError(ErrInvalidCredentials)
 	}
@@ -3190,6 +3189,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	if e != nil && e.passwordHash != nil {
 		deps.VerifyPassword = e.verifyHash
 		deps.PasswordNeedsUpgrade = e.passwordHash.NeedsUpgrade
+		deps.PadRejectedVerify = e.padCheapRejection
 		deps.HashPassword = e.passwordHash.Hash
 	}
 	if e != nil && e.passwordCAS != nil {

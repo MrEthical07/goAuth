@@ -147,7 +147,7 @@ Login flow:
 
 ## Migration Notes
 
-- **Parameter upgrades**: Changing Argon2 parameters (Memory, Time, Parallelism) only affects new hashes. Existing hashes remain valid. Enable `UpgradeOnLogin` to transparently re-hash on next successful login.
+- **Parameter upgrades**: Changing Argon2 parameters (Memory, Time, Parallelism) only affects new hashes. Existing hashes remain valid. Enable `UpgradeOnLogin` to transparently re-hash on next successful login. Until then a wrong password against such an account (and against a hash that is not Argon2) is padded with one dummy verification at the configured cost, so its response time still matches an unknown identifier's; `VerifyPassword` and `ChangePassword` do the same on their wrong-password branches.
 - **PHC format**: The `$argon2id$v=19$...` format is self-describing. Old hashes with different parameters can always be verified — `NeedsUpgrade` detects the mismatch.
 - **Minimum password length**: The 10-byte minimum is enforced at the engine level. Lowering it is not supported.
 

@@ -228,6 +228,12 @@ type LoginDeps struct {
 	// none to verify. Empty means DummyTimingHash.
 	DummyHash string
 
+	// PadRejectedVerify is called with the stored hash after a real password
+	// verification failed, and runs one more dummy verification when that
+	// hash cost less than the configured cost (or did not parse), so every
+	// rejection costs at least the configured cost. Optional.
+	PadRejectedVerify func(storedHash string)
+
 	VerifyPassword           func(string, string) (bool, error)
 	PasswordNeedsUpgrade     func(string) (bool, error)
 	HashPassword             func(string) (string, error)
@@ -560,6 +566,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		mismatchReason = "password_not_set"
 	} else {
 		ok, err = deps.VerifyPassword(password, user.PasswordHash)
+		if (err != nil || !ok) && deps.PadRejectedVerify != nil {
+			deps.PadRejectedVerify(user.PasswordHash)
+		}
 	}
 	if err != nil || !ok {
 		// Auto-lockout: record the failure and lock once the threshold is
