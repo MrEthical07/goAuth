@@ -493,12 +493,12 @@ See [multi_tenancy.md](multi_tenancy.md).
 Two stages, both with the atomic reserve pattern and the same budget
 (`MaxAttempts` per `Cooldown`), honouring `Security.LimiterWindowMode`:
 
-1. **Before verification, per client IP** (`rl:extlogin:ip:<tenant>:<ip>`). Pass
+1. **Before verification, per client IP** (`rl:extlogin:ip:<tenant>:<ip>`, each segment a SHA-256 hex digest). Pass
    the IP with `WithClientIP`. **Without an IP this stage is skipped**: a bucket
    shared by every request without one could be exhausted by anyone, locking out
    every user of the provider. Behind a proxy, set the IP only from a header you
    trust.
-2. **After verification, per identity** (`rl:extlogin:sub:<tenant>:<provider>:<sub>`).
+2. **After verification, per identity** (`rl:extlogin:sub:<tenant>:<provider>:<sub>`, each segment a SHA-256 hex digest).
    Counts sign-ins that fail to resolve (link required, not found, and so on).
 
 Both reset on a successful sign-in. Over the limit, the call fails with

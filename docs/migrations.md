@@ -1,5 +1,13 @@
 # Migrations
 
+## v0.8.2 Migration Notes (Non-Breaking)
+
+### External sign-in limiter counters restart
+
+The external sign-in limiter (`rl:extlogin:ip:*`, `rl:extlogin:sub:*`) now names its keys with SHA-256 digests of the tenant, client address, provider and subject, as the login, reset, verification and account-creation limiters already did. The counters are new keys, so every external sign-in budget starts empty when an instance running v0.8.2 first handles a request. That is harmless: the old keys expire by their own TTL (the limiter's `Cooldown`) and nothing reads them. During a rolling deploy an old and a new instance count in separate buckets until the old one is gone. No stored format changed.
+
+## v0.8.1 Migration Notes (Non-Breaking)
+
 ## v0.8.1 Migration Notes (Non-Breaking)
 
 ### Upgrading from v0.8.0

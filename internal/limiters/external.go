@@ -67,7 +67,10 @@ func NewExternalLimiter(redisClient redis.UniversalClient, cfg ExternalConfig) *
 }
 
 // Keys use their own rl:extlogin:* namespace, distinct from every other
-// limiter, so exhausting it never touches login, TOTP or password limits.
+// limiter, so exhausting it never touches login, TOTP or password limits. Every
+// segment is the SHA-256 hex digest of its value, so a key is a fixed length
+// whatever a client address or an identity provider's subject looks like, and
+// two inputs share a bucket exactly when they are the same string.
 
 // SourceKey is the pre-verification bucket of a client IP. It is empty when
 // the IP is unknown, in which case there is no such bucket and the caller
@@ -76,12 +79,12 @@ func (l *ExternalLimiter) SourceKey(tenantID, ip string) string {
 	if ip == "" {
 		return ""
 	}
-	return "rl:extlogin:ip:" + tenantID + ":" + ip
+	return "rl:extlogin:ip:" + hashPart(tenantID) + ":" + hashPart(ip)
 }
 
 // SubjectKey is the post-verification bucket.
 func (l *ExternalLimiter) SubjectKey(tenantID, provider, subject string) string {
-	return "rl:extlogin:sub:" + tenantID + ":" + provider + ":" + subject
+	return "rl:extlogin:sub:" + hashPart(tenantID) + ":" + hashPart(provider) + ":" + hashPart(subject)
 }
 
 // Reserve atomically claims one attempt in the bucket before the guarded work
