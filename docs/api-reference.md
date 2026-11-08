@@ -247,7 +247,7 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `PasswordConfig` | type | Argon2id parameter settings. |
 | `SecurityConfig` | type | Rate-limit thresholds, lockout settings and the opt-in per-IP login throttle (`LoginIPLimiter`). |
 | `LoginIPLimiterConfig` | type | `Enabled`, `MaxAttempts`, `Cooldown` of the per-client-IP login throttle (off by default). |
-| `MaxIdentifierBytes` | const | 320: the longest identifier the unauthenticated entry points accept (login, account creation, reset and verification requests); also the length audit events keep of such identifiers. |
+| `MaxIdentifierBytes` | const | 320: the longest identifier the unauthenticated entry points accept (login, account creation, reset and verification requests); also the length audit events keep of such identifiers (a copy of the first 320 bytes, so a queued event does not keep the request alive). |
 | `SessionHardeningConfig` | type | Concurrent session limits and replay detection. |
 | `DeviceBindingConfig` | type | IP/UA fingerprint binding mode (off / detect / enforce). |
 | `TOTPConfig` | type | TOTP algorithm, digits, period, drift window. |

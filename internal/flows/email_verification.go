@@ -174,18 +174,18 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 				}
 			})
 			deps.EmitRateLimit(ctx, "email_verification_request", tenantID, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 				}
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 				}
 			})
 		}
@@ -210,7 +210,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		if genErr != nil {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, "", tenantID, "", deps.Errors.EmailVerificationUnavailable, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"reason":     "fake_generation_failed",
 				}
 			})
@@ -218,7 +218,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, "", tenantID, "", nil, func() map[string]string {
 			return map[string]string{
-				"identifier":       identifier,
+				"identifier":       auditIdentifier(identifier),
 				"enumeration_safe": "true",
 			}
 		})
@@ -238,14 +238,14 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"scope":      "account",
 				}
 			})
 			if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
 				deps.EmitRateLimit(ctx, "email_verification_request", tenantID, func() map[string]string {
 					return map[string]string{
-						"identifier": identifier,
+						"identifier": auditIdentifier(identifier),
 						"scope":      "account",
 					}
 				})
@@ -261,7 +261,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, user.UserID, tenantID, "", nil, func() map[string]string {
 			return map[string]string{
-				"identifier": identifier,
+				"identifier": auditIdentifier(identifier),
 				"noop":       "already_active",
 			}
 		})
@@ -275,7 +275,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, user.UserID, tenantID, "", nil, func() map[string]string {
 			return map[string]string{
-				"identifier": identifier,
+				"identifier": auditIdentifier(identifier),
 				"noop":       "non_verifiable_status",
 			}
 		})
@@ -314,7 +314,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 		deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
 			return map[string]string{
-				"identifier": identifier,
+				"identifier": auditIdentifier(identifier),
 			}
 		})
 		return "", mapped
@@ -329,7 +329,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"reason":     "supersede_failed",
 				}
 			})
@@ -345,7 +345,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 			deps.MetricInc(deps.Metrics.EmailVerificationFailure)
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, false, user.UserID, effectiveTenant, "", deps.Errors.EmailVerificationUnavailable, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"reason":     "identifier_changed",
 				}
 			})
@@ -355,7 +355,7 @@ func RunRequestEmailVerification(ctx context.Context, identifier string, deps Em
 
 	deps.EmitAudit(ctx, deps.Events.EmailVerificationRequest, true, user.UserID, effectiveTenant, "", nil, func() map[string]string {
 		return map[string]string{
-			"identifier": identifier,
+			"identifier": auditIdentifier(identifier),
 		}
 	})
 	deps.MetricInc(deps.Metrics.EmailVerificationRequest)
@@ -404,18 +404,18 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 		if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"verification_id": verificationID,
+					"verification_id": auditIdentifier(verificationID),
 				}
 			})
 			deps.EmitRateLimit(ctx, "email_verification_confirm", tenantID, func() map[string]string {
 				return map[string]string{
-					"verification_id": verificationID,
+					"verification_id": auditIdentifier(verificationID),
 				}
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"verification_id": verificationID,
+					"verification_id": auditIdentifier(verificationID),
 				}
 			})
 		}
@@ -431,7 +431,7 @@ func RunConfirmEmailVerification(ctx context.Context, challenge string, deps Ema
 		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
 			return map[string]string{
-				"verification_id": verificationID,
+				"verification_id": auditIdentifier(verificationID),
 			}
 		})
 		return mapped
@@ -521,18 +521,18 @@ func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code s
 		if errors.Is(mapped, deps.Errors.EmailVerificationRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"verification_id": verificationID,
+					"verification_id": auditIdentifier(verificationID),
 				}
 			})
 			deps.EmitRateLimit(ctx, "email_verification_confirm", tenantID, func() map[string]string {
 				return map[string]string{
-					"verification_id": verificationID,
+					"verification_id": auditIdentifier(verificationID),
 				}
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"verification_id": verificationID,
+					"verification_id": auditIdentifier(verificationID),
 				}
 			})
 		}
@@ -548,7 +548,7 @@ func RunConfirmEmailVerificationCode(ctx context.Context, verificationID, code s
 		}
 		deps.EmitAudit(ctx, deps.Events.EmailVerificationConfirm, false, "", tenantID, "", mapped, func() map[string]string {
 			return map[string]string{
-				"verification_id": verificationID,
+				"verification_id": auditIdentifier(verificationID),
 			}
 		})
 		return mapped

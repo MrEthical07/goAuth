@@ -949,7 +949,7 @@ func (e *Engine) createExternalAccount(ctx context.Context, tenantID string, cla
 	e.metricInc(MetricAccountCreationSuccess)
 	e.emitAudit(ctx, auditEventAccountCreationSuccess, true, created.UserID, created.TenantID, "", nil, func() map[string]string {
 		return map[string]string{
-			"identifier": claims.Email,
+			"identifier": internalflows.AuditIdentifier(claims.Email),
 			"role":       created.Role,
 			"method":     "external",
 			"provider":   identity.Provider,
@@ -975,10 +975,10 @@ func (e *Engine) enforceExternalSignupLimit(ctx context.Context, tenantID, ident
 	}
 	e.metricInc(MetricAccountCreationRateLimited)
 	e.emitAudit(ctx, auditEventAccountCreationRateLimited, false, "", tenantID, "", ErrAccountCreationRateLimited, func() map[string]string {
-		return map[string]string{"identifier": identifier}
+		return map[string]string{"identifier": internalflows.AuditIdentifier(identifier)}
 	})
 	e.emitRateLimit(ctx, "account_creation", tenantID, func() map[string]string {
-		return map[string]string{"identifier": identifier}
+		return map[string]string{"identifier": internalflows.AuditIdentifier(identifier)}
 	})
 	return ErrAccountCreationRateLimited
 }

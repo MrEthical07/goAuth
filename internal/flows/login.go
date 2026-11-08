@@ -464,7 +464,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "empty_password",
 			}
 		})
@@ -521,7 +521,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     reason,
 			}
 		})
@@ -541,13 +541,13 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 			deps.MetricInc(deps.Metrics.LoginRateLimited)
 			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"scope":      "account",
 				}
 			})
 			deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"scope":      "account",
 				}
 			})
@@ -592,7 +592,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     mismatchReason,
 			}
 		})
@@ -649,7 +649,7 @@ func autoLockAccount(ctx context.Context, username string, user LoginUserRecord,
 	}
 	deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
 		return map[string]string{
-			"identifier": username,
+			"identifier": auditIdentifier(username),
 			"reason":     "auto_lockout",
 		}
 	})
@@ -657,7 +657,7 @@ func autoLockAccount(ctx context.Context, username string, user LoginUserRecord,
 		deps.Warn("goAuth: sessions of an automatically locked account could not be ended")
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.SessionInvalidationFailed, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "auto_lockout_sessions_not_ended",
 			}
 		})
@@ -746,7 +746,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", statusErr, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "account_status",
 			}
 		})
@@ -757,7 +757,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountUnverified, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "pending_verification",
 			}
 		})
@@ -769,7 +769,7 @@ func runCompleteLogin(
 			deps.MetricInc(deps.Metrics.LoginFailure)
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.DeviceBindingRejected, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "missing_ip_context",
 				}
 			})
@@ -779,7 +779,7 @@ func runCompleteLogin(
 			deps.MetricInc(deps.Metrics.LoginFailure)
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.DeviceBindingRejected, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "missing_user_agent_context",
 				}
 			})
@@ -791,7 +791,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "session_hardening",
 			}
 		})
@@ -844,7 +844,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.MFALoginRequired)
 		deps.EmitAudit(ctx, deps.Events.MFARequired, true, user.UserID, tenantID, "", nil, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 			}
 		})
 		if afterLogin != nil {
@@ -1486,12 +1486,12 @@ func RunIssueLoginSessionTokens(
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
-						"identifier": username,
+						"identifier": auditIdentifier(username),
 					}
 				})
 				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
 					return map[string]string{
-						"identifier": username,
+						"identifier": auditIdentifier(username),
 					}
 				})
 				return "", "", deps.Errors.LoginRateLimited
@@ -1500,7 +1500,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "role_mask_missing",
 			}
 		})
@@ -1512,7 +1512,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "session_id_generation",
 			}
 		})
@@ -1523,7 +1523,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "refresh_secret_generation",
 			}
 		})
@@ -1540,7 +1540,7 @@ func RunIssueLoginSessionTokens(
 			deps.MetricInc(deps.Metrics.LoginFailure)
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, lifetimeErr, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "session_profile_lifetime",
 				}
 			})
@@ -1595,7 +1595,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "session_save_failed",
 			}
 		})
@@ -1607,7 +1607,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "issue_access_failed",
 			}
 		})
@@ -1619,7 +1619,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "encode_refresh_failed",
 			}
 		})
@@ -1631,7 +1631,7 @@ func RunIssueLoginSessionTokens(
 			deps.MetricInc(deps.Metrics.LoginRateLimited)
 			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, sessionID, deps.Errors.LoginRateLimited, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "reset_limiter_failed",
 				}
 			})
@@ -1643,7 +1643,7 @@ func RunIssueLoginSessionTokens(
 	deps.MetricInc(deps.Metrics.LoginSuccess)
 	deps.EmitAudit(ctx, deps.Events.LoginSuccess, true, user.UserID, tenantID, sessionID, nil, func() map[string]string {
 		return profileMeta(map[string]string{
-			"identifier": username,
+			"identifier": auditIdentifier(username),
 		}, plan.profile)
 	})
 
@@ -1659,7 +1659,7 @@ func (d LoginDeps) loginRateRefusal(ctx context.Context, err error, userID, tena
 	}
 	meta := func() map[string]string {
 		m := map[string]string{
-			"identifier": username,
+			"identifier": auditIdentifier(username),
 		}
 		if scope != "" {
 			m["scope"] = scope

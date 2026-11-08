@@ -92,6 +92,10 @@ With `ExternalAuth` enabled (see [external_identity.md](external_identity.md#aud
 
 A successful external sign-in also emits the shared login tail's own `login_success` (or `mfa_required`), and a failure there emits `login_failure` / `mfa_failure`, exactly as a password login does. A password login against an account with no password is `login_failure` with reason `password_not_set`; `ChangePassword` / `VerifyPassword` against one emit `password_change_failure` / `password_verify_failure` with the same reason.
 
+## Caller text in metadata
+
+Text a caller typed never reaches an event unbounded. `metadata.identifier` (login, account creation, reset and verification requests, external sign-in), `metadata.verification_id` and `metadata.reset_id` hold at most `MaxIdentifierBytes` (320) bytes. A longer value is cut at that length (on a character boundary) and the cut is copied, so a queued event holds 320 bytes of the request and not the request itself, however far the sink lags behind. A value within the cap is recorded as it came.
+
 ## Strategies
 
 - **Drop-if-full** (`DropIfFull = true`): Non-blocking. Increments atomic `dropped` counter on overflow. Preferred for latency-sensitive deployments.
