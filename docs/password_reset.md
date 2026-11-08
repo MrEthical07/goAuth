@@ -58,9 +58,25 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 ## Security Notes
 
 - Challenge tokens are SHA-256 hashed before storage.
+- A challenge that is not the length and alphabet the generator produces (a token of other than 64 base64url characters, a UUID of other than 36, an OTP challenge of other than `<22-character ID>.<digits>`) is refused as `ErrPasswordResetInvalid` before it is decoded, looked up or audited.
 - Rate limiting protects both request and confirm endpoints.
 - All existing sessions are invalidated after successful reset.
 - Reuse of the current password is **not** checked: confirming a reset applies the password policy to the new password and nothing more (`ChangePassword` is the flow that rejects a new password equal to the current one with `ErrPasswordReuse`). Enforce reuse rules in your own layer if you need them on reset.
+
+## Challenge ID shapes
+
+Every entry point that takes a challenge ID from a caller checks its shape first, with one rule per generator (`internal/challenge_shape.go`). A value that does not fit cannot name a live record, so it is refused with the flow's invalid error (`ErrPasswordResetInvalid`, `ErrEmailVerificationInvalid`, `ErrEmailChangeInvalid`, `ErrExternalSignupInvalid`) before any Redis call, limiter or audit event:
+
+| Value | Rule |
+|-------|------|
+| Token and OTP record ID (reset, verification, email change) | 22 base64url characters, canonically encoded (what a 16-byte random ID encodes to) |
+| UUID record ID and code | 36 characters, hyphenated; the ID must be lower case, a code may be in either case |
+| Reset token / verification token code | 64 base64url characters |
+| OTP reset challenge | `<22-character ID>.<OTPDigits digits>` |
+| Tenant carried by a challenge | at most 256 bytes |
+| External sign-up handle | 43 base64url characters, canonically encoded (32 random bytes) |
+
+UUID reset challenges in the braced, `urn:uuid:` or unhyphenated spellings, which the UUID parser used to accept, are no longer accepted; the generated form is unchanged.
 
 ## Edge Cases & Gotchas
 

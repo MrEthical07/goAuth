@@ -2809,7 +2809,7 @@ func parseEmailVerificationChallenge(
 	if tenant == "" || verificationID == "" || code == "" {
 		return "", "", emptyHash, errors.New("invalid challenge format: empty segment")
 	}
-	if len(tenant) > 256 {
+	if len(tenant) > internal.MaxTenantIDBytes {
 		return "", "", emptyHash, errors.New("invalid challenge format: tenant too long")
 	}
 
@@ -2828,8 +2828,18 @@ func parseEmailVerificationChallengeCode(
 ) ([32]byte, error) {
 	var emptyHash [32]byte
 
+	// The ID names a record, so it must have the shape the generator gives it
+	// before anything else looks at it: a malformed one cannot name a live
+	// record and is not copied into a key, a limiter or an audit event.
+	if !validVerificationIDText(strategy, verificationID) {
+		return emptyHash, errors.New("invalid verification id")
+	}
+
 	switch strategy {
 	case VerificationToken:
+		if !internal.ValidResetTokenText(code) {
+			return emptyHash, errors.New("invalid verification token")
+		}
 		_, secret, err := internal.DecodeResetToken(code)
 		if err != nil {
 			return emptyHash, err
@@ -2837,6 +2847,9 @@ func parseEmailVerificationChallengeCode(
 		return internal.HashResetSecret(secret), nil
 
 	case VerificationUUID:
+		if !internal.ValidUUIDCode(code) {
+			return emptyHash, errors.New("invalid verification uuid")
+		}
 		parsed, err := uuid.Parse(code)
 		if err != nil {
 			return emptyHash, err
@@ -2844,9 +2857,6 @@ func parseEmailVerificationChallengeCode(
 		return internal.HashResetBytes([]byte(parsed.String())), nil
 
 	case VerificationOTP:
-		if _, err := internal.ParseSessionID(verificationID); err != nil {
-			return emptyHash, err
-		}
 		if len(code) != otpDigits {
 			return emptyHash, errors.New("invalid verification otp length")
 		}
@@ -3778,6 +3788,12 @@ func parsePasswordResetChallenge(
 	otpDigits int,
 ) (string, [32]byte, error) {
 	var emptyHash [32]byte
+
+	// A challenge that is not the length and alphabet the generator emits is
+	// refused before it is decoded or looked up.
+	if !validResetChallengeText(strategy, challenge, otpDigits) {
+		return "", emptyHash, errors.New("invalid reset challenge")
+	}
 
 	switch strategy {
 	case ResetToken:

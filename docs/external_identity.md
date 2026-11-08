@@ -348,7 +348,7 @@ is deliberate: a handle that survived a failure could be retried by whoever hold
 
 `CancelExternalSignup` deletes the handle and is idempotent; an unknown, used or
 expired handle is not an error. Nothing was created in step one, so there is nothing
-else to undo.
+else to undo. A handle that is not the 43 characters the generator issues is refused without a Redis call: `CompleteExternalSignup` answers `ErrExternalSignupInvalid`, `CancelExternalSignup` returns nil like any unknown handle.
 
 **Security.** The handle is a bearer secret: whoever holds it can create the account
 for that identity. It is never written to the audit trail, a log line or an error;

@@ -50,7 +50,7 @@ func (e *Engine) ConfirmEmailVerificationCode(ctx context.Context, verificationI
 | Error                              | Description                                    |
 |------------------------------------|------------------------------------------------|
 | `ErrEmailVerificationDisabled`     | Feature not enabled in config                  |
-| `ErrEmailVerificationInvalid`      | Challenge expired, invalid, already used, or malformed |
+| `ErrEmailVerificationInvalid`      | Challenge expired, invalid, already used, or malformed (a verification ID or code of the wrong length or alphabet is refused before any Redis call; see [Challenge ID shapes](password_reset.md#challenge-id-shapes)) |
 | `ErrEmailVerificationRateLimited`  | Too many requests or confirm failures (limiter triggered) |
 | `ErrEmailVerificationUnavailable`  | Backend (Redis) unavailable                    |
 | `ErrEmailVerificationAttempts`     | Max attempts exceeded for this verification    |

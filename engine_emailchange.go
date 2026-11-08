@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/MrEthical07/goAuth/internal"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/stores"
@@ -321,7 +322,7 @@ func (e *Engine) confirmEmailChange(ctx context.Context, verificationID, code st
 	cfg := e.config.EmailChange.resolved()
 
 	tenantID, rawID, ok := strings.Cut(verificationID, ":")
-	if !ok || tenantID == "" || rawID == "" || code == "" {
+	if !ok || tenantID == "" || rawID == "" || code == "" || len(tenantID) > internal.MaxTenantIDBytes {
 		return nil, e.emailChangeFail(ctx, ctxTenant, "", stage, emailChangeReasonInvalid, ErrEmailChangeInvalid)
 	}
 	if e.tenantScopedLookup() {

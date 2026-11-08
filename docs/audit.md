@@ -96,6 +96,8 @@ A successful external sign-in also emits the shared login tail's own `login_succ
 
 Text a caller typed never reaches an event unbounded. `metadata.identifier` (login, account creation, reset and verification requests, external sign-in), `metadata.verification_id` and `metadata.reset_id` hold at most `MaxIdentifierBytes` (320) bytes. A longer value is cut at that length (on a character boundary) and the cut is copied, so a queued event holds 320 bytes of the request and not the request itself, however far the sink lags behind. A value within the cap is recorded as it came.
 
+The challenge IDs of the confirm paths are checked before they get that far: an ID that is not the length and alphabet its generator produces is refused with the flow's usual invalid error before any Redis call, limiter or event, so `verification_id` and `reset_id` hold at most a 36-character ID. See [Challenge ID shapes](password_reset.md#challenge-id-shapes).
+
 ## Strategies
 
 - **Drop-if-full** (`DropIfFull = true`): Non-blocking. Increments atomic `dropped` counter on overflow. Preferred for latency-sensitive deployments.
