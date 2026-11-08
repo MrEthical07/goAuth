@@ -56,7 +56,7 @@ func TestExternalLimiterKeys(t *testing.T) {
 	_, rdb := newRoleSwitchTestRedis(t)
 	l := NewExternalLimiter(rdb, ExternalConfig{})
 
-	if got := l.SourceKey("t", "1.2.3.4"); got != "rl:extlogin:ip:t:1.2.3.4" {
+	if got := l.SourceKey("t", "1.2.3.4"); got != "rl:extlogin:ip:"+hashPart("t")+":"+hashPart("1.2.3.4") {
 		t.Fatalf("ip key = %q", got)
 	}
 	// No IP, no shared bucket: one that every unknown-IP request shared
@@ -64,7 +64,7 @@ func TestExternalLimiterKeys(t *testing.T) {
 	if got := l.SourceKey("t", ""); got != "" {
 		t.Fatalf("key without an IP = %q, want none", got)
 	}
-	if got := l.SubjectKey("t", "apple", "sub"); got != "rl:extlogin:sub:t:apple:sub" {
+	if got := l.SubjectKey("t", "apple", "sub"); got != "rl:extlogin:sub:"+hashPart("t")+":"+hashPart("apple")+":"+hashPart("sub") {
 		t.Fatalf("subject key = %q", got)
 	}
 	for _, k := range []string{l.SourceKey("t", "ip"), l.SubjectKey("t", "p", "s")} {

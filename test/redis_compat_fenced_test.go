@@ -178,6 +178,109 @@ func TestRedisCompat_FencedSaveSingleSessionPurge(t *testing.T) {
 	}
 }
 
+// R2-28 residual: a single-session save that any check refuses ends nothing,
+// and a tenant that is full only of the user's own sessions still admits the
+// replacement.
+func TestRedisCompat_FencedSaveSingleSessionRefusalEndsNothing(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			store := session.NewStore(rdb, "as", true, false, 0)
+			ctx := context.Background()
+
+			old1 := compatSaveWithProof(t, store, "t-ord", "u-ord", "old1", 1)
+			old2 := compatSaveWithProof(t, store, "t-ord", "u-ord", "old2", 2)
+			for i, u := range []string{"o1", "o2", "o3", "o4"} {
+				compatSaveWithProof(t, store, "t-ord", u, "s-"+u, byte(10+i))
+			}
+
+			// Six sessions in the tenant; four are other users'. The cap is 4.
+			limits := session.SaveLimits{SingleSession: true, MaxPerTenant: 4}
+			err := store.SaveFenced(ctx, fencedSess("t-ord", "u-ord", "new", 9), time.Hour, 0, limits)
+			if !errors.Is(err, session.ErrTenantSessionLimit) {
+				t.Fatalf("a full tenant = %v, want ErrTenantSessionLimit", err)
+			}
+			ids, _ := store.ActiveSessionIDs(ctx, "t-ord", "u-ord")
+			if len(ids) != 2 {
+				t.Fatalf("a save refused for the tenant cap ended sessions: %v", ids)
+			}
+			if !proofExists(t, store, old1) || !proofExists(t, store, old2) {
+				t.Fatal("a refused save removed a proof key")
+			}
+			if n, _ := store.TenantSessionCount(ctx, "t-ord"); n != 6 {
+				t.Fatalf("tenant counter = %d, a refused save must not change it (want 6)", n)
+			}
+
+			// With room once the user's own sessions are gone, the same save goes
+			// through and replaces them.
+			limits.MaxPerTenant = 5
+			if err := store.SaveFenced(ctx, fencedSess("t-ord", "u-ord", "new", 9), time.Hour, 0, limits); err != nil {
+				t.Fatalf("a replacement that fits once the old sessions are gone = %v", err)
+			}
+			ids, _ = store.ActiveSessionIDs(ctx, "t-ord", "u-ord")
+			if len(ids) != 1 || ids[0] != "new" {
+				t.Fatalf("sessions after the save: %v", ids)
+			}
+			if proofExists(t, store, old1) || proofExists(t, store, old2) {
+				t.Fatal("a replaced session kept its proof key")
+			}
+			if n, _ := store.TenantSessionCount(ctx, "t-ord"); n != 5 {
+				t.Fatalf("tenant counter = %d, want 5", n)
+			}
+		})
+	}
+}
+
+// C3: the user's set keeps the ID of a session that expired by TTL. The script
+// must count live sessions only and remove the dead IDs it finds. The expiry is
+// stood in for by deleting the session key, which leaves the set exactly as a
+// TTL expiry does.
+func TestRedisCompat_FencedSaveCountsLiveSessionsOnly(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			store := session.NewStore(rdb, "as", true, false, 0)
+			ctx := context.Background()
+			limits := session.SaveLimits{MaxPerUser: 2}
+
+			for i, sid := range []string{"dead", "live"} {
+				if err := store.SaveFenced(ctx, fencedSess("t-live", "u-live", sid, byte(i+1)), time.Hour, 0, limits); err != nil {
+					t.Fatalf("save %s: %v", sid, err)
+				}
+			}
+			if err := store.SaveFenced(ctx, fencedSess("t-live", "u-live", "over", 9), time.Hour, 0, limits); !errors.Is(err, session.ErrUserSessionLimit) {
+				t.Fatalf("two live sessions at a cap of 2 = %v, want ErrUserSessionLimit", err)
+			}
+
+			if err := rdb.Del(ctx, "as:t-live:dead").Err(); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := store.LiveSessionCount(ctx, "t-live", "u-live", 2); err != nil || n != 1 {
+				t.Fatalf("LiveSessionCount = %d, %v; want 1", n, err)
+			}
+			if err := store.SaveFenced(ctx, fencedSess("t-live", "u-live", "new", 3), time.Hour, 0, limits); err != nil {
+				t.Fatalf("one live and one expired session at a cap of 2 = %v", err)
+			}
+			ids, _ := store.ActiveSessionIDs(ctx, "t-live", "u-live")
+			if len(ids) != 2 {
+				t.Fatalf("user set = %v, want [live new]", ids)
+			}
+			for _, id := range ids {
+				if id == "dead" {
+					t.Fatalf("the expired ID was not pruned: %v", ids)
+				}
+			}
+			if rdb.Exists(ctx, "as:t-live:live").Val() != 1 {
+				t.Fatal("the live session was removed")
+			}
+		})
+	}
+}
+
 // scanHook runs fn once, right after the first SCAN returned.
 type scanHook struct {
 	fn   func()

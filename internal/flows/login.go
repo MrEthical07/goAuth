@@ -122,6 +122,10 @@ type LoginErrors struct {
 	// error from a hook means "rate limited". Nil keeps that meaning for every
 	// error.
 	SystemUnavailable error
+
+	// SessionInvalidationFailed is the error audited when an automatic lockout
+	// could not end the locked account's sessions.
+	SessionInvalidationFailed error
 }
 
 // LoginDeps captures login+mfa dependencies.
@@ -180,7 +184,14 @@ type LoginDeps struct {
 	AutoLockoutEnabled   bool
 	RecordLockoutFailure func(context.Context, string) (bool, error)
 	ResetLockoutCounter  func(context.Context, string) error
-	LockAccount          func(context.Context, string) error
+	// LockAccount writes Active to Locked for an automatic lockout, from Active
+	// only, and reports whether this call wrote it: (false, nil) means the
+	// account was no longer Active and nothing was written. recordTenant is the
+	// account record's tenant.
+	LockAccount func(ctx context.Context, recordTenant, userID string) (locked bool, err error)
+	// RevokeSessions ends every session of a user whose account was just locked.
+	// The lockout calls it a second time when the first fails.
+	RevokeSessions func(ctx context.Context, recordTenant, userID string) error
 
 	// EnforceTenantMatch requires a resolved user's TenantID to equal the
 	// request's tenant. Set only when multi-tenancy is enabled; with it
@@ -216,6 +227,12 @@ type LoginDeps struct {
 	// DummyHash is verified in place of a real hash on every path that has
 	// none to verify. Empty means DummyTimingHash.
 	DummyHash string
+
+	// PadRejectedVerify is called with the stored hash after a real password
+	// verification failed, and runs one more dummy verification when that
+	// hash cost less than the configured cost (or did not parse), so every
+	// rejection costs at least the configured cost. Optional.
+	PadRejectedVerify func(storedHash string)
 
 	VerifyPassword           func(string, string) (bool, error)
 	PasswordNeedsUpgrade     func(string) (bool, error)
@@ -447,7 +464,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "empty_password",
 			}
 		})
@@ -504,7 +521,7 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, "", tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     reason,
 			}
 		})
@@ -524,13 +541,13 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 			deps.MetricInc(deps.Metrics.LoginRateLimited)
 			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"scope":      "account",
 				}
 			})
 			deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"scope":      "account",
 				}
 			})
@@ -549,6 +566,9 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		mismatchReason = "password_not_set"
 	} else {
 		ok, err = deps.VerifyPassword(password, user.PasswordHash)
+		if (err != nil || !ok) && deps.PadRejectedVerify != nil {
+			deps.PadRejectedVerify(user.PasswordHash)
+		}
 	}
 	if err != nil || !ok {
 		// Auto-lockout: record the failure and lock once the threshold is
@@ -561,21 +581,18 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		if deps.AutoLockoutEnabled && deps.RecordLockoutFailure != nil && deps.LockAccount != nil && user.Status == deps.ActiveStatus {
 			if shouldLock, lockErr := deps.RecordLockoutFailure(ctx, user.UserID); lockErr == nil && shouldLock {
 				deps.MetricInc(deps.Metrics.LockoutTrigger)
-				_ = deps.LockAccount(ctx, user.UserID)
-				deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
-					return map[string]string{
-						"identifier": username,
-						"reason":     "auto_lockout",
-					}
-				})
-				return nil, deps.Errors.InvalidCredentials
+				if autoLockAccount(ctx, username, user, tenantID, deps) {
+					return nil, deps.Errors.InvalidCredentials
+				}
+				// Not locked (the account is no longer Active, or the write
+				// failed): an ordinary wrong password, answered and audited as one.
 			}
 		}
 
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     mismatchReason,
 			}
 		})
@@ -601,6 +618,51 @@ func RunLoginWithResult(ctx context.Context, username, password string, opts Log
 		}
 		password = ""
 	})
+}
+
+// autoLockAccount locks an account whose failure threshold was just reached and
+// ends its sessions, and reports whether it locked it. It never changes what the
+// caller is told (R2-14: the attempt that crosses the threshold answers like any
+// wrong password); it only decides what is written and audited.
+//
+// The lock is written from Active only: an account an administrator disabled or
+// deleted since this login read it is left as it is, with no revocation and no
+// lock audit. The revocation is retried once, since a lock that leaves the
+// account's existing sessions alive until they expire is not a lock; if the
+// retry fails too the failure is logged and audited with the reason
+// auto_lockout_sessions_not_ended.
+func autoLockAccount(ctx context.Context, username string, user LoginUserRecord, tenantID string, deps LoginDeps) bool {
+	locked, err := deps.LockAccount(ctx, user.TenantID, user.UserID)
+	if err != nil {
+		deps.Warn("goAuth: automatic account lockout could not be written")
+		return false
+	}
+	if !locked {
+		return false
+	}
+
+	var revokeErr error
+	if deps.RevokeSessions != nil {
+		if revokeErr = deps.RevokeSessions(ctx, user.TenantID, user.UserID); revokeErr != nil {
+			revokeErr = deps.RevokeSessions(ctx, user.TenantID, user.UserID)
+		}
+	}
+	deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountLocked, func() map[string]string {
+		return map[string]string{
+			"identifier": auditIdentifier(username),
+			"reason":     "auto_lockout",
+		}
+	})
+	if revokeErr != nil {
+		deps.Warn("goAuth: sessions of an automatically locked account could not be ended")
+		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.SessionInvalidationFailed, func() map[string]string {
+			return map[string]string{
+				"identifier": auditIdentifier(username),
+				"reason":     "auto_lockout_sessions_not_ended",
+			}
+		})
+	}
+	return true
 }
 
 // upgradePasswordHash re-hashes a password that was just verified with the
@@ -684,7 +746,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", statusErr, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "account_status",
 			}
 		})
@@ -695,7 +757,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.AccountUnverified, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "pending_verification",
 			}
 		})
@@ -707,7 +769,7 @@ func runCompleteLogin(
 			deps.MetricInc(deps.Metrics.LoginFailure)
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.DeviceBindingRejected, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "missing_ip_context",
 				}
 			})
@@ -717,7 +779,7 @@ func runCompleteLogin(
 			deps.MetricInc(deps.Metrics.LoginFailure)
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.DeviceBindingRejected, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "missing_user_agent_context",
 				}
 			})
@@ -729,7 +791,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "session_hardening",
 			}
 		})
@@ -782,7 +844,7 @@ func runCompleteLogin(
 		deps.MetricInc(deps.Metrics.MFALoginRequired)
 		deps.EmitAudit(ctx, deps.Events.MFARequired, true, user.UserID, tenantID, "", nil, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 			}
 		})
 		if afterLogin != nil {
@@ -1424,12 +1486,12 @@ func RunIssueLoginSessionTokens(
 				deps.MetricInc(deps.Metrics.LoginRateLimited)
 				deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, "", deps.Errors.LoginRateLimited, func() map[string]string {
 					return map[string]string{
-						"identifier": username,
+						"identifier": auditIdentifier(username),
 					}
 				})
 				deps.EmitRateLimit(ctx, "login", tenantID, func() map[string]string {
 					return map[string]string{
-						"identifier": username,
+						"identifier": auditIdentifier(username),
 					}
 				})
 				return "", "", deps.Errors.LoginRateLimited
@@ -1438,7 +1500,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", deps.Errors.InvalidCredentials, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "role_mask_missing",
 			}
 		})
@@ -1450,7 +1512,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, "", err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "session_id_generation",
 			}
 		})
@@ -1461,7 +1523,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "refresh_secret_generation",
 			}
 		})
@@ -1478,7 +1540,7 @@ func RunIssueLoginSessionTokens(
 			deps.MetricInc(deps.Metrics.LoginFailure)
 			deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, lifetimeErr, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "session_profile_lifetime",
 				}
 			})
@@ -1533,7 +1595,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "session_save_failed",
 			}
 		})
@@ -1545,7 +1607,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "issue_access_failed",
 			}
 		})
@@ -1557,7 +1619,7 @@ func RunIssueLoginSessionTokens(
 		deps.MetricInc(deps.Metrics.LoginFailure)
 		deps.EmitAudit(ctx, deps.Events.LoginFailure, false, user.UserID, tenantID, sessionID, err, func() map[string]string {
 			return map[string]string{
-				"identifier": username,
+				"identifier": auditIdentifier(username),
 				"reason":     "encode_refresh_failed",
 			}
 		})
@@ -1569,7 +1631,7 @@ func RunIssueLoginSessionTokens(
 			deps.MetricInc(deps.Metrics.LoginRateLimited)
 			deps.EmitAudit(ctx, deps.Events.LoginRateLimited, false, user.UserID, tenantID, sessionID, deps.Errors.LoginRateLimited, func() map[string]string {
 				return map[string]string{
-					"identifier": username,
+					"identifier": auditIdentifier(username),
 					"reason":     "reset_limiter_failed",
 				}
 			})
@@ -1581,7 +1643,7 @@ func RunIssueLoginSessionTokens(
 	deps.MetricInc(deps.Metrics.LoginSuccess)
 	deps.EmitAudit(ctx, deps.Events.LoginSuccess, true, user.UserID, tenantID, sessionID, nil, func() map[string]string {
 		return profileMeta(map[string]string{
-			"identifier": username,
+			"identifier": auditIdentifier(username),
 		}, plan.profile)
 	})
 
@@ -1597,7 +1659,7 @@ func (d LoginDeps) loginRateRefusal(ctx context.Context, err error, userID, tena
 	}
 	meta := func() map[string]string {
 		m := map[string]string{
-			"identifier": username,
+			"identifier": auditIdentifier(username),
 		}
 		if scope != "" {
 			m["scope"] = scope

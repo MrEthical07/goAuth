@@ -3,7 +3,6 @@ package goAuth
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/MrEthical07/goAuth/internal"
 	internalflows "github.com/MrEthical07/goAuth/internal/flows"
 	"github.com/MrEthical07/goAuth/internal/limiters"
 	"github.com/MrEthical07/goAuth/internal/oidc"
@@ -663,11 +663,10 @@ func (e *Engine) deferExternalSignup(ctx context.Context, tenantID string, claim
 	if e.externalSignupStore == nil {
 		return externalResolution{}, externalReasonSignupDeferFailed, ErrEngineNotReady, false
 	}
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	handle, err := internal.NewSignupHandle()
+	if err != nil {
 		return externalResolution{}, externalReasonSignupDeferFailed, externalUnavailable(err), false
 	}
-	handle := base64.RawURLEncoding.EncodeToString(raw[:])
 	ttl := e.externalSignupTicketTTL()
 	expiresAt := e.now().Add(ttl)
 	record := stores.ExternalSignupRecord{
@@ -745,7 +744,9 @@ func (e *Engine) completeExternalSignup(ctx context.Context, handle string, opts
 	}
 	ctx = internalflows.WithResolvedSessionProfile(ctx, profile)
 
-	if handle == "" {
+	// A handle that is not what the generator issues cannot name a ticket: it
+	// is refused before the store is touched.
+	if !internal.ValidSignupHandleText(handle) {
 		return nil, e.externalLoginFail(ctx, tenantID, "", "", externalReasonSignupTicketInvalid, ErrExternalSignupInvalid)
 	}
 	record, err := e.externalSignupStore.Take(ctx, tenantID, handle)
@@ -838,7 +839,9 @@ func (e *Engine) CancelExternalSignup(ctx context.Context, handle string) error 
 	if !e.externalEnabled() || e.externalSignupStore == nil {
 		return mapToAuthError(ErrExternalAuthDisabled)
 	}
-	if handle == "" {
+	// An unknown handle is not an error, and a malformed one is unknown: it
+	// is dropped without a Redis call.
+	if !internal.ValidSignupHandleText(handle) {
 		return nil
 	}
 	if err := e.externalSignupStore.Delete(ctx, tenantIDFromContext(ctx), handle); err != nil {
@@ -949,7 +952,7 @@ func (e *Engine) createExternalAccount(ctx context.Context, tenantID string, cla
 	e.metricInc(MetricAccountCreationSuccess)
 	e.emitAudit(ctx, auditEventAccountCreationSuccess, true, created.UserID, created.TenantID, "", nil, func() map[string]string {
 		return map[string]string{
-			"identifier": claims.Email,
+			"identifier": internalflows.AuditIdentifier(claims.Email),
 			"role":       created.Role,
 			"method":     "external",
 			"provider":   identity.Provider,
@@ -975,10 +978,10 @@ func (e *Engine) enforceExternalSignupLimit(ctx context.Context, tenantID, ident
 	}
 	e.metricInc(MetricAccountCreationRateLimited)
 	e.emitAudit(ctx, auditEventAccountCreationRateLimited, false, "", tenantID, "", ErrAccountCreationRateLimited, func() map[string]string {
-		return map[string]string{"identifier": identifier}
+		return map[string]string{"identifier": internalflows.AuditIdentifier(identifier)}
 	})
 	e.emitRateLimit(ctx, "account_creation", tenantID, func() map[string]string {
-		return map[string]string{"identifier": identifier}
+		return map[string]string{"identifier": internalflows.AuditIdentifier(identifier)}
 	})
 	return ErrAccountCreationRateLimited
 }

@@ -117,7 +117,8 @@ TOTP.
 | `awn:<ceremonyID>` | Pending ceremony session (binary v1: purpose, user, tenant, library session JSON) | `CeremonyTTL` |
 
 Login ceremonies are keyed by the MFA challenge ID; registration ceremonies get a random
-ceremony ID. Sessions are read with `GETDEL` (atomic single use).
+ceremony ID. Sessions are read with `GETDEL` (atomic single use), which needs **Redis 6.2 or
+later**. The rest of goAuth runs on Redis 6.0; enable WebAuthn only against 6.2+.
 
 ## Error Reference
 

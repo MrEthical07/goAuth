@@ -348,7 +348,7 @@ is deliberate: a handle that survived a failure could be retried by whoever hold
 
 `CancelExternalSignup` deletes the handle and is idempotent; an unknown, used or
 expired handle is not an error. Nothing was created in step one, so there is nothing
-else to undo.
+else to undo. A handle that is not the 43 characters the generator issues is refused without a Redis call: `CompleteExternalSignup` answers `ErrExternalSignupInvalid`, `CancelExternalSignup` returns nil like any unknown handle.
 
 **Security.** The handle is a bearer secret: whoever holds it can create the account
 for that identity. It is never written to the audit trail, a log line or an error;
@@ -493,12 +493,14 @@ See [multi_tenancy.md](multi_tenancy.md).
 Two stages, both with the atomic reserve pattern and the same budget
 (`MaxAttempts` per `Cooldown`), honouring `Security.LimiterWindowMode`:
 
-1. **Before verification, per client IP** (`rl:extlogin:ip:<tenant>:<ip>`). Pass
-   the IP with `WithClientIP`. **Without an IP this stage is skipped**: a bucket
+1. **Before verification, per client IP** (`rl:extlogin:ip:<tenant>:<ip>`, each segment a SHA-256 hex digest). Pass
+   the IP with `WithClientIP`. The address is grouped exactly as the password login's IP budget groups it, before
+   it is hashed: a port and a zone are dropped, an IPv4-mapped IPv6 form is read as the IPv4 address, and an IPv6
+   address counts as its /64, so rotating addresses inside one /64 does not start a new budget. **Without an IP this stage is skipped**: a bucket
    shared by every request without one could be exhausted by anyone, locking out
    every user of the provider. Behind a proxy, set the IP only from a header you
    trust.
-2. **After verification, per identity** (`rl:extlogin:sub:<tenant>:<provider>:<sub>`).
+2. **After verification, per identity** (`rl:extlogin:sub:<tenant>:<provider>:<sub>`, each segment a SHA-256 hex digest).
    Counts sign-ins that fail to resolve (link required, not found, and so on).
 
 Both reset on a successful sign-in. Over the limit, the call fails with

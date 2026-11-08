@@ -1,10 +1,76 @@
 # Release Readiness Assessment
 
+## v0.8.2 (security patch)
+
+Date: 2026-11-08
+Release Target: v0.8.2
+Status: Ready for release once the pull request is merged and CI is green on `main`. The tag is created by the maintainer; nothing in the pull request creates, moves or deletes one.
+
+### Summary
+
+v0.8.2 fixes every item on the "Known residuals" list of the CHANGELOG `[0.8.1]` section
+(the verification audit of v0.8.1, findings `R2-xx` and `C1`–`C7`), delivered as one pull
+request built in three sessions: password, lockout and timing (R2-25 / C1, R2-12, R2-16,
+R2-18 / C2); audit metadata, challenge-ID shapes and limiter keys (R2-NV1 / C7, C4, the UUID
+audit fingerprint, R2-21); and session counting, the single-session purge order, the
+external IP bucket and the documentation (C3, R2-28, R2-11). The CHANGELOG `[0.8.2]`
+section lists the behavior changes old → new.
+
+### Compatibility & rollout
+
+- No exported signature changed. `gorelease -base=v0.8.1` reports no incompatible change;
+  its one finding is a compatible addition, `(*session.Store).LiveSessionCount` (it
+  suggests v0.9.0 because the API grew, as it did for v0.8.1; the release is a patch
+  release because nothing was changed or removed).
+- No new module dependencies; no stored format changed (the session and challenge records
+  and their golden-bytes tests are untouched). No new Redis key.
+- **Rolling deploy.** v0.8.1 and v0.8.2 instances can share a Redis. External sign-in
+  attempts are counted in separate buckets during the roll (raw keys on v0.8.1, digest keys
+  on v0.8.2); a v0.8.1 instance still counts expired session IDs toward the per-user caps and
+  still purges before a tenant-cap refusal.
+- **Visible with nothing enabled:** wrong passwords against an older-cost or non-Argon2 hash
+  cost one extra verification at the configured cost; malformed challenge IDs and the braced,
+  `urn:uuid:` and unhyphenated UUID spellings are refused before Redis; UUID strategies audit
+  `reset_id_fp` / `verification_id_fp`; the `rl:extlogin:*` counters restart once and the
+  external IP bucket groups IPv6 by /64; expired sessions no longer block login under a
+  per-user cap; a tenant-cap refusal no longer ends the user's other sessions in
+  single-session mode. See `docs/migrations.md`.
+
+### Verification gates
+
+Run on the pull-request branch (Windows, Go 1.27.1; scanners and tools with Go 1.27.3):
+
+| Gate | Result |
+|------|--------|
+| `gofmt -l .`, `goimports -l .` | no output |
+| `go build ./...`, `go vet ./...`, `go vet -tags=integration ./...` | pass, also at every commit |
+| `go test ./... -count=1` | pass |
+| `go test -tags=integration ./test/...` (miniredis, and Redis 7.0.15 through `REDIS_ADDR`) | pass; 41 real-Redis subtests ran, none skipped |
+| staticcheck (`-checks=all,-ST1000,-ST1003,-ST1005,-U1000`) | no findings |
+| `security/run_scanners.sh` (Go 1.27.3) | baseline passed |
+| `gorelease -base=v0.8.1` | no incompatible changes; one compatible addition (`LiveSessionCount`) |
+| delegate-size and error-boundary static tests | pass |
+| same-machine A/B against `main` of Login, Login+MFA, Refresh and LogoutAll | no significant difference in time (Login 5.86 → 5.68 ms, Login+MFA 6.66 → 6.75 ms over 18 samples, Refresh 321 → 319 µs, LogoutAll 228 → 231 µs; all `~`); `allocs/op` equal or slightly lower |
+
+`go test -race ./...` is enforced by the `go-race` CI workflow (Ubuntu and macOS);
+local race builds are unavailable on the release machine.
+
+### Release checklist
+
+- [x] Sessions 1–3 implemented with regression tests (each proved to fail on `main`) and docs
+- [x] CHANGELOG `[0.8.2]` dated, with the behavior changes old → new
+- [x] `docs/migrations.md` covers every change
+- [x] Local gate passes
+- [ ] Pull request merged to `main`, `go-race` and CodeQL green on `main`
+- [ ] Annotated tag `v0.8.2` created after merge (maintainer)
+
+---
+
 ## v0.8.1 (security release)
 
 Date: 2026-10-31
 Release Target: v0.8.1
-Status: Ready for release once the pull request for the Dressin G-4 requests (part 4) is merged and CI is green on `main`. The tag is created by the maintainer; nothing in the pull requests creates, moves or deletes one.
+Status: Released (part 4 merged, `go-race` and CodeQL green on `main`). The tag is created by the maintainer; nothing in the pull requests creates, moves or deletes one.
 
 ### Summary
 
@@ -71,7 +137,7 @@ local race builds are unavailable on the release machine.
 - [x] CHANGELOG `[0.8.1]` dated, with the combined behavior changes and migration notes
 - [x] `go.mod` retracts v0.8.0
 - [x] Local gate passes
-- [ ] Part 4 pull request merged to `main`, `go-race` and CodeQL green on `main`
+- [x] Part 4 pull request merged to `main`, `go-race` and CodeQL green on `main`
 - [ ] Annotated tag `v0.8.1` created after merge (maintainer); the retraction takes effect once it is published
 
 ---

@@ -62,10 +62,10 @@ ceiling instead of the shorter default lifetime
 0. **Input cap** — an identifier over `MaxIdentifierBytes` (320) or a password over the hasher's limit (1024 bytes) is refused with `ErrInvalidCredentials` before the limiter, the lookup or any hashing, on one cheap path whatever the account is.
 1. Extract client IP via `WithClientIP(ctx)`.
 2. **Rate-limit reservation** — the attempt claims a slot of the identifier's budget (`rate.Limiter.ReserveLogin`) in one atomic step before anything is verified; when `Security.LoginIPLimiter` is enabled and the context carries a client IP (`WithClientIP`), a slot of the address's budget is claimed first (`ReserveLoginIP`). Per-IP throttling is **opt-in** and off by default.
-3. **User lookup** — `UserProvider.GetUserByIdentifier(ctx, identifier)`. On "not found", perform dummy Argon2 verify (against a hash made with the engine's own hasher at `Build`, so it costs what a real verification costs) to equalize timing, then return `ErrInvalidCredentials`. The account's own budget (`rate.Limiter.ReserveLoginUser`) is claimed here, before the password is verified.
+3. **User lookup** — `UserProvider.GetUserByIdentifier(ctx, identifier)`. On "not found", perform dummy Argon2 verify (against a hash made with the engine's own hasher at `Build`, so it costs what a real verification costs) to equalize timing, then return `ErrInvalidCredentials`. A registered account whose stored hash is cheaper than the configured parameters, or does not parse as Argon2, gets one more dummy verification after its real one fails, so every rejection costs at least the configured cost (see [security.md](security.md)). The account's own budget (`rate.Limiter.ReserveLoginUser`) is claimed here, before the password is verified.
 4. **Account status check** — reject `Disabled` / `Locked` / `Deleted` accounts with appropriate sentinel errors.
 5. **Email verification check** — if `RequireForLogin`, reject `PendingVerification` with `ErrAccountUnverified`.
-6. **Password verify** — `password.Argon2.Verify(password, storedHash)`. On mismatch the attempt stays counted against the budgets claimed in steps 2-3, the auto-lockout counter is incremented for an **Active** account (`LockoutLimiter`; the attempt that reaches the threshold locks the account but is answered `ErrInvalidCredentials` like any other wrong password), and `ErrInvalidCredentials` is returned. On a match the budgets are cleared.
+6. **Password verify** — `password.Argon2.Verify(password, storedHash)`. On mismatch the attempt stays counted against the budgets claimed in steps 2-3, the auto-lockout counter is incremented for an **Active** account (`LockoutLimiter`; the attempt that reaches the threshold locks the account but is answered `ErrInvalidCredentials` like any other wrong password), and `ErrInvalidCredentials` is returned. The lock is written from **Active** only: through `AccountStatusCASUpdater.UpdateAccountStatusIf(Active, Locked)` when the provider implements it, otherwise after re-reading the status right before the write. An administrator's disable or delete that landed since the login read the account is left as it is, with no revocation and no lock audit (the attempt is audited as the wrong password it is). A lock ends the account's sessions; when that revocation fails it is retried once, and if the retry fails too the failure is logged and audited as a `login_failure` event with `reason=auto_lockout_sessions_not_ended` (the response is still `ErrInvalidCredentials`: the attempt that crosses the threshold must look like any wrong password). On a match the budgets are cleared.
 7. **MFA check** — if a required second factor applies to the user (TOTP enabled for the user, and/or `WebAuthn.RequireForLogin` with registered credentials) and no inline MFA code was provided, return `ErrMFALoginRequired` (or `LoginResult.MFARequired=true` with `MFATypes` listing the available factors, webauthn preferred).
 8. **Role/mask resolution** — `RoleStore.GetRole`, `RoleManager.GetMask`.
 9. **Session creation** — `session.Store.Save(ctx, session, ttl)` (Redis: SET+SADD+INCR pipeline = ~3 commands).
@@ -353,7 +353,7 @@ if errors.Is(err, goAuth.ErrStepUpRequired) {
 - JWT-Only: zero Redis, zero allocations beyond claims.
 - Hybrid and JWT-only never see a role switch until the access token expires; see the [per-mode revocation table](role_switching.md#revocation-guarantee-per-validation-mode). Routes that gate on role or permissions must resolve to Strict.
 - Strict: fail closed on Redis unavailability (`ErrStrictBackendDown`).
-- Version drift deletes stale session.
+- A token whose version stamps differ from its session's deletes the session. The stamps compare the token with the session, not with the user record: a change in the user record is seen only with `Security.RecheckUserOnRefresh` (on refresh) or after `InvalidateUserSessions` / `LogoutAll`; see [session.md](session.md#what-the-version-stamps-detect).
 
 ### Redis Op Budget
 
@@ -474,9 +474,10 @@ err := engine.LogoutAll(ctx, userID)
 4. **Policy check** — min length, max bytes.
 5. **Hash new password** — `password.Argon2.Hash`.
 6. **Update hash** — `UserProvider.UpdatePasswordHash` (or `TenantAwarePasswordUpdater.UpdatePasswordHashInTenant` with the resolved tenant when `MultiTenant.Enabled` and the provider implements it).
-7. **Invalidate sessions** — `session.Store.DeleteAllForUser`.
-8. **Audit emit** — `password_change_success` or `password_change_invalid_old`.
-9. **Metrics** — `MetricPasswordChangeSuccess` / `MetricPasswordChangeInvalidOld` / `MetricPasswordChangeReuseRejected`.
+7. **Supersede reset codes** — tombstone the user's `aprg:<tenant>:<user>` pointer in every tenant the session revocation covers, so a reset code issued before the change is refused. Best-effort: a failure is logged and audited (`password_change_failure`, `reason=reset_invalidation_failed`) and does not fail the change. No-op while `PasswordReset.Enabled` is false.
+8. **Invalidate sessions** — `session.Store.DeleteAllForUser`.
+9. **Audit emit** — `password_change_success` or `password_change_invalid_old`.
+10. **Metrics** — `MetricPasswordChangeSuccess` / `MetricPasswordChangeInvalidOld` / `MetricPasswordChangeReuseRejected`.
 
 ### Failure Modes
 
@@ -743,7 +744,7 @@ codes, err := engine.RegenerateBackupCodes(ctx, "user-123", "123456")
 
 ```
 Active ──→ Disabled     (DisableAccount)
-Active ──→ Locked       (LockAccount / auto-lockout; only an Active account is counted or locked by auto-lockout)
+Active ──→ Locked       (LockAccount / auto-lockout; only an Active account is counted or locked by auto-lockout, and the lock is written from Active only: a status an administrator set meanwhile stays)
 Active ──→ Deleted      (DeleteAccount)
 Disabled → Active       (EnableAccount)
 Locked ──→ Active       (EnableAccount / UnlockAccount)

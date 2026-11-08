@@ -208,7 +208,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 	if req.Password == "" {
 		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", deps.Errors.PasswordPolicy, func() map[string]string {
 			return map[string]string{
-				"identifier": req.Identifier,
+				"identifier": auditIdentifier(req.Identifier),
 				"reason":     "empty_password",
 			}
 		})
@@ -222,7 +222,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 	if role == "" {
 		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", deps.Errors.AccountRoleInvalid, func() map[string]string {
 			return map[string]string{
-				"identifier": req.Identifier,
+				"identifier": auditIdentifier(req.Identifier),
 				"reason":     "role_missing",
 			}
 		})
@@ -231,7 +231,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 	if !deps.RoleExists(role) {
 		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", deps.Errors.AccountRoleInvalid, func() map[string]string {
 			return map[string]string{
-				"identifier": req.Identifier,
+				"identifier": auditIdentifier(req.Identifier),
 				"reason":     "role_invalid",
 			}
 		})
@@ -244,12 +244,12 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 			deps.MetricInc(deps.Metrics.AccountCreationRateLimited)
 			deps.EmitAudit(ctx, deps.Events.AccountCreationRateLimited, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": req.Identifier,
+					"identifier": auditIdentifier(req.Identifier),
 				}
 			})
 			deps.EmitRateLimit(ctx, "account_creation", tenantID, func() map[string]string {
 				return map[string]string{
-					"identifier": req.Identifier,
+					"identifier": auditIdentifier(req.Identifier),
 				}
 			})
 		}
@@ -265,7 +265,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 	if err != nil {
 		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", deps.Errors.PasswordPolicy, func() map[string]string {
 			return map[string]string{
-				"identifier": req.Identifier,
+				"identifier": auditIdentifier(req.Identifier),
 				"reason":     "hash_policy",
 			}
 		})
@@ -287,14 +287,14 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 			deps.MetricInc(deps.Metrics.AccountCreationDuplicate)
 			deps.EmitAudit(ctx, deps.Events.AccountCreationDuplicate, false, "", tenantID, "", deps.Errors.AccountExists, func() map[string]string {
 				return map[string]string{
-					"identifier": req.Identifier,
+					"identifier": auditIdentifier(req.Identifier),
 				}
 			})
 			return nil, deps.Errors.AccountExists
 		}
 		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", err, func() map[string]string {
 			return map[string]string{
-				"identifier": req.Identifier,
+				"identifier": auditIdentifier(req.Identifier),
 				"reason":     "provider_create_failed",
 			}
 		})
@@ -304,7 +304,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 	if created.UserID == "" {
 		deps.EmitAudit(ctx, deps.Events.AccountCreationFailure, false, "", tenantID, "", deps.Errors.AccountCreationUnavailable, func() map[string]string {
 			return map[string]string{
-				"identifier": req.Identifier,
+				"identifier": auditIdentifier(req.Identifier),
 				"reason":     "missing_user_id",
 			}
 		})
@@ -340,7 +340,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 			if err != nil {
 				deps.EmitAudit(ctx, deps.Events.AccountCreationSuccess, false, created.UserID, created.TenantID, "", deps.Errors.SessionCreationFailed, func() map[string]string {
 					return map[string]string{
-						"identifier": req.Identifier,
+						"identifier": auditIdentifier(req.Identifier),
 						"reason":     "auto_login_failed",
 					}
 				})
@@ -355,7 +355,7 @@ func RunCreateAccount(ctx context.Context, req AccountCreateRequest, deps Accoun
 	deps.MetricInc(deps.Metrics.AccountCreationSuccess)
 	deps.EmitAudit(ctx, deps.Events.AccountCreationSuccess, true, created.UserID, created.TenantID, "", nil, func() map[string]string {
 		return map[string]string{
-			"identifier": req.Identifier,
+			"identifier": auditIdentifier(req.Identifier),
 			"role":       created.Role,
 		}
 	})

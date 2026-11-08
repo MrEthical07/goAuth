@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MrEthical07/goAuth/internal/rate"
 	"github.com/MrEthical07/goAuth/internal/window"
 	"github.com/redis/go-redis/v9"
 )
@@ -67,21 +68,30 @@ func NewExternalLimiter(redisClient redis.UniversalClient, cfg ExternalConfig) *
 }
 
 // Keys use their own rl:extlogin:* namespace, distinct from every other
-// limiter, so exhausting it never touches login, TOTP or password limits.
+// limiter, so exhausting it never touches login, TOTP or password limits. Every
+// segment is the SHA-256 hex digest of its value, so a key is a fixed length
+// whatever a client address or an identity provider's subject looks like, and
+// two inputs share a bucket exactly when they are the same string.
 
 // SourceKey is the pre-verification bucket of a client IP. It is empty when
 // the IP is unknown, in which case there is no such bucket and the caller
 // must skip the stage.
+//
+// The address is canonicalized the way the password-login IP budget does it
+// (rate.CanonicalIP: port and zone dropped, IPv4-mapped forms unmapped, IPv6
+// grouped by /64) before it is hashed. Without that, a caller holding an IPv6
+// /64 -- the unit one subscriber is normally given -- could rotate addresses
+// inside it and start with a fresh budget every time.
 func (l *ExternalLimiter) SourceKey(tenantID, ip string) string {
 	if ip == "" {
 		return ""
 	}
-	return "rl:extlogin:ip:" + tenantID + ":" + ip
+	return "rl:extlogin:ip:" + hashPart(tenantID) + ":" + hashPart(rate.CanonicalIP(ip))
 }
 
 // SubjectKey is the post-verification bucket.
 func (l *ExternalLimiter) SubjectKey(tenantID, provider, subject string) string {
-	return "rl:extlogin:sub:" + tenantID + ":" + provider + ":" + subject
+	return "rl:extlogin:sub:" + hashPart(tenantID) + ":" + hashPart(provider) + ":" + hashPart(subject)
 }
 
 // Reserve atomically claims one attempt in the bucket before the guarded work

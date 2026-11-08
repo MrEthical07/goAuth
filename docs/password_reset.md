@@ -58,9 +58,29 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 ## Security Notes
 
 - Challenge tokens are SHA-256 hashed before storage.
+- A challenge that is not the length and alphabet the generator produces (a token of other than 64 base64url characters, a UUID of other than 36, an OTP challenge of other than `<22-character ID>.<digits>`) is refused as `ErrPasswordResetInvalid` before it is decoded, looked up or audited.
 - Rate limiting protects both request and confirm endpoints.
 - All existing sessions are invalidated after successful reset.
 - Reuse of the current password is **not** checked: confirming a reset applies the password policy to the new password and nothing more (`ChangePassword` is the flow that rejects a new password equal to the current one with `ErrPasswordReuse`). Enforce reuse rules in your own layer if you need them on reset.
+
+## Audit and the UUID strategy
+
+With `ResetUUID` the reset ID is the whole secret, so confirm failures do not audit it: `password_reset_confirm` and `password_reset_replay` events carry `metadata.reset_id_fp`, the first 12 hex characters of SHA-256 over the tenant, a zero byte and the ID, in place of `reset_id`. Token and OTP strategies still record `reset_id`. See [audit.md](audit.md#uuid-strategies-record-a-fingerprint).
+
+## Challenge ID shapes
+
+Every entry point that takes a challenge ID from a caller checks its shape first, with one rule per generator (`internal/challenge_shape.go`). A value that does not fit cannot name a live record, so it is refused with the flow's invalid error (`ErrPasswordResetInvalid`, `ErrEmailVerificationInvalid`, `ErrEmailChangeInvalid`, `ErrExternalSignupInvalid`) before any Redis call, limiter or audit event:
+
+| Value | Rule |
+|-------|------|
+| Token and OTP record ID (reset, verification, email change) | 22 base64url characters, canonically encoded (what a 16-byte random ID encodes to) |
+| UUID record ID and code | 36 characters, hyphenated; the ID must be lower case, a code may be in either case |
+| Reset token / verification token code | 64 base64url characters |
+| OTP reset challenge | `<22-character ID>.<OTPDigits digits>` |
+| Tenant carried by a challenge | at most 256 bytes |
+| External sign-up handle | 43 base64url characters, canonically encoded (32 random bytes) |
+
+UUID reset challenges in the braced, `urn:uuid:` or unhyphenated spellings, which the UUID parser used to accept, are no longer accepted; the generated form is unchanged.
 
 ## Edge Cases & Gotchas
 
@@ -69,8 +89,8 @@ err = engine.ConfirmPasswordReset(ctx, challenge, "new-secure-password")
 - Requests are limited per identifier as typed and per resolved account (`rl:reset:req:user:*`). A provider that matches identifiers case-insensitively would otherwise give every spelling its own budget. The account budget answers `ErrPasswordResetRateLimited` (not a fake challenge) so that your application sends no mail; with a case-insensitive provider that lets a caller trying spellings see that the account exists.
 - OTP mode requires `OTPDigits ≤ 6` in production mode.
 - **One valid code per account.** A new `RequestPasswordReset` supersedes the codes of earlier requests for the same user, and a completed reset supersedes every code issued before it, whoever holds them (a pointer `aprg:<tenant>:<user>` holds the newest reset ID, or a tombstone after a completion; it lives as long as `ResetTTL`). Anyone who can request a reset for an account can therefore supersede a code that is waiting for its owner (the owner gets a new mail with a working code); the per-identifier and per-account request limiters bound how often. A code issued by a v0.8.0 instance during a rolling deploy has no pointer entry and is refused if a v0.8.1 instance has since written one.
-- **A confirmed email change supersedes every outstanding code.** It writes a tombstone into the same pointer, so codes mailed to the old address are refused, and a reset requested for the new address afterwards is valid, even in the very second of the change (supersession is decided by write order, not by time; the time-based `aeci:` marker is only the fallback for a record whose owner has no pointer). A request that was in flight while the change committed fails with `ErrPasswordResetUnavailable` instead of handing out a code for the old address. See [email_change.md](email_change.md#how-old-challenges-are-invalidated). `ChangePassword` does not yet supersede outstanding codes (a known residual, see the changelog).
-
+- **A successful `ChangePassword` supersedes every outstanding code** the same way, in every tenant the session revocation covers (the context tenant and the record's). A code issued before the owner changed the password is refused with `ErrPasswordResetInvalid`; one requested afterwards is valid. The tombstone is written right after the new hash and before the sessions are revoked. A failure to write it does not fail the password change: it is logged and audited as a `password_change_failure` event with `reason=reset_invalidation_failed` (the reason a completed reset uses for the same step), and codes issued before the change stay redeemable until `ResetTTL` runs out. Nothing is written while `PasswordReset.Enabled` is false.
+- **A confirmed email change supersedes every outstanding code.** It writes a tombstone into the same pointer, so codes mailed to the old address are refused, and a reset requested for the new address afterwards is valid, even in the very second of the change (supersession is decided by write order, not by time; the time-based `aeci:` marker is only the fallback for a record whose owner has no pointer). A request that was in flight while the change committed fails with `ErrPasswordResetUnavailable` instead of handing out a code for the old address. See [email_change.md](email_change.md#how-old-challenges-are-invalidated).
 ## Architecture
 
 Password reset is a two-phase flow (request + confirm) backed by a Redis challenge store. The engine delegates to flow functions in `internal/flows/password_reset.go`.

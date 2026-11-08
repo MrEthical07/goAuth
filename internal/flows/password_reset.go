@@ -51,8 +51,11 @@ type PasswordResetErrors struct {
 }
 
 type PasswordResetDeps struct {
-	Enabled     bool
-	Strategy    int
+	Enabled  bool
+	Strategy int
+	// SecretID is true when the record ID is the whole secret (the UUID
+	// strategy), so audit events carry a fingerprint of it, never the ID.
+	SecretID    bool
 	OTPDigits   int
 	ResetTTL    time.Duration
 	MaxAttempts int
@@ -167,18 +170,18 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 				}
 			})
 			deps.EmitRateLimit(ctx, "password_reset_request", tenantID, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 				}
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 				}
 			})
 		}
@@ -204,7 +207,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		if genErr != nil {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, "", tenantID, "", deps.Errors.PasswordResetUnavailable, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"reason":     "fake_generation_failed",
 				}
 			})
@@ -212,7 +215,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		}
 		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, true, "", tenantID, "", nil, func() map[string]string {
 			return map[string]string{
-				"identifier":       identifier,
+				"identifier":       auditIdentifier(identifier),
 				"enumeration_safe": "true",
 			}
 		})
@@ -231,14 +234,14 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 			mapped := deps.MapLimiterError(err)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, tenantID, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"scope":      "account",
 				}
 			})
 			if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
 				deps.EmitRateLimit(ctx, "password_reset_request", tenantID, func() map[string]string {
 					return map[string]string{
-						"identifier": identifier,
+						"identifier": auditIdentifier(identifier),
 						"scope":      "account",
 					}
 				})
@@ -277,7 +280,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		mapped := deps.MapStoreError(err)
 		deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
 			return map[string]string{
-				"identifier": identifier,
+				"identifier": auditIdentifier(identifier),
 			}
 		})
 		return "", mapped
@@ -291,7 +294,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 			mapped := deps.MapStoreError(err)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, effectiveTenant, "", mapped, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"reason":     "supersede_failed",
 				}
 			})
@@ -309,7 +312,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 		if recheckErr != nil || !same {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, false, user.UserID, effectiveTenant, "", deps.Errors.PasswordResetUnavailable, func() map[string]string {
 				return map[string]string{
-					"identifier": identifier,
+					"identifier": auditIdentifier(identifier),
 					"reason":     "identifier_changed",
 				}
 			})
@@ -319,7 +322,7 @@ func RunRequestPasswordReset(ctx context.Context, identifier string, deps Passwo
 
 	deps.EmitAudit(ctx, deps.Events.PasswordResetRequest, true, user.UserID, effectiveTenant, "", nil, func() map[string]string {
 		return map[string]string{
-			"identifier": identifier,
+			"identifier": auditIdentifier(identifier),
 		}
 	})
 	deps.MetricInc(deps.Metrics.PasswordResetRequest)
@@ -371,20 +374,14 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 		deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 		if errors.Is(mapped, deps.Errors.PasswordResetRateLimited) {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 			deps.EmitRateLimit(ctx, "password_reset_confirm", tenantID, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		} else {
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		}
 		return mapped
@@ -396,9 +393,7 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 			mapped := deps.MapStoreError(err)
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 			return mapped
 		}
@@ -435,25 +430,20 @@ func RunConfirmPasswordResetWithMFA(ctx context.Context, challenge, newPassword,
 		if deps.IsStoreNotFound(err) {
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetReplay, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		} else if errors.Is(mapped, deps.Errors.PasswordResetAttempts) {
 			deps.MetricInc(deps.Metrics.PasswordResetAttemptsExceeded)
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-					"reason":   "attempts_exceeded",
-				}
+				meta := challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
+				meta["reason"] = "attempts_exceeded"
+				return meta
 			})
 		} else {
 			deps.MetricInc(deps.Metrics.PasswordResetConfirmFailure)
 			deps.EmitAudit(ctx, deps.Events.PasswordResetConfirm, false, "", tenantID, "", mapped, func() map[string]string {
-				return map[string]string{
-					"reset_id": resetID,
-				}
+				return challengeIDMeta("reset_id", deps.SecretID, tenantID, resetID)
 			})
 		}
 		return mapped

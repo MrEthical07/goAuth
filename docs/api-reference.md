@@ -247,7 +247,7 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `PasswordConfig` | type | Argon2id parameter settings. |
 | `SecurityConfig` | type | Rate-limit thresholds, lockout settings and the opt-in per-IP login throttle (`LoginIPLimiter`). |
 | `LoginIPLimiterConfig` | type | `Enabled`, `MaxAttempts`, `Cooldown` of the per-client-IP login throttle (off by default). |
-| `MaxIdentifierBytes` | const | 320: the longest identifier the unauthenticated entry points accept (login, account creation, reset and verification requests); also the length audit events keep of such identifiers. |
+| `MaxIdentifierBytes` | const | 320: the longest identifier the unauthenticated entry points accept (login, account creation, reset and verification requests); also the length audit events keep of such identifiers (a copy of the first 320 bytes, so a queued event does not keep the request alive). |
 | `SessionHardeningConfig` | type | Concurrent session limits and replay detection. |
 | `DeviceBindingConfig` | type | IP/UA fingerprint binding mode (off / detect / enforce). |
 | `TOTPConfig` | type | TOTP algorithm, digits, period, drift window. |
@@ -284,7 +284,7 @@ For the complete `AuthCode` and exported sentinel registry, see [error-model.md]
 | `UserProvider` | type | Unified user-store adapter used by the engine. |
 | `TenantAwareUserProvider` | interface | Optional `UserProvider` capability: tenant-scoped user lookup (required when `MultiTenant.Enabled`). |
 | `PasswordHashCASUpdater` | interface | Optional `UserProvider` capability: `CompareAndSwapPasswordHash(ctx, tenantID, userID, expectedOldHash, newHash) (applied bool, err error)`; makes the rehash-on-login upgrade exact. |
-| `AccountStatusCASUpdater` | interface | Optional `UserProvider` capability: `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)`; used for the pending-to-active write of email verification. |
+| `AccountStatusCASUpdater` | interface | Optional `UserProvider` capability: `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)`; used for the pending-to-active write of email verification and the Active-to-Locked write of an automatic lockout. |
 | `TenantAwarePasswordUpdater` | interface | Optional `UserProvider` capability: `UpdatePasswordHashInTenant(ctx, tenantID, userID, newHash)`; used instead of `UpdatePasswordHash` by `ChangePassword`, password-reset confirm and rehash-on-login when `MultiTenant.Enabled`. |
 | `RoleSwitchProvider` | interface | Optional `UserProvider` capability for `SwitchRole` (see above). |
 | `ExternalIdentityProvider` | interface | Optional `UserProvider` capability for external sign-in (see External Identity above). |
@@ -391,7 +391,8 @@ Redis-backed session storage with binary encoding.
 | `Peek` | method | Reads a session exactly as stored: no expiry filter, no schema migration, no Redis write. |
 | `SaveAssurance` / `GetAssurance` | method | Store and read a session's step-up assurance (`asa:<tenant>:<sid>`), outside the session blob. |
 | `Assurance` | struct | MFA time + method and last-proof time. `EncodeAssurance`/`DecodeAssurance` serialize it; `ErrAssuranceCorrupt` reports a bad value. |
-| `ActiveSessionCount` | method | Returns the number of active sessions for a user. |
+| `ActiveSessionCount` | method | Returns the number of session IDs in a user's set, including IDs of sessions that expired by TTL. |
+| `LiveSessionCount` | method | Returns a user's live session count for comparing with a per-user cap; removes dead IDs once the set reaches the cap. |
 | `ActiveSessionIDs` | method | Returns all session IDs for a user. |
 | `EstimateActiveSessions` | method | HyperLogLog-based estimate of total active sessions. |
 | `SetTenantSessionCount` | method | Increments/decrements the per-tenant session gauge. |

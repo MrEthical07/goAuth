@@ -25,7 +25,7 @@ type ConfirmEmailChangeOptions struct{ KeepSessionID string }
 type EmailChangeResult struct{ UserID, OldEmail, NewEmail string; SessionsRevoked, WasUnverified bool }
 ```
 
-`userID` for Request and Cancel comes from the session, never from the request body. `VerificationID` is `<tenant>:<id>`: it carries the tenant, is safe to log, and may be handed to the browser; nothing about `Code` can be derived from it (which is why `VerificationUUID` is not available for email change). `Code` is a secret: send it to the new address, never log it. goAuth never writes it to the audit trail or its own logs.
+`userID` for Request and Cancel comes from the session, never from the request body. `VerificationID` is `<tenant>:<id>`: it carries the tenant, is safe to log, and may be handed to the browser; nothing about `Code` can be derived from it (which is why `VerificationUUID` is not available for email change). `Code` is a secret: send it to the new address, never log it. goAuth never writes it to the audit trail or its own logs. A `VerificationID` whose tenant is over 256 bytes or whose ID part is not the 22-character ID the generator produces is refused as `ErrEmailChangeInvalid` before any Redis call ([shapes](password_reset.md#challenge-id-shapes)).
 
 ### Request
 

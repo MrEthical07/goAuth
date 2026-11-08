@@ -50,7 +50,7 @@ func (e *Engine) ConfirmEmailVerificationCode(ctx context.Context, verificationI
 | Error                              | Description                                    |
 |------------------------------------|------------------------------------------------|
 | `ErrEmailVerificationDisabled`     | Feature not enabled in config                  |
-| `ErrEmailVerificationInvalid`      | Challenge expired, invalid, already used, or malformed |
+| `ErrEmailVerificationInvalid`      | Challenge expired, invalid, already used, or malformed (a verification ID or code of the wrong length or alphabet is refused before any Redis call; see [Challenge ID shapes](password_reset.md#challenge-id-shapes)) |
 | `ErrEmailVerificationRateLimited`  | Too many requests or confirm failures (limiter triggered) |
 | `ErrEmailVerificationUnavailable`  | Backend (Redis) unavailable                    |
 | `ErrEmailVerificationAttempts`     | Max attempts exceeded for this verification    |
@@ -78,6 +78,8 @@ tenant:verificationID:code
 | UUID     | `VerificationUUID` | UUID v4 string             | Same UUID v4 string           | Yes            | verificationID and code are identical.   |
 
 **Clarification on UUID strategy:** The UUID serves as *both* the record identifier and the secret code. This means the verificationID alone is sufficient to confirm — treat it as sensitive in this mode.
+
+With `VerificationUUID` the verification ID is the whole secret, so confirm failures do not audit it: `email_verification_confirm` events carry `metadata.verification_id_fp`, the first 12 hex characters of SHA-256 over the tenant, a zero byte and the ID, in place of `verification_id`. Token and OTP strategies still record `verification_id`. See [audit.md](audit.md#uuid-strategies-record-a-fingerprint).
 
 ## Config
 
@@ -181,7 +183,7 @@ err = engine.ConfirmEmailVerification(ctx, challenge)
 - OTP mode limits are enforced more strictly in production mode.
 - UUID strategy: the verificationID *is* the code — do not log it.
 - Verification only moves an account **from pending verification to active**. An account that was disabled, locked or deleted after the challenge was issued is never made active again by confirming it: the confirmation returns the account's status error and leaves the status alone.
-- **`AccountStatusCASUpdater`** (optional, detected on the `UserProvider` at `Build`): `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)` stores `next` only if the current status is exactly `expected` (`UPDATE ... WHERE status = $expected`), advances the account version when it applies, and reports whether it did; a status that no longer matches is `(false, nil)`. With it the transition is exact. Without it the engine reads the account again immediately before the write and transitions only from pending verification; that narrows the window to the gap between the read and the write but does not close it.
+- **`AccountStatusCASUpdater`** (optional, detected on the `UserProvider` at `Build`): `UpdateAccountStatusIf(ctx, tenantID, userID, expected, next AccountStatus) (applied bool, err error)` stores `next` only if the current status is exactly `expected` (`UPDATE ... WHERE status = $expected`), advances the account version when it applies, and reports whether it did; a status that no longer matches is `(false, nil)`. With it the transition is exact. Without it the engine reads the account again immediately before the write and transitions only from pending verification; that narrows the window to the gap between the read and the write but does not close it. The engine uses the same capability for the **Active → Locked** write of an automatic lockout (after too many wrong passwords): an administrator's disable or delete that lands between the login's status read and the lock write is left in force, with no revocation and no lock audit. Without the capability the engine re-reads the status right before that write and skips unless it is Active.
 
 ## Architecture
 

@@ -942,6 +942,7 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 
 	oldOK, err := e.verifyHash(oldPassword, user.PasswordHash)
 	if err != nil || !oldOK {
+		e.padCheapRejection(user.PasswordHash)
 		e.metricInc(MetricPasswordChangeInvalidOld)
 		e.emitAudit(ctx, auditEventPasswordChangeInvalidOld, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
 		return mapToAuthError(ErrInvalidCredentials)
@@ -976,10 +977,12 @@ func (e *Engine) ChangePassword(ctx context.Context, userID, oldPassword, newPas
 
 	// Only for the audit trail: the revocation itself covers the context
 	// tenant and the record's (see revokeUserSessions).
-	invalidateTenant := tenantIDFromContext(ctx)
-	if user.TenantID != "" {
-		invalidateTenant = user.TenantID
-	}
+	invalidateTenant := recordOrContextTenant(ctx, user.TenantID)
+
+	// The password is changed: a reset code issued before now is dead, whoever
+	// holds it, as after a completed reset. Written before the session
+	// revocation, whose failure fails the call but not the change.
+	e.supersedeResetCodesAfterPasswordChange(ctx, user.TenantID, userID, invalidateTenant)
 
 	if err := e.revokeUserSessions(ctx, user.TenantID, userID); err != nil {
 		e.warn("goAuth: session invalidation failed after password change")
@@ -1074,6 +1077,7 @@ func (e *Engine) VerifyPassword(ctx context.Context, userID, password string) er
 	ok, err := e.verifyHash(password, user.PasswordHash)
 	password = ""
 	if err != nil || !ok {
+		e.padCheapRejection(user.PasswordHash)
 		e.emitAudit(ctx, auditEventPasswordVerifyFailure, false, userID, user.TenantID, "", ErrInvalidCredentials, nil)
 		return mapToAuthError(ErrInvalidCredentials)
 	}
@@ -1251,15 +1255,14 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	// so they do not count here; the caps are enforced again, atomically with
 	// the write, at that point.
 	if !h.EnforceSingleSession {
-		currentUserSessions, err := e.sessionStore.ActiveSessionCount(ctx, tenantID, userID)
+		// Live sessions only: the user's set keeps the ID of a session that
+		// expired by TTL, which must not count against the cap.
+		limit := smallestSessionCap(h)
+		currentUserSessions, err := e.sessionStore.LiveSessionCount(ctx, tenantID, userID, limit)
 		if err != nil {
 			return err
 		}
-
-		if h.ConcurrentLoginLimit > 0 && currentUserSessions >= h.ConcurrentLoginLimit {
-			return ErrSessionLimitExceeded
-		}
-		if h.MaxSessionsPerUser > 0 && currentUserSessions >= h.MaxSessionsPerUser {
+		if limit > 0 && currentUserSessions >= limit {
 			return ErrSessionLimitExceeded
 		}
 	}
@@ -1285,6 +1288,17 @@ func (e *Engine) enforceSessionHardeningOnLogin(ctx context.Context, tenantID, u
 	}
 
 	return nil
+}
+
+// smallestSessionCap is the lowest per-user cap in force (MaxSessionsPerUser or
+// ConcurrentLoginLimit), or 0 when neither is set. A user is refused when the
+// live sessions reach it.
+func smallestSessionCap(h SessionHardeningConfig) int {
+	limit := h.MaxSessionsPerUser
+	if h.ConcurrentLoginLimit > 0 && (limit <= 0 || h.ConcurrentLoginLimit < limit) {
+		limit = h.ConcurrentLoginLimit
+	}
+	return max(limit, 0)
 }
 
 // sessionSaveLimits are the session caps enforced atomically with a login
@@ -2432,6 +2446,7 @@ func (e *Engine) emailVerificationFlowDeps() internalflows.EmailVerificationDeps
 	deps := internalflows.EmailVerificationDeps{
 		Enabled:             cfg.EmailVerification.Enabled,
 		Strategy:            int(cfg.EmailVerification.Strategy),
+		SecretID:            cfg.EmailVerification.Strategy == VerificationUUID,
 		OTPDigits:           cfg.EmailVerification.OTPDigits,
 		VerificationTTL:     cfg.EmailVerification.VerificationTTL,
 		MaxAttempts:         cfg.EmailVerification.MaxAttempts,
@@ -2667,6 +2682,22 @@ func (e *Engine) supersedeResetCodes(ctx context.Context, tenantID, userID strin
 	return errors.Join(errs...)
 }
 
+// supersedeResetCodesAfterPasswordChange kills the reset codes the user holds
+// once ChangePassword has written the new hash, in every tenant the session
+// revocation covers. The password is already changed, so a failure never fails
+// the call: it is logged and audited with the reason reset_invalidation_failed,
+// the one a completed reset uses for the same step.
+func (e *Engine) supersedeResetCodesAfterPasswordChange(ctx context.Context, recordTenant, userID, auditTenant string) {
+	if err := e.supersedeResetCodes(ctx, recordTenant, userID); err != nil {
+		e.warn("goAuth: outstanding password reset codes could not be invalidated after password change")
+		e.emitAudit(ctx, auditEventPasswordChangeFailure, false, userID, auditTenant, "", ErrPasswordResetUnavailable, func() map[string]string {
+			return map[string]string{
+				"reason": "reset_invalidation_failed",
+			}
+		})
+	}
+}
+
 // supersedeVerificationCodes is supersedeResetCodes for email verification.
 func (e *Engine) supersedeVerificationCodes(ctx context.Context, tenantID, userID string) error {
 	if e.verificationStore == nil || !e.config.EmailVerification.Enabled {
@@ -2789,7 +2820,7 @@ func parseEmailVerificationChallenge(
 	if tenant == "" || verificationID == "" || code == "" {
 		return "", "", emptyHash, errors.New("invalid challenge format: empty segment")
 	}
-	if len(tenant) > 256 {
+	if len(tenant) > internal.MaxTenantIDBytes {
 		return "", "", emptyHash, errors.New("invalid challenge format: tenant too long")
 	}
 
@@ -2808,8 +2839,18 @@ func parseEmailVerificationChallengeCode(
 ) ([32]byte, error) {
 	var emptyHash [32]byte
 
+	// The ID names a record, so it must have the shape the generator gives it
+	// before anything else looks at it: a malformed one cannot name a live
+	// record and is not copied into a key, a limiter or an audit event.
+	if !validVerificationIDText(strategy, verificationID) {
+		return emptyHash, errors.New("invalid verification id")
+	}
+
 	switch strategy {
 	case VerificationToken:
+		if !internal.ValidResetTokenText(code) {
+			return emptyHash, errors.New("invalid verification token")
+		}
 		_, secret, err := internal.DecodeResetToken(code)
 		if err != nil {
 			return emptyHash, err
@@ -2817,6 +2858,9 @@ func parseEmailVerificationChallengeCode(
 		return internal.HashResetSecret(secret), nil
 
 	case VerificationUUID:
+		if !internal.ValidUUIDCode(code) {
+			return emptyHash, errors.New("invalid verification uuid")
+		}
 		parsed, err := uuid.Parse(code)
 		if err != nil {
 			return emptyHash, err
@@ -2824,9 +2868,6 @@ func parseEmailVerificationChallengeCode(
 		return internal.HashResetBytes([]byte(parsed.String())), nil
 
 	case VerificationOTP:
-		if _, err := internal.ParseSessionID(verificationID); err != nil {
-			return emptyHash, err
-		}
 		if len(code) != otpDigits {
 			return emptyHash, errors.New("invalid verification otp length")
 		}
@@ -3141,7 +3182,8 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 		deps.ResetLockoutCounter = func(ctx context.Context, userID string) error {
 			return e.lockoutLimiter.Reset(ctx, tenantIDFromContext(ctx), userID)
 		}
-		deps.LockAccount = e.LockAccount
+		deps.LockAccount = e.lockAccountFromActive
+		deps.RevokeSessions = e.revokeUserSessions
 	}
 	if e != nil && e.userProvider != nil {
 		e.configureLoginUserLookupDeps(&deps)
@@ -3168,6 +3210,7 @@ func (e *Engine) loginFlowDeps() internalflows.LoginDeps {
 	if e != nil && e.passwordHash != nil {
 		deps.VerifyPassword = e.verifyHash
 		deps.PasswordNeedsUpgrade = e.passwordHash.NeedsUpgrade
+		deps.PadRejectedVerify = e.padCheapRejection
 		deps.HashPassword = e.passwordHash.Hash
 	}
 	if e != nil && e.passwordCAS != nil {
@@ -3287,6 +3330,8 @@ func loginErrors() internalflows.LoginErrors {
 		WebAuthnCeremonyExpired:  ErrWebAuthnCeremonyExpired,
 		WebAuthnUnavailable:      ErrWebAuthnUnavailable,
 		TOTPRateLimited:          ErrTOTPRateLimited,
+
+		SessionInvalidationFailed: ErrSessionInvalidationFailed,
 	}
 }
 
@@ -3568,6 +3613,7 @@ func (e *Engine) passwordResetFlowDeps() internalflows.PasswordResetDeps {
 	deps := internalflows.PasswordResetDeps{
 		Enabled:             cfg.PasswordReset.Enabled,
 		Strategy:            int(cfg.PasswordReset.Strategy),
+		SecretID:            cfg.PasswordReset.Strategy == ResetUUID,
 		OTPDigits:           cfg.PasswordReset.OTPDigits,
 		ResetTTL:            cfg.PasswordReset.ResetTTL,
 		MaxAttempts:         cfg.PasswordReset.MaxAttempts,
@@ -3754,6 +3800,12 @@ func parsePasswordResetChallenge(
 	otpDigits int,
 ) (string, [32]byte, error) {
 	var emptyHash [32]byte
+
+	// A challenge that is not the length and alphabet the generator emits is
+	// refused before it is decoded or looked up.
+	if !validResetChallengeText(strategy, challenge, otpDigits) {
+		return "", emptyHash, errors.New("invalid reset challenge")
+	}
 
 	switch strategy {
 	case ResetToken:
