@@ -160,9 +160,13 @@ var liveSessionCountLua = redis.NewScript(liveSessionCountScript)
 //
 // It returns 0 when the epoch moved, 1 when a per-user cap is reached, 2 when
 // the tenant cap is reached and 3 when the session was stored. Single-session
-// mode ends the other sessions only once the epoch check has passed, and does
-// not bump the epoch: a login replacing the user's sessions is not a
-// revocation that other in-flight logins must be fenced against.
+// mode ends the other sessions only once every check has passed (epoch, caps
+// and tenant cap; a refused save ends nothing), and does not bump the epoch: a
+// login replacing the user's sessions is not a revocation that other in-flight
+// logins must be fenced against. The per-user caps cannot refuse in
+// single-session mode, since the user is left with this one session; the
+// tenant cap is judged as it will be after the purge, that is the counter
+// minus the user's live sessions the save is about to end.
 //
 // The user's set keeps the ID of a session that expired by TTL until something
 // removes it, so the per-user caps count live sessions only: when the set
@@ -176,7 +180,34 @@ local epoch = tonumber(redis.call("GET", KEYS[4]) or "0") or 0
 if epoch ~= tonumber(ARGV[3]) then
   return 0
 end
-if ARGV[8] == "1" then
+local single = ARGV[8] == "1"
+local others = 0
+if single then
+  others = prune_dead_sessions(KEYS[2], ARGV[9])
+else
+  local concurrent = tonumber(ARGV[7])
+  local perUser = tonumber(ARGV[5])
+  local cap = 0
+  if concurrent > 0 then
+    cap = concurrent
+  end
+  if perUser > 0 and (cap == 0 or perUser < cap) then
+    cap = perUser
+  end
+  if cap > 0 and redis.call("SCARD", KEYS[2]) >= cap then
+    if prune_dead_sessions(KEYS[2], ARGV[9]) >= cap then
+      return 1
+    end
+  end
+end
+local perTenant = tonumber(ARGV[6])
+if perTenant > 0 then
+  local count = tonumber(redis.call("GET", KEYS[3]) or "0") or 0
+  if count - others >= perTenant then
+    return 2
+  end
+end
+if single then
   local deleted = 0
   for _, sid in ipairs(redis.call("SMEMBERS", KEYS[2])) do
     if redis.call("DEL", ARGV[9] .. sid) == 1 then
@@ -192,27 +223,6 @@ if ARGV[8] == "1" then
     else
       redis.call("DECRBY", KEYS[3], deleted)
     end
-  end
-end
-local concurrent = tonumber(ARGV[7])
-local perUser = tonumber(ARGV[5])
-local cap = 0
-if concurrent > 0 then
-  cap = concurrent
-end
-if perUser > 0 and (cap == 0 or perUser < cap) then
-  cap = perUser
-end
-if cap > 0 and redis.call("SCARD", KEYS[2]) >= cap then
-  if prune_dead_sessions(KEYS[2], ARGV[9]) >= cap then
-    return 1
-  end
-end
-local perTenant = tonumber(ARGV[6])
-if perTenant > 0 then
-  local count = tonumber(redis.call("GET", KEYS[3]) or "0") or 0
-  if count >= perTenant then
-    return 2
   end
 end
 redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])

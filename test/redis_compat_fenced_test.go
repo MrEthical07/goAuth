@@ -178,6 +178,61 @@ func TestRedisCompat_FencedSaveSingleSessionPurge(t *testing.T) {
 	}
 }
 
+// R2-28 residual: a single-session save that any check refuses ends nothing,
+// and a tenant that is full only of the user's own sessions still admits the
+// replacement.
+func TestRedisCompat_FencedSaveSingleSessionRefusalEndsNothing(t *testing.T) {
+	for _, mode := range redisModes(t) {
+		t.Run(mode.name, func(t *testing.T) {
+			skipCluster(t, mode.name)
+			rdb, cleanup := mode.setup(t)
+			defer cleanup()
+			store := session.NewStore(rdb, "as", true, false, 0)
+			ctx := context.Background()
+
+			old1 := compatSaveWithProof(t, store, "t-ord", "u-ord", "old1", 1)
+			old2 := compatSaveWithProof(t, store, "t-ord", "u-ord", "old2", 2)
+			for i, u := range []string{"o1", "o2", "o3", "o4"} {
+				compatSaveWithProof(t, store, "t-ord", u, "s-"+u, byte(10+i))
+			}
+
+			// Six sessions in the tenant; four are other users'. The cap is 4.
+			limits := session.SaveLimits{SingleSession: true, MaxPerTenant: 4}
+			err := store.SaveFenced(ctx, fencedSess("t-ord", "u-ord", "new", 9), time.Hour, 0, limits)
+			if !errors.Is(err, session.ErrTenantSessionLimit) {
+				t.Fatalf("a full tenant = %v, want ErrTenantSessionLimit", err)
+			}
+			ids, _ := store.ActiveSessionIDs(ctx, "t-ord", "u-ord")
+			if len(ids) != 2 {
+				t.Fatalf("a save refused for the tenant cap ended sessions: %v", ids)
+			}
+			if !proofExists(t, store, old1) || !proofExists(t, store, old2) {
+				t.Fatal("a refused save removed a proof key")
+			}
+			if n, _ := store.TenantSessionCount(ctx, "t-ord"); n != 6 {
+				t.Fatalf("tenant counter = %d, a refused save must not change it (want 6)", n)
+			}
+
+			// With room once the user's own sessions are gone, the same save goes
+			// through and replaces them.
+			limits.MaxPerTenant = 5
+			if err := store.SaveFenced(ctx, fencedSess("t-ord", "u-ord", "new", 9), time.Hour, 0, limits); err != nil {
+				t.Fatalf("a replacement that fits once the old sessions are gone = %v", err)
+			}
+			ids, _ = store.ActiveSessionIDs(ctx, "t-ord", "u-ord")
+			if len(ids) != 1 || ids[0] != "new" {
+				t.Fatalf("sessions after the save: %v", ids)
+			}
+			if proofExists(t, store, old1) || proofExists(t, store, old2) {
+				t.Fatal("a replaced session kept its proof key")
+			}
+			if n, _ := store.TenantSessionCount(ctx, "t-ord"); n != 5 {
+				t.Fatalf("tenant counter = %d, want 5", n)
+			}
+		})
+	}
+}
+
 // C3: the user's set keeps the ID of a session that expired by TTL. The script
 // must count live sessions only and remove the dead IDs it finds. The expiry is
 // stood in for by deleting the session key, which leaves the set exactly as a
