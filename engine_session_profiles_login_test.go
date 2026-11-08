@@ -3,8 +3,10 @@ package goAuth
 import (
 	"bytes"
 	"context"
+	"encoding/base32"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,7 +98,7 @@ func TestSessionProfilesChosenOnEveryLoginPath(t *testing.T) {
 func spMFAEnv(t *testing.T, mutate func(*Config), opts ...rsOption) (*spEnv, string, []string) {
 	t.Helper()
 	env := newSPEnv(t, mutate, opts...)
-	secret := enableUserTOTP(t, env.engine, rsUserID, env.cfg)
+	secret := env.enableTOTP()
 	codes, err := env.engine.GenerateBackupCodes(env.ctx(), rsUserID)
 	if err != nil {
 		t.Fatalf("GenerateBackupCodes: %v", err)
@@ -104,8 +106,61 @@ func spMFAEnv(t *testing.T, mutate func(*Config), opts ...rsOption) (*spEnv, str
 	return env, secret, codes
 }
 
+// totp is the code of the step after the one the engine's clock is in. The
+// engine reads time from the env's frozen clock, so the code must come from it
+// too: a code taken from the wall clock lands outside the skew window, or is
+// refused as a replay of the setup code, whenever the wall clock crosses a TOTP
+// step boundary between the env's creation and the call (more likely under the
+// race detector, where the Argon2 hashes in the setup are slow).
 func (e *spEnv) totp(secret string) string {
-	return codeForOffset(e.t, secret, e.cfg.TOTP, 1)
+	return e.codeAt(secret, 1)
+}
+
+// codeAt is the TOTP code for the step offset from the one the env's clock is in.
+func (e *spEnv) codeAt(secret string, offset int64) string {
+	e.t.Helper()
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(secret))
+	if err != nil {
+		e.t.Fatalf("decode secret: %v", err)
+	}
+	counter := e.clk.Now().Unix()/int64(e.cfg.TOTP.Period) + offset
+	code, err := hotpCode(key, counter, e.cfg.TOTP.Digits, e.cfg.TOTP.Algorithm)
+	if err != nil {
+		e.t.Fatalf("hotpCode: %v", err)
+	}
+	return code
+}
+
+// enableTOTP is enableUserTOTP with the confirming code taken from the env's
+// clock (see totp).
+func (e *spEnv) enableTOTP() string {
+	e.t.Helper()
+	setup, err := e.engine.GenerateTOTPSetup(context.Background(), rsUserID)
+	if err != nil {
+		e.t.Fatalf("GenerateTOTPSetup: %v", err)
+	}
+	if err := e.engine.ConfirmTOTPSetup(context.Background(), rsUserID, e.codeAt(setup.SecretBase32, 0)); err != nil {
+		e.t.Fatalf("ConfirmTOTPSetup: %v", err)
+	}
+	return setup.SecretBase32
+}
+
+// The env's TOTP helpers follow the env's clock. The engine reads time from the
+// frozen fake clock, so once the test has advanced it past a few TOTP steps a
+// code taken from the wall clock is outside the skew window; this fails
+// deterministically with such a helper, where the flake it fixes needed the
+// wall clock to cross a step boundary during the setup.
+func TestSessionProfileTOTPHelpersFollowTheEnvClock(t *testing.T) {
+	env, secret, _ := spMFAEnv(t, nil)
+	env.advance(95 * time.Second) // three TOTP steps of the engine's clock
+
+	res, err := env.engine.LoginWithResult(env.ctx(), rsIdentifier, rsPassword)
+	if err != nil || !res.MFARequired {
+		t.Fatalf("step 1: %v %+v", err, res)
+	}
+	if _, err := env.engine.ConfirmLoginMFA(env.ctx(), res.MFASession, env.totp(secret)); err != nil {
+		t.Fatalf("ConfirmLoginMFA with a code from the env's clock: %v", err)
+	}
 }
 
 // The profile chosen at login survives the MFA step, through every way of
