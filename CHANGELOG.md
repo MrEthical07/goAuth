@@ -7,6 +7,162 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.2] - 2026-11-08
+
+**Security patch.** It fixes every item on the "Known residuals" list of `[0.8.1]` (the
+verification audit of v0.8.1, "run 3"; findings `R2-xx` and `C1`–`C7`) and adds a few
+hardening changes found while fixing them. It is a drop-in replacement for v0.8.1: no
+stored format changed and no exported signature changed. `gorelease -base=v0.8.1`
+reports no incompatible change; its only finding is one compatible addition,
+`(*session.Store).LiveSessionCount`. v0.8.1 and v0.8.2 can share a Redis during a
+rolling deploy. Read "Behavior changes when upgrading from v0.8.1" below: a few of the
+changes are visible to an application that enables nothing new.
+
+### Fixed
+
+- **R2-25 / C1: `ChangePassword` supersedes outstanding reset codes.** A party holding an
+  unredeemed password-reset code could redeem it within `ResetTTL` after the owner changed
+  the password and take over the account. After the new hash is written, `ChangePassword`
+  now calls `supersedeResetCodes` for every tenant the session revocation covers, before
+  the revocation, so every earlier code is refused as after a completed reset. The
+  password is already changed at that point, so a failure to write the tombstone does not
+  fail the call: it is logged and audited as `password_change_failure`, reason
+  `reset_invalidation_failed`. Nothing is written while `PasswordReset.Enabled` is false.
+- **R2-12: auto-lockout's session revocation is retried and audited.** The login flow
+  discarded the `ErrSessionInvalidationFailed` that `LockAccount` returns when the status
+  was written but the sessions could not be ended. It now revokes once more (a new
+  `RevokeSessions` step of the login flow). If the retry fails too, the failure is logged
+  and audited as `login_failure`, reason `auto_lockout_sessions_not_ended`; the response
+  stays `ErrInvalidCredentials`.
+- **R2-16: the lock is written from `Active` only.** An administrator's disable or delete
+  that landed between the login's status read and the lock write could be overwritten
+  with `Locked`, and a later `UnlockAccount` made the account `Active`. The lock is now
+  written `Active` → `Locked` through `UpdateAccountStatusIf` when the provider implements
+  `AccountStatusCASUpdater`, and otherwise after a re-read that must show `Active`. A
+  skipped lock revokes nothing, audits no lock and counts no locked account. The
+  administrator-facing `LockAccount` is unchanged.
+- **R2-18 / C2: credential rejections are padded to the configured cost.** An unknown
+  identifier is rejected after one dummy verification at the configured Argon2 cost, but a
+  registered account is verified at the cost encoded in its own hash, so a hash made under
+  older, cheaper parameters (or one that is not Argon2) was rejected several times faster
+  and revealed that the identifier exists. After a failed real verification against a hash
+  that `NeedsUpgrade` or does not parse, one dummy verification at the configured cost now
+  runs (`Login`, `VerifyPassword`, `ChangePassword`).
+- **R2-NV1 / C7: truncated audit identifiers are copied.** `auditIdentifier` cut an
+  over-long identifier by slicing, which shares the caller's backing array, so a queued
+  audit event kept the whole request alive. The cut is now a copy, made only when
+  something was cut; every audit metadata field that carries caller text goes through the
+  helper, and a static test fails when a new one does not.
+- **C4: challenge IDs are shape-checked before Redis, the limiter and the audit.** The
+  unauthenticated confirm paths (email verification, password reset, email change,
+  external sign-up) looked up, rate-limited and audited an ID of any size. Every ID shape
+  a generator produces is now defined in one place (`internal/challenge_shape.go`) and
+  checked before any other work; a value that does not fit gets the flow's usual invalid
+  error with no Redis command. A tenant carried in a challenge is limited to 256 bytes.
+  `CancelExternalSignup` with a malformed handle returns `nil`.
+- **R2-21: external sign-in limiter keys are hashed.** `rl:extlogin:ip:*` and
+  `rl:extlogin:sub:*` were built from raw strings, so a client address or subject of N
+  bytes cost N bytes of Redis memory for the whole window and a `:` in a provider or
+  subject let two inputs share a key. Each segment is now the SHA-256 hex digest of its
+  value, as in the login, reset, verification and account-creation limiters. Every other
+  limiter key builder was reviewed: the rest hold only host-resolved tenant and user IDs
+  or a verified session ID (listed in `docs/rate_limiting.md`).
+- **C3: expired sessions do not count toward the per-user caps.** The user's session set
+  (`au:<tenant>:<user>`) kept the ID of a session that expired by TTL, and it counted
+  toward `MaxSessionsPerUser` and `ConcurrentLoginLimit`, so a user with no live session
+  could be refused with `ErrSessionLimitExceeded`. Both checks, the fenced save script
+  and the read-only pre-check at the password step (new `Store.LiveSessionCount`), now
+  count live sessions: when the set reaches the smaller cap, the entries whose session key
+  no longer exists are removed and the live ones counted. A set below the cap is not
+  touched, and saves are refused at the cap, so the set stays bounded by it. The tenant
+  counter is an estimate with its own reconciliation and is not changed.
+- **R2-28: refusal checks run before the single-session purge.** With
+  `EnforceSingleSession`, the fenced save script ended the user's other sessions before it
+  checked the tenant cap, so a save refused for the cap had already ended them. The
+  script now runs the epoch check, the per-user and concurrent caps and the tenant cap
+  first, and deletes only when the session will be stored. The tenant cap is judged as it
+  will be after the purge (the counter minus the user's live sessions the save is about to
+  end), so a tenant full of the user's own sessions still admits the replacement.
+- **R2-11: documentation.** `docs/session.md` ("Guarantees") listed permission, role and
+  account version drift among the things that end sessions. Version stamps compare the
+  token with the session only; a change in the user record is detected only with
+  `Security.RecheckUserOnRefresh` (on refresh) or when the host calls
+  `InvalidateUserSessions` / `LogoutAll`; strict `Validate` is snapshot-based. The text in
+  `docs/session.md` and `docs/flows.md` now says so (`docs/security.md` and
+  `featureReport.md` already did).
+
+### Hardening
+
+- **UUID strategies audit a fingerprint, not the ID.** With `ResetUUID` or
+  `VerificationUUID` the record ID is the entire secret, and confirm failures that leave
+  the record live (wrong tenant, limiter refusal, backend error) copied it into the audit
+  metadata, so anyone who could read the audit stream could redeem it. Those events now
+  carry `reset_id_fp` / `verification_id_fp`: the first 12 hex characters of the SHA-256
+  of the tenant, a zero byte and the ID. The Token and OTP strategies are unchanged.
+- **The external sign-in IP bucket groups addresses like the login one.** The source
+  limiter hashed the address as given, so an IPv6 caller could rotate addresses inside
+  one /64 and get a fresh pre-verification budget each time. It now runs the same
+  canonicalization as the password login's IP budget (port and zone dropped, IPv4-mapped
+  forms unmapped, IPv6 grouped by /64) before hashing.
+
+### Behavior changes when upgrading from v0.8.1
+
+What an application that enables nothing new sees, old → new, with the finding that causes
+it. The same changes are explained, with advice, in `docs/migrations.md`.
+
+- `ChangePassword` with `PasswordReset.Enabled`: outstanding reset codes stayed redeemable
+  until `ResetTTL` → they are invalidated by the change (only with `PasswordReset.Enabled`;
+  with it off nothing is written). If the tombstone cannot be written the change still
+  succeeds and `password_change_failure` is audited with reason `reset_invalidation_failed`.
+  (R2-25, C1)
+- Auto-lockout (only with `Security.AutoLockoutEnabled`): a failed revocation after the
+  lock was ignored → it is retried once, and a persistent failure is warned about and
+  audited as `login_failure` with reason `auto_lockout_sessions_not_ended` (the response is
+  still `ErrInvalidCredentials`); the lock write had no source-state guard → it is written only
+  from `Active` (a disabled or deleted account is left alone, and that attempt audits as a
+  plain `password_mismatch`); a provider with `AccountStatusCASUpdater` receives
+  `UpdateAccountStatusIf(Active, Locked)`, one without it is re-read just before the write;
+  a lock write that returns an error is no longer followed by an `auto_lockout` audit event.
+  (R2-12, R2-16)
+- A wrong password against an older-cost or non-Argon2 hash (`Login`, `VerifyPassword`,
+  `ChangePassword`) was rejected faster than the configured cost → it costs one extra
+  verification at the configured cost. A right password, and a hash that already matches the
+  configured parameters, are unchanged. (R2-18, C2)
+- A malformed challenge ID, code, handle, or a tenant over 256 bytes in a challenge was
+  looked up, rate-limited and audited → it is refused with the existing invalid error and no
+  Redis command. Braced, `urn:uuid:` and unhyphenated UUID spellings, which were accepted and
+  normalized, are now refused; upper-case hyphenated UUID codes still work. (C4)
+- With `ResetUUID` / `VerificationUUID`, audit events carried `reset_id` /
+  `verification_id` → they carry `reset_id_fp` / `verification_id_fp`.
+- `rl:extlogin:*` counters: raw-string keys → digest keys, so the counters restart once on
+  upgrade; the external IP bucket counted each IPv6 address separately → it groups IPv6
+  addresses by /64 (and unmaps IPv4-mapped forms, drops a port and a zone). (R2-21)
+- A user whose sessions had all expired by TTL could be refused with
+  `ErrSessionLimitExceeded` under `MaxSessionsPerUser` / `ConcurrentLoginLimit` → expired
+  sessions no longer count. (C3)
+- With `EnforceSingleSession`, a login or MFA confirmation refused for the tenant cap had
+  already ended the user's other sessions → a tenant-cap refusal leaves them alone.
+  (R2-28)
+
+### New audit values
+
+- Reasons: `reset_invalidation_failed` (on `password_change_failure`) and
+  `auto_lockout_sessions_not_ended` (on `login_failure`).
+- Metadata fields: `reset_id_fp`, `verification_id_fp`.
+
+### Notes
+
+- Padded timing is "at least" the configured cost, not equal to it: the real verification
+  still runs first and the dummy verification follows it.
+- The limiters whose keys hold a host-supplied user ID or tenant (`rl:backup:fail`,
+  `rl:totp:fail`, `rl:pwdverify:fail`, `rl:lockout`, `rl:emailchange`, `rl:roleswitch`)
+  are deliberately not hashed. They are listed in `docs/rate_limiting.md`, which says hosts
+  must pass the user ID from the authenticated session, never from request input.
+- The README now states the Redis requirement as 6.0+, and 6.2+ if WebAuthn is enabled:
+  WebAuthn reads its ceremony session with `GETDEL`, which needs Redis 6.2.
+
+---
+
 ## [0.8.1] - 2026-10-31
 
 **Security release. Upgrading from v0.8.0 is recommended, and v0.8.0 is retracted**
