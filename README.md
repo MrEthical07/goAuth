@@ -107,7 +107,7 @@ See [examples/http-minimal](examples/http-minimal) for a complete HTTP server wi
 go get github.com/MrEthical07/goAuth
 ```
 
-**Requirements:** Go 1.27+, Redis 6+
+**Requirements:** Go 1.27+, Redis 6.0+ (6.2+ if WebAuthn is enabled)
 
 goAuth supports the current Go major release only. Its minimum Go version
 rises when a new Go major ships, in the next minor or major goAuth release.

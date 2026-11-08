@@ -308,9 +308,19 @@ Hybrid and JWT-only validation never touch Redis, with or without profiles.
 
 These end the sessions of **every** profile immediately, as they end legacy
 ones: refresh-token reuse (deletion), `Logout`, `LogoutAll` /
-`LogoutAllInTenant`, `InvalidateUserSessions`, password change and reset,
-account disable, lock and delete, and permission, role or account version
-drift. Concurrent sessions of different profiles for one user coexist and age
+`LogoutAllInTenant`, `InvalidateUserSessions`, password change and reset, and
+goAuth's own account disable, lock and delete calls.
+
+Version stamps are not on that list. The permission, role and account version
+stamps compare the access token with the session only (see
+[What the version stamps detect](#what-the-version-stamps-detect)), so a change
+in the user record ends sessions only when `Security.RecheckUserOnRefresh` is on
+(checked when the session is refreshed) or when the host calls
+`InvalidateUserSessions` / `LogoutAll`. Strict `Validate` is snapshot-based: an
+access token already issued is accepted until it expires or its session is
+deleted.
+
+Concurrent sessions of different profiles for one user coexist and age
 independently. Profiles are tenant-agnostic: they apply identically with
 `MultiTenant.Enabled`, see [multi_tenancy.md](multi_tenancy.md).
 

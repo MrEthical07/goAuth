@@ -353,7 +353,7 @@ if errors.Is(err, goAuth.ErrStepUpRequired) {
 - JWT-Only: zero Redis, zero allocations beyond claims.
 - Hybrid and JWT-only never see a role switch until the access token expires; see the [per-mode revocation table](role_switching.md#revocation-guarantee-per-validation-mode). Routes that gate on role or permissions must resolve to Strict.
 - Strict: fail closed on Redis unavailability (`ErrStrictBackendDown`).
-- Version drift deletes stale session.
+- A token whose version stamps differ from its session's deletes the session. The stamps compare the token with the session, not with the user record: a change in the user record is seen only with `Security.RecheckUserOnRefresh` (on refresh) or after `InvalidateUserSessions` / `LogoutAll`; see [session.md](session.md#what-the-version-stamps-detect).
 
 ### Redis Op Budget
 

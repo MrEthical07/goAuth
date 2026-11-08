@@ -154,6 +154,23 @@ Redis key prefixes:
 
 **Key segments.** A segment a caller or the host chooses is stored as its SHA-256 hex digest, so a key is the same length whatever it counts and an address or identifier of N bytes costs no Redis memory: the tenant, the identifier, the client address, the challenge ID, the provider and the subject in the login, account-creation, reset, verification and external sign-in keys (`{tenant}`, `{identifier}`, `{ip}`, `{provider}` and `{subject}` above stand for the digest). The login address and the external sign-in address are canonicalized the same way before they are hashed (an IPv4-mapped form, a port and a zone are dropped, an IPv6 address becomes its /64), so the spellings of one address, and the addresses of one IPv6 /64, share a budget (the external sign-in address was hashed as given before v0.8.2). Two inputs share a bucket exactly when they are the same string. The keys of the per-account counters of the TOTP, backup-code, password-verification, auto-lockout, email-change and role-switch limiters hold the tenant the host attached to the context, the user ID the host's provider returned or the host took from its own session (the API contract of every method that takes one), and a session ID decoded from a verified token. An anonymous caller cannot size any of them, so those keys are unchanged.
 
+**Keys that hold a host-supplied user ID or tenant.** These limiters are deliberately not hashed:
+
+| Prefix | Holds | Where the value comes from |
+|--------|-------|----------------------------|
+| `rl:totp:fail:{tenant}:{userID}` | TOTP failures per account | the `userID` passed to `VerifyTOTP` and the MFA login, or the one the provider returned |
+| `rl:backup:fail:{tenant}:{userID}` | Backup-code failures per account | the `userID` passed to `VerifyBackupCode` / `VerifyBackupCodeInTenant` |
+| `rl:pwdverify:fail:{tenant}:{userID}` | Wrong passwords of `VerifyPassword` and `ChangePassword` per account | the `userID` passed to those methods |
+| `rl:lockout:{tenant}:{userID}` | Auto-lockout failure count per account | the user ID the provider returned for the identifier |
+| `rl:emailchange:{tenant}:{userID}` | Email-change requests per account | the `userID` passed to `RequestEmailChange` |
+| `rl:roleswitch:{tenant}:{sessionID}` | Role switches per session | the session ID decoded from a verified refresh token |
+
+**Hosts must pass the user ID from the authenticated session (or from your own user store), never from request
+input, and the tenant from your own routing.** The value becomes part of a Redis key: a very long string costs
+Redis memory for the whole window, and one that contains `:` can make two different (tenant, user) pairs share a
+counter or split one. goAuth does not hash these values because under its API contract they are never an
+anonymous caller's input; that contract is what keeps these keys bounded.
+
 Domain limiters also use explicit tenant-scoped `rl:*` key namespaces. In sliding mode
 the counters live in `{<key>}:s:<bucket>` sub-keys of the same namespaces.
 

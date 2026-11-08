@@ -2,11 +2,105 @@
 
 ## v0.8.2 Migration Notes (Non-Breaking)
 
-### External sign-in limiter counters restart
+### Upgrading from v0.8.1
 
-The external sign-in limiter (`rl:extlogin:ip:*`, `rl:extlogin:sub:*`) now names its keys with SHA-256 digests of the tenant, client address, provider and subject, as the login, reset, verification and account-creation limiters already did. The counters are new keys, so every external sign-in budget starts empty when an instance running v0.8.2 first handles a request. That is harmless: the old keys expire by their own TTL (the limiter's `Cooldown`) and nothing reads them. During a rolling deploy an old and a new instance count in separate buckets until the old one is gone. No stored format changed.
+**No code change is needed.** v0.8.2 fixes every item on the "Known residuals" list of
+the CHANGELOG `[0.8.1]` section (the verification audit of v0.8.1, findings `R2-xx` and
+`C1`–`C7`). No exported signature changed (`gorelease -base=v0.8.1` reports one
+compatible addition, `(*session.Store).LiveSessionCount`), no module dependency was
+added and no stored format changed. v0.8.1 and v0.8.2 instances can share a Redis during
+a rolling deploy (see the end of this section). Read the changes below before you deploy:
+a few of them are visible to an application that enables nothing new.
 
-## v0.8.1 Migration Notes (Non-Breaking)
+### What an application that enables nothing new sees
+
+Old → new, with the finding that causes it (the CHANGELOG `[0.8.2]` section has the same
+list):
+
+- **Wrong passwords against an older-cost or non-Argon2 hash** (`Login`,
+  `VerifyPassword`, `ChangePassword`): rejected in a fraction of the configured Argon2
+  cost (a hash made under cheaper parameters, or one that does not parse) → rejected
+  after one extra verification at the configured cost, so a registered account's
+  rejection takes at least as long as an unknown identifier's. "At least", not equal:
+  the real verification still runs first. A right password, and an account whose hash
+  already matches the configured parameters, are unchanged; `UpgradeOnLogin` still
+  rewrites the hash on the next successful login, after which the account is no longer
+  padded. (R2-18, C2)
+- **Malformed challenge IDs, codes, handles and tenants**: looked up, rate-limited and
+  audited as given → refused with the flow's existing invalid error before any Redis
+  command, limiter slot or audit copy. This covers email verification, password reset,
+  email change and external sign-up. The shapes are the ones the generators produce (a
+  22-character session ID, a lower-case hyphenated 36-character UUID, a 64-character
+  reset token, a 43-character sign-up handle) and a tenant of at most 256 bytes in a
+  challenge. **Newly refused spellings:** a braced (`{...}`), `urn:uuid:` or unhyphenated
+  UUID, which the UUID parser used to accept and normalize. A UUID *code* in upper case
+  still works (it is normalized before it is hashed). `CancelExternalSignup` with a
+  malformed handle returns `nil`, like any unknown handle. (C4)
+- **Audit events of the UUID strategies** (`ResetUUID`, `VerificationUUID`; the ID is the
+  whole secret): `reset_id` / `verification_id` in the metadata of confirm failures that
+  leave the record live → `reset_id_fp` / `verification_id_fp`, the first 12 hex
+  characters of the SHA-256 of the tenant, a zero byte and the ID. The Token and OTP
+  strategies are unchanged. (UUID audit fingerprint, found in the review of C4)
+- **Auto-lockout** (only with `Security.AutoLockoutEnabled`): the session revocation is
+  retried once, and a second failure is logged and audited as `login_failure` with
+  reason `auto_lockout_sessions_not_ended` (the response stays `ErrInvalidCredentials`);
+  the lock is written only from `Active`, so a disabled or deleted account is left
+  alone and that attempt audits as a plain `password_mismatch`; a provider that
+  implements `AccountStatusCASUpdater` is called with `UpdateAccountStatusIf(Active,
+  Locked)`; if the lock write itself fails, no `auto_lockout` event is audited. (R2-12,
+  R2-16)
+- **`ChangePassword` and reset codes** (only with `PasswordReset.Enabled`): an unredeemed
+  reset code still redeemable within `ResetTTL` after a password change → refused, like a
+  code superseded by a completed reset. If the tombstone cannot be written the change
+  still succeeds, and the failure is logged and audited as `password_change_failure`
+  with reason `reset_invalidation_failed`. With reset disabled nothing is written.
+  (R2-25, C1)
+- **Per-user session caps** (`MaxSessionsPerUser`, `ConcurrentLoginLimit`): sessions that
+  expired by TTL kept counting, so a user with no live session could be refused with
+  `ErrSessionLimitExceeded` → only live sessions count; the dead IDs are removed from the
+  user's set when it reaches the cap. The tenant counter is untouched. (C3)
+- **`EnforceSingleSession` with `MaxSessionsPerTenant`**: a save refused for the tenant
+  cap had already ended the user's other sessions → every refusal check runs first and the
+  purge happens only when the new session is stored. (R2-28)
+- **External sign-in limiter counters** (`rl:extlogin:ip:*`, `rl:extlogin:sub:*`): the keys
+  carry SHA-256 digests of the tenant, client address, provider and subject instead of the
+  raw strings, so **the counters restart at zero** when an instance running v0.8.2 first
+  handles a request. That is harmless: the old keys expire by their own TTL (the
+  limiter's `Cooldown`) and nothing reads them. (R2-21)
+- **External sign-in IP bucket**: the client address was hashed as given → it is
+  canonicalized the way the password login's IP budget does it (port and zone dropped,
+  IPv4-mapped forms unmapped, **IPv6 grouped by /64**) before it is hashed. Addresses of
+  one /64 now share one pre-verification budget (`ExternalAuth.MaxAttempts` per
+  `Cooldown`, 10 per 15 minutes by default). A site with many legitimate users behind one
+  /64 should raise `ExternalAuth.MaxAttempts`. The `rl:extlogin:*` counters restart once
+  for this too.
+
+### Things to check before you deploy
+
+1. **Audit consumers.** A dashboard, alert or parser that reads `reset_id` or
+   `verification_id` for the UUID strategies must read `reset_id_fp` / `verification_id_fp`
+   (or ignore them).
+2. **Clients and tests that send a UUID code in another spelling** (braced, `urn:uuid:`,
+   unhyphenated). Hyphenated lower- or upper-case spellings work.
+3. **A `UserProvider` that implements `AccountStatusCASUpdater`** now receives
+   `UpdateAccountStatusIf(ctx, tenantID, userID, AccountActive, AccountLocked)` from the
+   auto-lockout path. The contract is the one it already has for email verification: store
+   `next` only if the current status is exactly `expected`, in one atomic step, and report
+   whether it did.
+4. **Limiter keys that hold a host-supplied user ID or tenant** (`rl:backup:fail`,
+   `rl:totp:fail`, `rl:pwdverify:fail`, `rl:lockout`, `rl:emailchange`, `rl:roleswitch`)
+   are deliberately not hashed. Pass the user ID from the authenticated session, never from
+   request input; see [rate_limiting.md](rate_limiting.md) ("Keys that hold a host-supplied user ID or tenant").
+5. **Timing.** If you measure login latency per account, expect the rejection of an
+   account that still has a cheaper hash to match the configured cost from now on.
+
+### Rolling deploys
+
+v0.8.1 and v0.8.2 instances can share a Redis. During the roll, the two versions count
+external sign-in attempts in separate buckets (raw keys on v0.8.1, digest keys on v0.8.2).
+A v0.8.1 instance still counts expired session IDs toward the per-user caps and still
+purges before a tenant-cap refusal; both go away as the last v0.8.1 instance does. The
+session and challenge records are unchanged on both sides.
 
 ## v0.8.1 Migration Notes (Non-Breaking)
 
